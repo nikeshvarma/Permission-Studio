@@ -1,0 +1,30 @@
+# Push a tag like v2.0.5 and this builds the .vsix and publishes a GitHub Release with it.
+# The tag must match "version" in package.json; release notes come from CHANGELOG.md.
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check the tag matches package.json
+        run: |
+          v="v$(node -p "require('./package.json').version")"
+          if [ "$v" != "$GITHUB_REF_NAME" ]; then echo "Tag $GITHUB_REF_NAME does not match package.json version $v"; exit 1; fi
+      - name: Tests
+        run: npm test
+      - name: Build the .vsix
+        run: npm run package
+      - name: Release notes from CHANGELOG.md
+        run: node tools/release-notes.js "$GITHUB_REF_NAME" > release-notes.md
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.vsix --title "Permission Studio $GITHUB_REF_NAME" --notes-file release-notes.md

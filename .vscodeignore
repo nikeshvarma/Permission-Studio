@@ -1,0 +1,10 @@
+test/**
+docs/**
+tools/**
+dist/**
+.github/**
+.vscode/**
+**/*.map
+.gitignore
+.gitattributes
+RELEASING.md

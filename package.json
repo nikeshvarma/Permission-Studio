@@ -1,0 +1,221 @@
+{
+  "name": "permission-studio",
+  "displayName": "Permission Studio",
+  "description": "View and edit Salesforce permission sets, permission set groups and profiles for your project's default org, right inside VS Code.",
+  "version": "2.0.5",
+  "publisher": "nikeshvarma",
+  "author": {
+    "name": "Nikesh Varma"
+  },
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "salesforce",
+    "permission set",
+    "profile",
+    "field level security",
+    "sfdx"
+  ],
+  "icon": "media/icon.png",
+  "main": "./extension.js",
+  "activationEvents": [
+    "workspaceContains:sfdx-project.json",
+    "workspaceContains:*/sfdx-project.json"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Permission Studio runs the Salesforce CLI and talks to your org."
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "permStudio.open",
+        "title": "Open",
+        "category": "Permission Studio",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "permStudio.refresh",
+        "title": "Refresh",
+        "category": "Permission Studio",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "permStudio.showLog",
+        "title": "Show Log",
+        "category": "Permission Studio"
+      },
+      {
+        "command": "permStudio.clearCache",
+        "title": "Clear Cache",
+        "category": "Permission Studio"
+      },
+      {
+        "command": "permStudio.openItem",
+        "title": "Open Item\u2026",
+        "category": "Permission Studio",
+        "icon": "$(search)"
+      },
+      {
+        "command": "permStudio.openFile",
+        "title": "Open in Permission Studio",
+        "category": "Permission Studio",
+        "icon": "$(shield)"
+      }
+    ],
+    "configuration": {
+      "title": "Permission Studio",
+      "properties": {
+        "permStudio.sf.path": {
+          "type": "string",
+          "default": "sf",
+          "description": "Path to the Salesforce CLI executable."
+        },
+        "permStudio.project.path": {
+          "type": "string",
+          "default": "",
+          "description": "Folder of the Salesforce project to use. Leave empty to use the workspace folder that contains sfdx-project.json."
+        },
+        "permStudio.apiVersion": {
+          "type": "string",
+          "default": "",
+          "pattern": "^$|^\\d+\\.0$",
+          "description": "API version for org queries, e.g. 62.0. Leave empty to use the version the CLI reports for the org."
+        },
+        "permStudio.connection.mode": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "library",
+            "rest",
+            "cli"
+          ],
+          "enumDescriptions": [
+            "Use the Salesforce CLI's own connection library inside VS Code; if it can't be loaded, call the REST API directly; if that is refused or blocked, run sf for each call.",
+            "Always use the Salesforce CLI's connection library (same session, proxy and network route as the CLI). Errors are shown instead of switching.",
+            "Always call the REST API directly with the CLI's session. Errors are shown instead of switching.",
+            "Always run sf for each call. Slowest; uses the CLI's session, proxy and certificate settings."
+          ],
+          "description": "How Permission Studio reaches the org."
+        },
+        "permStudio.cache.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep a copy of what was read from the org so screens open instantly, then refresh it in the background. Stored in the extension's own storage, never in the project."
+        },
+        "permStudio.favorites.items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Permission sets, groups and profiles to load first and keep at the top of the list, as `permissionSet:<API name>`, `group:<API name>` or `profile:<profile name>`. Also set by the star next to each item."
+        },
+        "permStudio.favorites.objects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Objects to show first in Object Settings and to prefetch when an item opens, as API names such as `Lead` or `Invoice__c`. Also set by the star next to each object."
+        },
+        "permStudio.localFile.update": {
+          "type": "string",
+          "default": "ask",
+          "enum": [
+            "ask",
+            "always",
+            "never"
+          ],
+          "enumDescriptions": [
+            "Offer it in the review dialog, ticked, whenever the item has a source file in the project.",
+            "Always update the source file after a save.",
+            "Never touch project files."
+          ],
+          "description": "After saving to the org, also update the permission set or profile file in the project (force-app) so the change can be committed."
+        },
+        "permStudio.lists.show": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "permissionSet",
+              "group",
+              "profile"
+            ],
+            "enumDescriptions": [
+              "Permission sets",
+              "Permission set groups",
+              "Profiles"
+            ]
+          },
+          "uniqueItems": true,
+          "minItems": 1,
+          "default": [
+            "permissionSet",
+            "profile"
+          ],
+          "markdownDescription": "Which lists to show and load: `permissionSet`, `group`, `profile`. Leaving a list out also skips loading it, which makes start-up faster."
+        },
+        "permStudio.autoRefresh.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Refresh from the org in the background while VS Code has focus."
+        },
+        "permStudio.autoRefresh.minutes": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 30,
+          "description": "Minutes between background refreshes (1 to 30). Lists are only re-read when something in the org changed."
+        },
+        "permStudio.sf.installPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Folder where the Salesforce CLI is installed, the one containing `node_modules/@salesforce/core` (for example `%LOCALAPPDATA%\\sf\\client\\2.x.y` or `C:\\Program Files\\sf\\client`). Leave empty to find it automatically."
+        }
+      }
+    },
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "permStudio.openFile",
+          "when": "resourceFilename =~ /\\.(permissionset|profile|permissionsetgroup)-meta\\.xml$/",
+          "group": "navigation@90"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "permStudio.openFile",
+          "when": "resourceFilename =~ /\\.(permissionset|profile|permissionsetgroup)-meta\\.xml$/",
+          "group": "navigation"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "permStudio.openFile",
+          "when": "resourceFilename =~ /\\.(permissionset|profile|permissionsetgroup)-meta\\.xml$/"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "permStudio.openFile",
+          "when": "resourceFilename =~ /\\.(permissionset|profile|permissionsetgroup)-meta\\.xml$/"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "test": "node test/smoke.js",
+    "package": "node tools/package.js",
+    "package:vsce": "npx @vscode/vsce package --no-dependencies --out dist/"
+  }
+}

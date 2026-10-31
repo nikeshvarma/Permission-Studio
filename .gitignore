@@ -1,0 +1,6 @@
+# Root only: test/vsmock/node_modules and test/fixtures/fake-cli-root/node_modules are part of the tests.
+/node_modules/
+/dist/
+*.vsix
+.permstudio/
+.DS_Store
