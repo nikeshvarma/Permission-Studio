@@ -1780,7 +1780,7 @@ test('activation: commands and settings match package.json; status bar; version 
   assert.deepStrictEqual([...code.matchAll(/c\.get\('([\w.]+)'/g)].map(m => 'permStudio.' + m[1]).sort(), Object.keys(pkg.contributes.configuration.properties).sort());
   assert.ok(vscode.__statusItems[0].shown && vscode.__statusItems[0].command === 'permStudio.open');
   for (const f of ['media/app.js', 'media/app.css', 'media/tab-light.svg', 'media/tab-dark.svg', 'src/model/dependencies.js', pkg.icon]) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
-  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.0.5', 'nikeshvarma', 'Nikesh Varma']);
+  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.0.7', 'nikeshvarma', 'Nikesh Varma']);
   const png = fs.readFileSync(path.join(ROOT, pkg.icon));
   assert.deepStrictEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [256, 256], 'Marketplace icon is 256 px');
   for (const t of ['light', 'dark']) assert.match(fs.readFileSync(path.join(ROOT, 'media', 'tab-' + t + '.svg'), 'utf8'), /fill="#[0-9A-F]{6}"/i, 'tab icon has an explicit colour');
@@ -1812,6 +1812,29 @@ test('no dead functions in shipped code', () => {
     if ((all.match(new RegExp('\\b' + m[1] + '\\b', 'g')) || []).length <= 1) dead.push(f + ': ' + m[1]);
   }
   assert.deepStrictEqual(dead, []);
+});
+
+test('open source: MIT licence in the repository, the package and the README', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const lic = fs.readFileSync(path.join(ROOT, 'LICENSE'), 'utf8');
+  assert.strictEqual(pkg.license, 'MIT');
+  assert.ok(lic.startsWith('MIT License') && /Copyright \(c\) \d{4} Nikesh Varma/.test(lic) && lic.includes('WITHOUT WARRANTY OF ANY KIND'));
+  assert.ok(/## License\n\n\[MIT\]\(LICENSE\)/.test(fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8')));
+  assert.ok(fs.readFileSync(path.join(ROOT, 'CONTRIBUTING.md'), 'utf8').includes('licensed under the same terms'));
+  for (const f of ['.github/ISSUE_TEMPLATE/bug_report.md', '.github/ISSUE_TEMPLATE/feature_request.md', '.github/pull_request_template.md']) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
+});
+
+test('every image the README shows exists and ships in the extension', () => {
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  const imgs = [...readme.matchAll(/!\[([^\]]*)\]\(([^)]+)\)/g)];
+  assert.ok(imgs.length >= 8, imgs.length + ' images');
+  for (const [, alt, src] of imgs) {
+    assert.ok(alt.length > 20, 'descriptive alt text for ' + src);
+    assert.ok(fs.existsSync(path.join(ROOT, src)), src + ' exists');
+    assert.ok(src.startsWith('media/'), src + ' is under media/, which the .vsix includes');
+  }
+  const links = [...readme.matchAll(/\]\(([A-Z][\w/.-]+\.md)\)/g)].map(m => m[1]);
+  for (const l of links) assert.ok(fs.existsSync(path.join(ROOT, l)), l + ' exists');
 });
 
 test('no client or org-specific names anywhere in the repository', () => {

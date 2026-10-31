@@ -1,163 +1,128 @@
 # Permission Studio
 
-View and edit Salesforce permission sets, permission set groups and profiles for your project's default org without opening Setup.
+View and edit Salesforce permission sets, permission set groups and profiles without leaving VS Code. Permission Studio works on your project's default org and signs in the way the Salesforce CLI does, so there is nothing extra to set up.
 
 Developed by Nikesh Varma.
 
-## Requirements
+![Permission Studio showing a permission set's object settings, with colour-coded Read, Create, Edit, Delete, View All and Modify All tags](media/readme/overview.png)
+
+## Why
+
+Checking or changing access in Setup means a lot of clicking: open the permission set, open Object Settings, open the object, find the field, edit, save, then do it again for the next permission set. Answering "who can edit this field?" means checking every profile, permission set and group by hand.
+
+Permission Studio puts all of it on one screen in VS Code, next to your code. Every change is reviewed before it is saved, checked against what is in the org right now, and can be undone.
+
+## What it does
+
+**Edit like Setup, then review before anything is saved.** Object, field, record type and system permissions, Apex class, Visualforce page, flow and app access, custom permissions, tab settings and more are checkboxes, grouped the way Setup groups a permission set. Permission rules apply as you click: granting Edit also grants Read, and Modify All brings everything below it. Changes are highlighted and counted until you save.
+
+![An object's page with object permissions, record type assignments and field permissions, three changes waiting to be saved](media/readme/editing.png)
+
+**Every save is checked first.** Save opens a review of every change. On a production org you type the org's name to confirm.
+
+![The review dialog listing each change, with the production org name typed to confirm](media/readme/review.png)
+
+**Find out who has access.** Pick an object or a field and an access level. You get every active user who has it, and where each part comes from: object access and field access can come from different permission sets, profiles or groups. View All Data, Modify All Data and View All Fields are counted too.
+
+![Find access results: users who can edit Lead.Rating, with the permission sets, profiles and groups that grant it](media/readme/find-access.png)
+
+**Grant access in bulk.** **Grant field access** gives fields Read or Read and Edit across many permission sets and profiles at once. **Grant object access** does the same for object permissions and record types, including profile defaults. The review shows what changes on each item; access is only ever added.
+
+![Grant field access: two new custom fields selected, Read and Edit chosen, four permission sets and profiles picked](media/readme/grant-field-access.png)
+
+**Manage permission set groups.** Add or remove a group's member permission sets. Salesforce recalculates the group in the background; the status shows while it runs, and the group's access refreshes when it finishes.
+
+![A permission set group's members, one being added, with the recalculation in progress](media/readme/groups.png)
+
+**Every save in History.** Undo any save, or copy saves as a table for an ADO or Jira ticket, a design document or an Excel workbook.
+
+![Save history with two saves selected for copying as a summary](media/readme/history.png)
+
+**And more:**
+
+- **Assignments:** see who has a permission set or group, add or remove users, and set expiry dates.
+- **Profile-only settings:** page layout assignments, login hours and login IP ranges.
+- **Rename and clone** permission sets.
+- **Favorites:** star the items and objects you use most; they load first and open instantly.
+- **Open from a file:** right-click a permission set, profile or group file and choose **Open in Permission Studio**, or use **Permission Studio: Open Item…** in the Command Palette.
+- **Keep your source in step:** optionally update the project's `.permissionset-meta.xml` or `.profile-meta.xml` after a save, ready to commit.
+- **Easy to read:** colour-coded permissions, **High impact** tags on org-wide system permissions, and warnings on assignments that expire soon.
+- **Light or dark:** the screen follows your VS Code theme.
+
+![The same permission set in a light theme](media/readme/light-theme.png)
+
+## How it works
+
+![How Permission Studio reads from your org through the Salesforce CLI's own connection, and the six steps of every save: review, check, snapshot, write, verify, record](media/readme/how-it-works.png)
+
+**Reading.** Permission Studio loads the Salesforce CLI's own connection library and runs it inside VS Code. It uses the CLI's sign-in, token renewal, proxy settings and network route, without starting an `sf` process for each call. Screens open at once from what you saw last time and refresh from the org in the background; lists are only re-read when something in the org changed.
+
+**Saving.** Only the records that change are written. Before writing, every changed entry is read again, so an edit someone made in Setup since you loaded the screen is never silently overwritten. The values from just before the save are kept as a snapshot for undo. Afterwards everything is read back, and anything the org did not take is reported. Record types, page layouts, login settings and tabs go through the Metadata API; each deploy is preceded by a full copy of the item's access, and anything a deploy removed can be restored in one click.
+
+## Getting started
+
+You need:
 
 - VS Code 1.85 or later
 - Salesforce CLI v2 (`sf`)
-- A Salesforce project (a folder with `sfdx-project.json`) with a default org set: `sf config set target-org <alias>`
+- A Salesforce project (a folder with `sfdx-project.json`) with a default org: `sf config set target-org <alias>`
 
-Permission Studio never asks for credentials. It uses the session the Salesforce CLI already holds for the project's default org, keeps the access token in memory only, and writes nothing it reads from the org t## Starting up
+To install:
 
-Permission Studio starts in the background as soon as VS Code opens a Salesforce project. It finds the default org, connects, reads the lists and prefetches your favourites, so the screen is ready when you open it. While VS Code has focus it refreshes in the background every few minutes (`permStudio.autoRefresh.minutes`, 1 to 30, default 5). The lists are only re-read when something in the org changed, and what is on screen is refreshed without losing unsaved edits.
+1. Download the latest `.vsix` from the repository's **Releases** page.
+2. In VS Code, open the Extensions view, then **…** → **Install from VSIX…**, and pick the file. Or run `code --install-extension permission-studio-<version>.vsix`.
+3. Open your Salesforce project. Permission Studio starts loading in the background straight away.
+4. Click the shield in the status bar, or run **Permission Studio: Open** from the Command Palette.
 
-By default the list shows **Permission Sets** and **Profiles**. Add groups, or show only one kind, with `permStudio.lists.show`; leaving a list out also skips loading it.
-
-## Opening it
-
-Select the shield in the status bar (it shows the default org's alias), or run **Permission Studio: Open** from the Command Palette. The screen opens in the editor area and is laid out like a Lightning record page.
-
-```
-[shield] uat  Production                                             Updated 2 min ago  [Log] [Refresh]
-┌──────────────────────────────┬───────────────────────────────────────────────────────────────────┐
-│ Permission Sets│Groups│Profiles│ [shield] Permission Set                                  [Reload] │
-│ [Search this list          ] │          Sales Operations                                         │
-│ ▌Sales Operations            │ API Name          License     Active Users   Last Modified        │
-│  Report Builder   Managed    │ Sales_Operations  Salesforce  23             28 Oct 2026 by Admin │
-│  Lead Management             │ ───────────────────────────────────────────────────────────────── │
-│                              │ Object Settings 4 │ System Permissions 12                         │
-│                              │ Object Settings › Lead                                            │
-│                              │ ┌ Object Permissions ───────────────────────────────────────────┐ │
-│                              │ │ [x] Read  [x] Create  [x] Edit  [ ] Delete  [ ] View All ...  │ │
-│                              │ ┌ Field Permissions  5 of 7 readable ───────────────────────────┐ │
-│                              │ │ Field Label   API Name   Type      [-] Read Access [-] Edit   │ │
-│                              │ │ Industry      Industry   picklist     [x]            [x]      │ │
-│                              │ ├───────────────────────────────────────────────────────────────┤ │
-│                              │ │             2 unsaved changes      [Cancel]  [Save]           │ │
-└──────────────────────────────┴───────────────────────────────────────────────────────────────────┘
-```
-
-The org is always the project's default org. Change it the usual way (`sf config set target-org <alias>`, or the org picker in the Salesforce extensions) and the screen reloads for the new org on its own.
+The org is always the project's default org. Change it the usual way (`sf config set target-org <alias>`, or the org picker in the Salesforce extensions) and the screen switches to the new org on its own.
 
 ## What you can see and change
 
-The record page has a menu on the left, grouped the way Setup groups a permission set's overview.
-
 | Section | Permission sets | Profiles | Saved as |
 | --- | --- | --- | --- |
-| Assigned Apps, Apex Class, Visualforce Page, Flow and Connected App Access, Custom Permissions, Custom Metadata Types, Custom Settings | Yes | Yes | records |
+| Assigned Apps; Apex Class, Visualforce Page, Flow and Connected App Access; Custom Permissions; Custom Metadata Types; Custom Settings | Yes | Yes | records |
 | Object Settings: object and field permissions | Yes | Yes | records |
 | Object Settings: record type assignments | Yes | Yes | Metadata API deploy |
 | Object Settings: page layout assignments | — | Yes | Metadata API deploy |
 | Tab Settings | Yes | — | Metadata API deploy |
 | System Permissions | Yes | Yes | records |
 | Login Hours and Login IP Ranges | — | Yes | Metadata API deploy |
-| Assignments (who has it, expiry dates) | Yes, groups too | read-only list of users | records |
+| Assignments, with expiry dates | Yes, and groups | Read-only list of users | records |
+| Member permission sets | — | — | records (groups only) |
 
-Object permissions are colour-coded wherever they appear: Read blue, Create green, Edit amber, Delete red, View All purple, and Modify All as a solid red tag. Rows that grant nothing are shown quieter, so granted ones stand out. System permissions that reach across the whole org (Modify All Data, Manage Users, Author Apex and similar) carry a **High impact** tag, and assignments that expire within 30 days, or already have, are flagged.
+A group's access comes from its member permission sets, so on a group you change its members and assignments, and edit the permission sets themselves for anything else. Managed-package permission sets and groups are read-only apart from their assignments. Standard profiles are read-only.
 
-Permission set groups and managed-package permission sets are read-only, apart from their assignments. Standard profiles are read-only.
+## Safety and privacy
 
-## Editing
-
-Object permissions, field permissions, record type assignments, system permissions, Apex class access and custom permissions are all checkboxes, as in Setup.
-
-**Apex Classes** and **Custom Permissions** tabs load the first time you open them. They show what the item grants; search, or turn off "Show only enabled", to find something to add.
-
-**Object Settings** lists the objects the item grants access to. Turn on **Show all objects** to add access to a new one, and open an object to change its object permissions and the Read and Edit access of each field. The column headers select or clear Read or Edit for every field shown.
-
-**Record Type Assignments** appear on each object's page. Record types have no queryable object in Salesforce, so they are read with a Metadata API retrieve, which takes a few seconds the first time, and saved with a Metadata API deploy of only the changed entries. On a profile, choose the default with the Default column.
-
-Every such deploy is guarded. A full copy of the item's object, field, system, class and custom permission access is taken first and counted again afterwards. If the deploy removed anything, the review dialog says so and offers **Restore removed permissions**.
-
-**Permission rules are applied as you click.** Granting Edit also grants Read, granting Modify All also grants Read, Edit, Delete and View All, and revoking a permission also revokes what depends on it. Required fields are not listed, and read-only fields (formula, roll-up, auto number) cannot be given Edit.
-
-**Nothing is saved until you select Save.** Changes are highlighted and counted in the footer. **Save** opens a review of every change. On a production org you type the org's alias or username to confirm. Then:
-
-1. Every changed entry is read from the org again. If someone changed one of them in Setup since you loaded it, you choose between saving anyway and reloading.
-2. The values just read are stored as a snapshot in the project's `.permstudio/snapshots/` folder (add `.permstudio/` to `.gitignore`).
-3. Only the permission records that change are written to the org. Nothing else on the item is touched.
-4. The changed entries are read back. Anything the org did not take as asked is reported.
-5. The save is logged in `.permstudio/log/changes.jsonl`.
-
-The confirmation offers **Undo**, which stages the snapshot values for review like any other edit.
-
-Permission set groups, managed-package permission sets and standard profiles are shown read-only, with the reason.
-
-## Tools
-
-**Find access.** Pick an object, optionally a field, and an access level. The result lists every active user who has that access and where each half of it comes from (object access and field access can come from different permission sets), plus every permission set, profile and group that grants it, with View All Data, Modify All Data and View All Fields counted. Users who have only half of it are listed separately.
-
-**Grant field access.** Pick an object and fields (custom fields are shown first), choose Read or Read and Edit, and pick the permission sets and profiles to grant it to (Add favorites selects your starred ones). The review shows exactly what changes on each item; items that already have the access, or can't be edited, are skipped with the reason. Each item is then saved on its own, with its own snapshot and log entry. Object access is added where missing unless you turn that off, and read-only fields only get Read.
-
-**Open an item from anywhere.** Right-click a `.permissionset-meta.xml`, `.profile-meta.xml` or `.permissionsetgroup-meta.xml` file in the Explorer, or use the shield button in the editor title while one is open, and choose **Open in Permission Studio**. Or run **Permission Studio: Open Item…** from the Command Palette and type to filter, with favorites first. Encoded profile file names (`Custom%3A Sales`) and standard profiles (`Admin`) are matched to their Setup names, and a group opens even when the Groups list is switched off.
-
-**Permission set groups.** A group's **Permission Sets** section lists its member permission sets and any muting permission set. Add permission sets by name or untick members to remove them; the change goes through the usual review and is saved as records. Salesforce then recalculates the group in the background: the status shows **Updating** in the list and on the page, and the group's calculated access is re-read as soon as it reports **Updated**. Muting permission sets are shown but not edited.
-
-**Grant object access.** Pick an object, the object permissions to add (the same rules apply: Edit brings Read, Modify All brings everything below it), the record types to assign, and optionally the record type profiles should use as their default. Pick the permission sets and profiles, review, and save. Access is only ever added; nothing an item already has is taken away. Record type assignments are read and saved through the Metadata API with the usual safety copy, one item at a time.
-
-**History.** Every save made from this screen in the project, newest first, with what changed. **Copy** puts a save on the clipboard as a Markdown table (Area, Entry, Before, After) for an ADO or Jira ticket, a design document or a wiki. Tick several saves to copy them as one summary, or choose **Copy for Excel** for tab-separated cells that paste straight into a workbook. The save confirmation has **Copy summary** too. **Undo…** compares the org's current values with the values from just before that save and stages the difference for review, like any other edit.
-
-**Edit, Clone.** Rename a permission set, or clone one. A clone copies object, field, system, class, page, custom permission, flow, app, connected app, custom metadata and custom setting access, record type assignments and tab settings; assignments are not copied.
-
-**Local file.** When the item has a source file in the project (`force-app/.../permissionsets/*.permissionset-meta.xml` or `profiles/*.profile-meta.xml`), the review dialog offers to update it after the save, so the change can be committed. Only the changed entries are touched: existing ones are replaced in place, new ones are inserted where Salesforce would put them, and revokes are written as explicit `false`. Set `permStudio.localFile.update` to `always` or `never` to stop being asked.
-
-## Favorites
-
-Star the permission sets, groups and profiles you work with most, and the objects you open most. Favorites sit at the top of the list and of Object Settings. On a fresh start they are loaded before everything else, and their details and the favorite objects of whatever you open are fetched in the background, so they open instantly.
-
-Stars are stored in two settings, so a team can share them through workspace settings:
-
-```json
-"permStudio.favorites.items": ["permissionSet:Sales_Operations", "profile:Custom: Sales"],
-"permStudio.favorites.objects": ["Lead", "Opportunity", "Invoice__c"]
-```
-
-## Speed
-
-Everything you have viewed is cached per org in the extension's own storage, never in the project. The screen, an item or an object opens from the cache straight away and refreshes from the org in the background, with "Refreshing…" shown while it does. **Refresh** re-reads everything, including the object and field definitions, which are otherwise reused for a day. **Permission Studio: Clear Cache** empties the cache, and `permStudio.cache.enabled` switches it off.
-
-The default org is read straight from the CLI's config files, so no `sf` process is needed before the screen appears. Independent queries run in parallel.
-
-n this.
-
-## Speed
-
-- **The CLI's own connection library** inside VS Code: the CLI's session and network route, no `sf` process per call, and none at start-up once its location is known.
-- **Direct REST calls**, when used, go through VS Code's proxy settings and the operating system's certificate store.
-- **Compressed responses:** responses from Salesforce are gzip-compressed.
-- **One round trip per item:** opening an item is one Composite request carrying all its queries. System permissions come in one query instead of four.
-- **Background refresh:** the lists are re-read only when the org's change stamp moves.
-
-## Connection
-
-Permission Studio connects the way the Salesforce CLI does, using the CLI's own connection library (`@salesforce/core`) loaded from the CLI's install folder. Requests use the CLI's stored session, its automatic renewal, its proxy handling and its network route, without starting an `sf` process per call.
-
-This matters in orgs that lock sessions to the IP address they started from. There, a token the CLI renewed can be refused when another program sends it by a different route.
-
-The library is found on disk, in the CLI's own install and self-update folders and next to `sf` on your PATH, without starting `sf`. Only if that fails is the CLI asked, once. If your CLI lives somewhere unusual, set `permStudio.sf.installPath` to its folder.
-
-If the library can't be loaded, Permission Studio calls the REST API directly with the CLI's session. If that is refused or blocked, it runs `sf` for each call; a **CLI connection** badge shows when this happens. **Permission Studio: Show Log** gives the reason for every switch, including Salesforce's error code. If the CLI itself can no longer renew the session, the screen tells you to log in again with `sf org login web --alias <alias>`. Tokens are never logged.
+- **No credentials:** Permission Studio never asks for a password or stores a token. It uses the session the Salesforce CLI already holds, and tokens never appear in the log.
+- **Cached screens:** they are kept in the extension's own storage, one folder per org, never in your project. **Permission Studio: Clear Cache** empties it.
+- **Snapshots and the change log:** they are written to `.permstudio/` in the project, for History and undo. Add `.permstudio/` to your `.gitignore`.
+- **Production:** saving to a production org always asks you to type the org's name. Whether an org is production is read from the org itself, never from its alias.
 
 ## Settings
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `permStudio.sf.path` | `sf` | Path to the Salesforce CLI |
-| `permStudio.sf.installPath` | empty | Folder of the CLI install that contains `node_modules/@salesforce/core`; empty finds it automatically |
-| `permStudio.project.path` | empty | Project folder to use; empty uses the workspace folder with `sfdx-project.json` |
-| `permStudio.apiVersion` | empty | API version for queries; empty uses what the CLI reports |
-| `permStudio.connection.mode` | `auto` | `auto` (library, then REST, then sf processes), `library`, `rest` or `cli` |
-| `permStudio.cache.enabled` | `true` | Open screens from the cache and refresh in the background |
-| `permStudio.favorites.items` | `[]` | Favorite permission sets, groups and profiles |
-| `permStudio.favorites.objects` | `[]` | Favorite objects |
-| `permStudio.localFile.update` | `ask` | Update the project's source file after a save: `ask`, `always` or `never` |
 | `permStudio.lists.show` | `["permissionSet", "profile"]` | Which lists to show and load: `permissionSet`, `group`, `profile` |
 | `permStudio.autoRefresh.enabled` | `true` | Refresh in the background while VS Code has focus |
 | `permStudio.autoRefresh.minutes` | `5` | Minutes between background refreshes, 1 to 30 |
+| `permStudio.favorites.items` | `[]` | Favorite permission sets, groups and profiles, e.g. `"permissionSet:Sales_Operations"` |
+| `permStudio.favorites.objects` | `[]` | Favorite objects, e.g. `"Lead"` |
+| `permStudio.localFile.update` | `ask` | Update the project's source file after a save: `ask`, `always` or `never` |
+| `permStudio.cache.enabled` | `true` | Open screens from the cache and refresh in the background |
+| `permStudio.sf.path` | `sf` | Path to the Salesforce CLI |
+| `permStudio.sf.installPath` | empty | The CLI's install folder (contains `node_modules/@salesforce/core`); empty finds it automatically |
+| `permStudio.project.path` | empty | Project folder to use; empty uses the workspace folder with `sfdx-project.json` |
+| `permStudio.apiVersion` | empty | API version for queries; empty uses what the CLI reports |
+| `permStudio.connection.mode` | `auto` | `auto` (CLI library, then REST, then `sf` processes), `library`, `rest` or `cli` |
+
+## Troubleshooting
+
+**Permission Studio: Show Log** records each connection step and the reason for any fallback, including Salesforce's own error code. A **CLI connection** badge in the top bar means calls are going through `sf` processes, which is slower. If that happens, the log says why. Setting `permStudio.sf.installPath` to the CLI's folder usually brings back the faster connection. If the CLI can no longer renew the session, log in again with `sf org login web --alias <alias>`.
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to report an issue, set up the code and send a change.
 
 ## Development
 
@@ -168,4 +133,8 @@ npm test             the test suite (a stand-in Salesforce CLI and a small in-me
 npm run package      builds dist/permission-studio-<version>.vsix with only Node.js
 ```
 
-[RELEASING.md](RELEASING.md) covers building, GitHub releases and, later, the Marketplace. [CHANGELOG.md](CHANGELOG.md) lists what changed in each version.
+[RELEASING.md](RELEASING.md) covers building, GitHub releases and, later, the Marketplace. [CHANGELOG.md](CHANGELOG.md) lists what changed in each version. Design notes are in [docs/DESIGN.md](docs/DESIGN.md).
+
+## License
+
+[MIT](LICENSE). Free to use, change and share, including in commercial work, as long as the copyright notice is kept.

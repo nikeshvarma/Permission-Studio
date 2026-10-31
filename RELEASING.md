@@ -37,7 +37,7 @@ The test suite drives a stand-in Salesforce CLI through a shell script, so it ru
 
 ## 3. Before the first push
 
-**Choose a licence.** `package.json` currently says `"license": "UNLICENSED"`, which means all rights reserved: people can see the code but have no right to use or change it. For an open repository, pick one at <https://choosealicense.com> (MIT is the common choice for VS Code extensions), save its text as `LICENSE` in the project folder, and set `"license": "MIT"` (or your choice) in `package.json`. Since the tool was built alongside client work, check that publishing it publicly fits your employer's policy. The repository contains no client or org names; a test checks every file for them.
+**Licence.** The project is released under the MIT License (`LICENSE`, and `"license": "MIT"` in `package.json`). A test checks every file for client or org names.
 
 **Add your repository's address** to `package.json`, next to `"publisher"`, replacing `<your-github-user>`:
 
@@ -116,7 +116,7 @@ When you're ready to publish on the Marketplace:
      run: npx @vscode/vsce publish --packagePath dist/*.vsix
    ```
 
-The Marketplace needs the `LICENSE` file and `repository` field from step 3. The listing shows `README.md` as the page and `CHANGELOG.md` under **Changelog**. Screenshots in the README make the listing much clearer; add them under `media/` and link them from the README.
+The Marketplace needs the `LICENSE` file (already there) and the `repository` field from step 3. The listing shows `README.md` as the page and `CHANGELOG.md` under **Changelog**. Screenshots in the README make the listing much clearer; add them under `media/` and link them from the README.
 
 ## Project layout
 

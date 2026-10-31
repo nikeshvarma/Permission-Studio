@@ -2,6 +2,17 @@
 
 All notable changes to Permission Studio. Versions follow `major.minor.patch`; every delivered change raises the patch number.
 
+## 2.0.7
+
+- Released under the MIT License.
+- Contributing guide, and templates for issues and pull requests.
+- No change to how the extension works.
+
+## 2.0.6
+
+- README rewritten with screenshots and a how-it-works diagram. The images ship in the extension, so they show on its page in VS Code as well as on GitHub.
+- No change to how the extension works.
+
 ## 2.0.5
 
 - Source release: changelog, a packaging script that builds the `.vsix` on any OS with only Node.js (`npm run package`), and GitHub Actions that test every push and attach the `.vsix` to a GitHub Release for each version tag.
