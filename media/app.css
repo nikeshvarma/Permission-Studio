@@ -69,7 +69,7 @@ button:focus-visible, input:focus-visible, tr:focus-visible { outline: 1px solid
 .kind.on { background: var(--brand); color: var(--brand-fg); }
 .kind.on .count { color: inherit; opacity: .8; }
 .split-list { overflow-y: auto; overflow-x: hidden; flex: 1; }
-.split-item { display: block; width: 100%; text-align: left; background: none; color: var(--vscode-foreground); border: 0; border-bottom: 1px solid var(--line); padding: 8px 14px; cursor: pointer; font: inherit; border-left: 3px solid transparent; }
+.split-item { display: flex; align-items: center; gap: 8px; box-sizing: border-box; width: 100%; text-align: left; background: none; color: var(--vscode-foreground); border: 0; border-bottom: 1px solid var(--line); padding: 8px 14px; cursor: pointer; font: inherit; border-left: 3px solid transparent; }
 .split-item:hover { background: var(--vscode-list-hoverBackground); }
 .split-item.on { background: var(--vscode-list-inactiveSelectionBackground); border-left-color: var(--brand); }
 .si-title { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -121,13 +121,11 @@ button:focus-visible, input:focus-visible, tr:focus-visible { outline: 1px solid
 .ph-desc { margin: 10px 0 0; max-width: 90ch; }
 
 /* tabs and cards */
-.tabset { padding: 0 24px; }
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-top: 8px; }
 .tab { background: none; color: var(--vscode-foreground); border: 0; border-bottom: 3px solid transparent; padding: 10px 12px 8px; cursor: pointer; font: inherit; }
 .tab:hover { border-bottom-color: var(--line); }
 .tab.on { border-bottom-color: var(--brand); font-weight: 600; }
 .tab-body { padding: 16px 24px 0; display: flex; flex-direction: column; gap: 16px; }
-.tabset .tab-body { padding: 16px 0 0; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 2px 2px rgba(0,0,0,.06); }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
 .card-head h2 { font-size: 1.1em; }
@@ -141,7 +139,7 @@ button:focus-visible, input:focus-visible, tr:focus-visible { outline: 1px solid
 /* datatable */
 .datatable { border-collapse: collapse; width: 100%; }
 .datatable th, .datatable td { text-align: left; padding: 6px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-.datatable thead th { position: sticky; top: 0; background: var(--surface); font-weight: 600; z-index: 1; color: var(--muted); }
+.datatable thead th { position: sticky; top: 0; background: var(--surface); font-weight: 600; z-index: 2; color: var(--muted); box-shadow: 0 1px 0 var(--line); }
 .datatable th.c, .datatable td.c { text-align: center; }
 .datatable .narrow { width: 1%; }
 .datatable tbody tr:hover { background: var(--vscode-list-hoverBackground); }
@@ -215,7 +213,6 @@ ul.review ul li { color: var(--muted); }
 /* favourites, groups in the list, radios, paging */
 .flat { margin: 0; }
 .mt { margin-top: 8px; }
-.split-item { display: flex; align-items: center; gap: 8px; box-sizing: border-box; }
 .si-text { flex: 1; min-width: 0; }
 .si-group { padding: 8px 14px 4px; font-size: 0.85em; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--line); background: var(--vscode-sideBar-background, var(--surface)); position: sticky; top: 0; z-index: 1; }
 .star { background: none; border: 0; padding: 3px; border-radius: var(--radius); cursor: pointer; color: var(--muted); display: inline-flex; opacity: .45; }
@@ -281,8 +278,6 @@ details summary { cursor: pointer; color: var(--vscode-textLink-foreground); }
 /* tool pages */
 .tool .page-header { display: flex; flex-direction: column; gap: 6px; }
 .tool-title h1 { font-size: 1.4em; }
-.summary-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.summary-line .btn-group { margin-left: auto; }
 td .pill { margin-left: 6px; }
 
 /* ---------- 2.0.3: colour coding for reading ---------- */
@@ -329,7 +324,6 @@ td .pill { margin-left: 6px; }
 .nav-item .count.has { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
 
 .toast-actions { display: flex; gap: 14px; }
-.row-actions { display: flex; gap: 6px; }
 .tool .page-header > .link { align-self: flex-start; }
 
 /* Required and system fields: listed as in Setup, but their access can't be changed. */
@@ -342,9 +336,8 @@ td .pill { margin-left: 6px; }
 .cur { color: var(--muted); font-size: 12px; }
 .err { color: var(--vscode-errorForeground, var(--p-modifyall)); }
 
-/* Column headers stay in view while long tables scroll. */
+/* Column headers (sticky above) stay in view while long tables scroll: cards clip instead of scrolling. */
 .card { overflow: clip; }
-.datatable thead th { position: sticky; top: 0; z-index: 2; background: var(--surface); box-shadow: 0 1px 0 var(--line); }
 
 /* review: impact first, then one line per change */
 .modal.wide { width: min(980px, 94vw); max-width: none; }

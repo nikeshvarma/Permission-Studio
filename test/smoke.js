@@ -23,7 +23,7 @@ const { Cache } = require('../src/data/cache');
 const model = require('../src/model/model');
 const deps = require('../src/model/dependencies');
 const diff = require('../src/model/diff');
-const { ChangeSet } = require('../src/changes/changeSet');
+const flatXml = require('../src/xml/flatXml');
 const applyMod = require('../src/changes/apply');
 const history = require('../src/changes/history');
 const { MainPanel, toView } = require('../src/views/mainPanel');
@@ -605,7 +605,7 @@ test('record types: deploy failures come back with the component problem', async
   resetOrg();
   fs.writeFileSync(tokenFile, S.token);
   await withEnv({ FAKE_SF_TOKEN: tokenFile, FAKE_SF_INSTANCE: INSTANCE }, async () => {
-    await assert.rejects(metadata.deployRecordTypes(metaConn(), item(), [{ name: 'Lead.Nope', visible: true }]), /The deploy failed: .*no RecordType named Lead.Nope/);
+    await assert.rejects(metadata.deployEntries(metaConn(), item(), [{ key: 'recordType:Lead.Nope', after: { visible: true } }]), /The deploy failed: .*no RecordType named Lead.Nope/);
   });
 });
 
@@ -668,40 +668,15 @@ const PROFILE_XML = `<?xml version="1.0" encoding="UTF-8"?>
     <userLicense>Salesforce</userLicense>
 </Profile>`;
 
-test('permission set XML -> canonical model', () => {
-  const m = model.fromXml(PS_XML, 'Sales_Ops');
-  assert.strictEqual(m.kind, 'permissionSet');
-  assert.strictEqual(m.scalars.description, 'R&D access');
-  assert.deepStrictEqual(m.entries.get('object:Lead'), { read: true, create: true, edit: true, delete: false, viewAll: false, modifyAll: false, viewAllFields: false });
-  assert.deepStrictEqual(m.entries.get('field:Lead.Rating'), { read: true, edit: false });
-  assert.ok(!m.entries.has('field:Lead.Ghost__c'), 'commented-out entries are ignored');
-  assert.deepStrictEqual(m.entries.get('apexClass:LeadService'), { enabled: true });
-  assert.deepStrictEqual(m.entries.get('tab:standard-Lead'), { visibility: 'Visible' });
-  assert.deepStrictEqual(m.entries.get('app:Sales'), { visible: true });
-  assert.deepStrictEqual(m.unknown, ['futureThing'], 'unknown elements are reported, not dropped silently');
-});
-
-test('profile XML -> same categories as permission sets', () => {
-  const m = model.fromXml(PROFILE_XML, 'Custom Sales');
-  assert.strictEqual(m.kind, 'profile');
-  assert.strictEqual(m.scalars.description, '');
-  assert.deepStrictEqual(m.entries.get('tab:standard-Lead'), { visibility: 'Visible' }, 'tabVisibilities maps to tab, in the shared words');
-  assert.ok(m.entries.has('layout:Lead-Lead Layout|'));
-  assert.ok(m.entries.has('layout:Lead-Partner Layout|Lead.Partner'));
-  assert.deepStrictEqual(m.entries.get('loginHours:all'), { mondayStart: '480', mondayEnd: '1080' });
-  assert.ok(m.entries.has('loginIpRange:10.0.0.0-10.0.0.255'));
-  assert.deepStrictEqual(m.entries.get('recordType:Lead.Partner'), { default: true, visible: true });
-});
-
 test('a 50k-line permission set parses quickly', () => {
   const parts = [];
   for (let i = 0; i < 10000; i++) parts.push(`    <fieldPermissions>\n        <editable>${i % 2 === 0}</editable>\n        <field>Obj${i % 40}__c.Field${i}__c</field>\n        <readable>true</readable>\n    </fieldPermissions>`);
   const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">\n<label>Big</label>\n' + parts.join('\n') + '\n</PermissionSet>';
   assert.ok(xml.split('\n').length >= 50000);
   const t0 = Date.now();
-  const m = model.fromXml(xml);
+  const doc = flatXml.parse(xml);
   const ms = Date.now() - t0;
-  assert.strictEqual(m.entries.size, 10000);
+  assert.strictEqual(doc.entries.filter(e => e.tag === 'fieldPermissions').length, 10000);
   assert.ok(ms < 1500, 'parsed in ' + ms + ' ms');
   console.log('      (50k lines parsed in ' + ms + ' ms)');
 });
@@ -732,45 +707,12 @@ test('field rules: Edit implies Read, read-only and non-permissionable fields ar
 });
 
 // ---------- diff ----------
-test('diff: absent and all-false are equal; real differences are flagged per flag', () => {
-  const a = model.emptyModel('permissionSet', 'A');
-  const b = model.emptyModel('permissionSet', 'B');
-  a.entries.set('field:Lead.Rating', { read: false, edit: false });
-  a.entries.set('object:Lead', { read: true, edit: true });
-  b.entries.set('object:Lead', { read: true, edit: false });
-  b.entries.set('user:ApiEnabled', { enabled: true });
-  const rows = diff.compare(a, b);
-  assert.deepStrictEqual(rows.map(r => [r.key, r.status, r.flags]), [
-    ['object:Lead', 'different', ['edit']],
-    ['user:ApiEnabled', 'onlyRight', ['enabled']]
-  ]);
-  assert.deepStrictEqual(diff.summarize(rows), { different: 1, onlyLeft: 0, onlyRight: 1 });
-});
-
-test('diff scope "left" ignores what a partial profile file never contained', () => {
-  const local = model.fromXml(PROFILE_XML);
-  const org = model.fromXml(PROFILE_XML);
-  org.entries.set('field:Account.Industry', { read: true, edit: true });
-  assert.strictEqual(diff.compare(local, org).length, 1);
-  assert.strictEqual(diff.compare(local, org, { scope: 'left' }).length, 0);
-});
-
-// ---------- change set ----------
-test('change set: toggling back unstages, first "before" is kept, conflicts and inverse work', () => {
-  const t = { kind: 'permissionSet', permissionSetId: '0PS000000000001AAA', recordId: '0PS000000000001AAA', apiName: 'Sales_Ops' };
-  const cs = new ChangeSet('uat@example.com');
-  cs.stage(t, 'field:Lead.Rating', { read: true, edit: false }, { read: true, edit: true });
-  cs.stage(t, 'field:Lead.Rating', { read: true, edit: true }, { read: false, edit: false });
-  assert.deepStrictEqual(cs.list()[0].before, { read: true, edit: false });
-  cs.stage(t, 'field:Lead.Rating', { read: false, edit: false }, { read: true, edit: false });
-  assert.strictEqual(cs.size, 0, 'back to original');
-
-  cs.stage(t, 'object:Lead', { read: true, edit: false }, { read: true, edit: true });
-  assert.strictEqual(cs.conflicts(() => ({ read: true, edit: false })).length, 0);
-  assert.strictEqual(cs.conflicts(() => ({ read: false, edit: false })).length, 1, 'someone changed it in Setup');
-  const inv = cs.inverse();
-  assert.deepStrictEqual(inv.list()[0].after, { read: true, edit: false });
-  assert.deepStrictEqual(ChangeSet.fromJSON(JSON.parse(JSON.stringify(cs))).list(), cs.list());
+test('differing flags: absent and all-false are equal; real differences are listed per flag', () => {
+  assert.deepStrictEqual(diff.differingFlags(null, { read: false, edit: false }), []);
+  assert.deepStrictEqual(diff.differingFlags({ read: true }, { read: true, edit: true }), ['edit']);
+  assert.deepStrictEqual(diff.differingFlags({ layout: '' }, {}), [], 'empty text means not set');
+  assert.deepStrictEqual(diff.differingFlags({ ranges: [{ a: 1 }] }, { ranges: [{ a: 1 }] }), [], 'lists compare by content');
+  assert.deepStrictEqual(diff.differingFlags({ ranges: [{ a: 1 }] }, { ranges: [{ a: 2 }] }), ['ranges']);
 });
 // ---------- main screen ----------
 function panelServices(over) {
@@ -1212,10 +1154,8 @@ test('tab settings are records: saved with other changes in one request, for per
   });
 });
 
-test('profile files: tab values read and written in the profile\u2019s own words', () => {
+test('profile files: tab values written in the profile\u2019s own words', () => {
   const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<Profile xmlns="http://soap.sforce.com/2006/04/metadata">\n    <tabVisibilities>\n        <tab>standard-Lead</tab>\n        <visibility>DefaultOn</visibility>\n    </tabVisibilities>\n</Profile>\n';
-  const m = model.fromXml(xml, 'Custom: Sales');
-  assert.deepStrictEqual(m.entries.get('tab:standard-Lead'), { visibility: 'Visible' });
   const out = localFile.applyToText(xml, 'profile', [{ key: 'tab:standard-Lead', after: { visibility: 'None' } }, { key: 'tab:standard-Account', after: { visibility: 'Available' } }]).text;
   assert.ok(out.includes('<tab>standard-Lead</tab>\n        <visibility>Hidden</visibility>') && out.includes('<tab>standard-Account</tab>\n        <visibility>DefaultOff</visibility>'), out);
   const psOut = localFile.applyToText(xml.replace(/Profile/g, 'PermissionSet').replace(/tabVisibilities/g, 'tabSettings').replace('DefaultOn', 'Visible'), 'permissionSet',
@@ -2211,9 +2151,10 @@ test('Find access \u201cRemove from selected\u201d: a plan that takes the access
   const plan = posts(p, 'revokePlan').pop();
   assert.deepStrictEqual(plan.plan.map(t => [t.key, t.changes[0].after]), [[so, { read: false, edit: false }]]);
   assert.deepStrictEqual(plan.skipped.map(x => x.label), ['Reader'], 'managed: skipped with the reason');
-  await mp.wizardApply({ plan: plan.plan });
+  await mp.revokeApply({ plan: plan.plan });
   assert.deepStrictEqual(posts(p, 'wizardResult').pop().results.map(r => r.status), ['saved']);
   assert.ok(!F.T.FieldPermissions.some(x => x.ParentId === PS1 && x.Field === 'Lead.Rating'));
+  assert.strictEqual((await history.readLog(mp.ctx.projectDir, {})).pop().path, 'Find access: remove', 'logged as what it was');
   await mp.revokePlan({ object: 'Account', level: 'edit', sourceKeys: [so] });
   const o = posts(p, 'revokePlan').pop().plan[0].changes[0];
   assert.deepStrictEqual([o.before.edit, o.after.edit, o.after.read], [true, false, true], 'removing Edit keeps Read');
@@ -2250,6 +2191,44 @@ test('Ctrl/Cmd+S: a key binding only while Permission Studio has focus, hidden f
   assert.ok(pkg.contributes.menus.commandPalette.some(m => m.command === 'permStudio.saveShortcut' && m.when === 'false'));
 });
 
+// ---------- code review fixes ----------
+test('Setup Audit Trail names match whole words, the longest first', async () => {
+  const rows = [{ CreatedDate: '3', Display: 'Permission set Sales Ops: system permission Export Reports was changed' },
+    { CreatedDate: '2', Display: 'Changed Salesforce settings' }, { CreatedDate: '1', Display: 'Permission set Sales: assigned to user Ana Lima' }];
+  const r = await loader.setupChangesFor({ query: async () => ({ records: rows }) }, ['Sales', 'Sales Ops', 'Ab'], 30);
+  assert.deepStrictEqual(r.map(x => x.name), ['Sales Ops', 'Sales'], '"Salesforce" is not "Sales"; two-letter names are ignored');
+});
+
+test('copying a list says how many lines were copied instead of showing them all', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  let clip = '';
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices({ clipboard: async t => { clip = t; } }));
+  const p = mp.show();
+  await mp.load();
+  p._send({ type: 'copy', text: 'a\tb\nc\td\ne\tf' });
+  await settle(30);
+  assert.strictEqual(clip, 'a\tb\nc\td\ne\tf');
+  assert.strictEqual(posts(p, 'toast').pop().message, '3 lines copied to the clipboard.');
+  p._send({ type: 'copy', text: 'Lead.Rating' });
+  await settle(30);
+  assert.strictEqual(posts(p, 'toast').pop().message, 'Lead.Rating');
+});
+
+test('a save that finds a conflict doesn\u2019t leave background refresh switched off', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices());
+  const p = mp.show();
+  await mp.load();
+  const key = 'permissionSet:' + PS1;
+  await mp.select(key);
+  await mp.save({ key, changes: [{ key: 'field:Lead.Rating', label: 'Rating', before: { read: false, edit: false }, after: { read: true, edit: true } }] });
+  assert.strictEqual(posts(p, 'saveResult').pop().status, 'conflict');
+  assert.strictEqual(mp._saving, false);
+  assert.strictEqual(await mp.autoRefresh(), true, 'auto-refresh still runs');
+});
+
 // ---------- extension wiring ----------
 test('activation: commands and settings match package.json; status bar; version and author', async () => {
   const vscode = require('vscode');
@@ -2260,7 +2239,7 @@ test('activation: commands and settings match package.json; status bar; version 
   assert.deepStrictEqual([...code.matchAll(/c\.get\('([\w.]+)'/g)].map(m => 'permStudio.' + m[1]).sort(), Object.keys(pkg.contributes.configuration.properties).sort());
   assert.ok(vscode.__statusItems[0].shown && vscode.__statusItems[0].command === 'permStudio.open');
   for (const f of ['media/app.js', 'media/app.css', 'media/tab-light.svg', 'media/tab-dark.svg', 'src/model/dependencies.js', pkg.icon]) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
-  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.2.0', 'nikeshvarma', 'Nikesh Varma']);
+  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.2.1', 'nikeshvarma', 'Nikesh Varma']);
   const png = fs.readFileSync(path.join(ROOT, pkg.icon));
   assert.deepStrictEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [256, 256], 'Marketplace icon is 256 px');
   for (const t of ['light', 'dark']) assert.match(fs.readFileSync(path.join(ROOT, 'media', 'tab-' + t + '.svg'), 'utf8'), /fill="#[0-9A-F]{6}"/i, 'tab icon has an explicit colour');

@@ -79,6 +79,7 @@ class MainPanel {
       case 'wizardFields': await this.wizardFields(m.object); break;
       case 'wizardPlan': await this.wizardPlan(m); break;
       case 'wizardApply': await this.wizardApply(m); break;
+      case 'revokeApply': await this.revokeApply(m); break;
       case 'clonePs': await this.clonePs(m); break;
       case 'copyProfile': await this.copyProfile(m); break;
       case 'editPs': await this.editPs(m); break;
@@ -89,7 +90,13 @@ class MainPanel {
       case 'revokePlan': await this.revokePlan(m); break;
       case 'historySetup': await this.historySetup(m); break;
       case 'persist': await this.persist(m.name, m.value); break;
-      case 'copy': await this.s.clipboard(String(m.text || '')); this.post({ type: 'toast', variant: 'success', title: 'Copied', message: String(m.text || '') }); break;
+      case 'copy': {
+        const text = String(m.text || '');
+        await this.s.clipboard(text);
+        const lines = text.split('\n').length;
+        this.post({ type: 'toast', variant: 'success', title: 'Copied', message: lines > 1 ? lines + ' lines copied to the clipboard.' : text.length > 80 ? text.slice(0, 77) + '…' : text });
+        break;
+      }
       case 'lookupOptions': await this.lookupOptions(); break;
       case 'lookupPermission': await this.lookupPermission(m); break;
       case 'checkAssignees': await this.checkAssignees(m); break;
@@ -472,8 +479,9 @@ class MainPanel {
     for (const [k, i] of this.items) {
       if (i.kind === 'permissionSet' && i.permissionSetId) byParent.set(i.permissionSetId, k);
     }
+    const profiles = new Map([...this.items.entries()].filter(([, i]) => i.kind === 'profile').map(([k, i]) => [i.recordId, [k, i]]));
     for (const [psId, profileId] of profilePs) {
-      const hit = [...this.items.entries()].find(([, i]) => i.kind === 'profile' && i.recordId === profileId);
+      const hit = profiles.get(profileId);
       if (hit) { byParent.set(psId, hit[0]); hit[1].permissionSetId = hit[1].permissionSetId || psId; }
     }
     return { byParent, counts };
@@ -728,25 +736,34 @@ class MainPanel {
     }
   }
 
-  async wizardApply(m) {
-    const conn = await this._conn().catch(e => { this.post({ type: 'wizardResult', error: String(e.message || e) }); return null; });
+  /**
+   * Saves a bulk plan (one change list per item) item by item, each with its own
+   * snapshot and change-log entry, reporting progress as it goes.
+   */
+  async _applyPlan(m, progressType, resultType, path) {
+    const conn = await this._conn().catch(e => { this.post({ type: resultType, error: String(e.message || e) }); return null; });
     if (!conn) return;
-    if (conn.isProduction && !this._confirmed(m.confirm)) return this.post({ type: 'wizardResult', error: 'Type the org’s alias or username to confirm saving to production.' });
+    if (conn.isProduction && !this._confirmed(m.confirm)) return this.post({ type: resultType, error: 'Type the org’s alias or username to confirm saving to production.' });
     const results = [];
     this._saving = true;
-    for (let i = 0; i < (m.plan || []).length; i++) {
-      const t = m.plan[i];
-      const item = this.items.get(t.key);
-      this.post({ type: 'wizardProgress', done: i, total: m.plan.length, label: t.label });
-      if (!item) { results.push({ key: t.key, label: t.label, status: 'error', message: 'No longer in the list.' }); continue; }
-      const r = await this._applyAndLog(conn, item, t.changes.map(c => ({ key: c.key, before: c.before, after: c.after, label: c.label })), { path: 'field access wizard' });
-      results.push(Object.assign({ key: t.key, label: t.label }, r));
-      this.cache.set('saved:' + t.key, Date.now());
-      this.cache.delete('detail:' + t.key);
-    }
-    this._saving = false;
-    this.post({ type: 'wizardResult', results });
+    try {
+      for (let i = 0; i < (m.plan || []).length; i++) {
+        const t = m.plan[i];
+        const item = this.items.get(t.key);
+        this.post({ type: progressType, done: i, total: m.plan.length, label: t.label });
+        if (!item) { results.push({ key: t.key, label: t.label, status: 'error', message: 'No longer in the list.' }); continue; }
+        const r = await this._applyAndLog(conn, item, t.changes.map(c => ({ key: c.key, before: c.before, after: c.after, label: c.label })), { path });
+        results.push(Object.assign({ key: t.key, label: t.label }, r));
+        this.cache.set('saved:' + t.key, Date.now());
+        this.cache.delete('detail:' + t.key);
+      }
+    } finally { this._saving = false; }
+    this.post({ type: resultType, results });
   }
+
+  wizardApply(m) { return this._applyPlan(m, 'wizardProgress', 'wizardResult', 'field access wizard'); }
+  /** Find access "Remove from selected". */
+  revokeApply(m) { return this._applyPlan(m, 'wizardProgress', 'wizardResult', 'Find access: remove'); }
 
   // ---------- object access wizard ----------
 
@@ -817,26 +834,7 @@ class MainPanel {
     }
   }
 
-  async objWizardApply(m) {
-    const conn = await this._conn().catch(e => { this.post({ type: 'objWizardResult', error: String(e.message || e) }); return null; });
-    if (!conn) return;
-    if (conn.isProduction && !this._confirmed(m.confirm)) return this.post({ type: 'objWizardResult', error: 'Type the org’s alias or username to confirm saving to production.' });
-    const results = [];
-    this._saving = true;
-    try {
-      for (let i = 0; i < (m.plan || []).length; i++) {
-        const t = m.plan[i];
-        const item = this.items.get(t.key);
-        this.post({ type: 'objWizardProgress', done: i, total: m.plan.length, label: t.label });
-        if (!item) { results.push({ key: t.key, label: t.label, status: 'error', message: 'No longer in the list.' }); continue; }
-        const r = await this._applyAndLog(conn, item, t.changes.map(c => ({ key: c.key, before: c.before, after: c.after, label: c.label })), { path: 'object access wizard' });
-        results.push(Object.assign({ key: t.key, label: t.label }, r));
-        this.cache.set('saved:' + t.key, Date.now());
-        this.cache.delete('detail:' + t.key);
-      }
-    } finally { this._saving = false; }
-    this.post({ type: 'objWizardResult', results });
-  }
+  objWizardApply(m) { return this._applyPlan(m, 'objWizardProgress', 'objWizardResult', 'object access wizard'); }
 
   _confirmed(typed) {
     const t = String(typed || '').trim();
@@ -1145,9 +1143,11 @@ class MainPanel {
         result: 'failed', error: String(e.message || e), failedStep: e.failedStep || null, completedSteps: e.completedSteps || [], snapshot: e.snapshotId || null
       })).catch(() => {});
       reply({ status: 'error', message: String(e.message || e), partial: !!(e.completedSteps && e.completedSteps.length), snapshotId: e.snapshotId || null, restorable: !!e.restorable });
+    } finally {
+      // Every way out, the early conflict return included, lets background refresh run again.
+      this._saving = false;
     }
     // Whatever happened, show what the org holds now.
-    this._saving = false;
     // Cached object pages of this item from before the save are no longer trusted.
     this.cache.set('saved:' + m.key, Date.now());
     await this.select(m.key, { force: true, noPrefetch: true });
@@ -1245,4 +1245,4 @@ function html(webview, media, shared) {
 </body></html>`;
 }
 
-module.exports = { MainPanel, toView, itemKey, contextMessage };
+module.exports = { MainPanel, toView };

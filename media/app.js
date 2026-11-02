@@ -36,7 +36,7 @@
     f: { through: 'any', profile: 'any', license: 'any', users: 'active', show: 'full', q: '' }, why: new Set(), sel: new Set(), revoke: null };
   let wizard = { object: '', fields: null, chosen: new Set(), level: 'read', targets: new Set(), grantObject: true, filter: '', targetFilter: '', customOnly: true, plan: null, busy: false, results: null, progress: null, confirm: '',
     types: 'all', hideHave: false, current: null, currentSig: '', templateName: null };
-  let objWizard = { object: '', info: null, flags: new Set(['read']), rts: new Set(), defaultRt: '', targets: new Set(), targetFilter: '', plan: null, busy: false, results: null, progress: null, confirm: '',
+  let objWizard = { object: '', info: null, rts: new Set(), defaultRt: '', targetFilter: '', plan: null, busy: false, results: null, progress: null, confirm: '',
     adds: new Map(), types: 'all', current: null, currentFor: '', rtRows: new Set() };
   let historyData = null;
   let lookupOptions = null;
@@ -555,13 +555,17 @@
       h('span', { class: 'grow' }, [h('b', { text: pending.size + (pending.size === 1 ? ' unsaved change' : ' unsaved changes') }), ' from your last session ' + (pending.size === 1 ? 'was' : 'were') + ' kept and ' + (pending.size === 1 ? 'is' : 'are') + ' ready to review.']),
       h('button', { class: 'btn neutral', onclick: () => { pending.clear(); ui.restored = 0; renderMain(); renderFooter(); }, text: 'Discard' }),
       h('button', { class: 'btn brand', onclick: () => openModal({ kind: 'review' }), text: 'Review' })]));
-    main.appendChild(narrowPicker());
+    if (isNarrow()) main.appendChild(narrowPicker());
     main.appendChild(pageHeader(detail.data.header));
     if (detail.data.header.readOnlyReason) main.appendChild(h('div', { class: 'pad-x' }, alertBox('info', detail.data.header.readOnlyReason)));
     main.appendChild(sectionsView());
   }
 
-  /** Narrow windows: the item list becomes a picker (CSS shows it below 900 px). */
+  // Narrow windows (the same 900 px as the CSS): pickers replace the list and the section menu.
+  const narrowQuery = window.matchMedia('(max-width: 900px)');
+  const isNarrow = () => narrowQuery.matches;
+  narrowQuery.addEventListener('change', () => renderMain());
+  /** Narrow windows: the item list becomes a picker. */
   function narrowPicker() {
     const groups = KINDS.map(([kind, title]) => h('optgroup', { label: title }, ((lists && lists[kind]) || []).map(r => h('option', { value: r.key, selected: r.key === ui.selected, text: r.label }))));
     return h('div', { class: 'narrow-bar' }, [h('select', { class: 'select', 'aria-label': 'Open an item', onchange: e => { const k = e.target.value; guard(() => { ui.kind = k.split(':')[0]; save(); renderSide(); choose(k); }); } }, groups),
@@ -633,10 +637,10 @@
   function sectionsView() {
     const d = detail.data;
     const kind = d.header.kindId;
-    if (ui.page === 'object' && ui.object) return h('div', { class: 'sections' }, [nav(kind), h('div', { class: 'section-body' }, [narrowSections(kind)].concat(objectView()))]);
+    if (ui.page === 'object' && ui.object) return h('div', { class: 'sections' }, [nav(kind), h('div', { class: 'section-body' }, [isNarrow() ? narrowSections(kind) : null].concat(objectView()))]);
     const valid = SECTIONS.flatMap(g => g[1]).filter(e => !e[2] || e[2](kind)).map(e => e[0]);
     if (!valid.includes(ui.section)) ui.section = 'objects';
-    return h('div', { class: 'sections' }, [nav(kind), h('div', { class: 'section-body' }, [narrowSections(kind)].concat(sectionContent(ui.section)))]);
+    return h('div', { class: 'sections' }, [nav(kind), h('div', { class: 'section-body' }, [isNarrow() ? narrowSections(kind) : null].concat(sectionContent(ui.section)))]);
   }
   function sectionLabel(id) { const t = ACCESS_TABS.find(x => x[0] === id); return t ? t[1] : (SECTIONS.flatMap(g => g[1]).find(e => e[0] === id) || [])[1] || id; }
   function sectionCount(id) {
@@ -1181,7 +1185,7 @@
     if (lookup.revoke && (lookup.revoke.plan || lookup.revoke.results || lookup.revoke.busy)) {
       if (lookup.revoke.busy) return [h('div', { class: 'loading-block' }, [spinner(), h('p', { class: 'muted', text: 'Working out what to remove…' })])];
       const back = () => { lookup.revoke = null; rerunLookup(); };
-      return [h('h2', { class: 'sub-title', text: 'Remove access from selected sources' })].concat(planView(lookup.revoke, 'wizardApply', {}, { target: 'revoke', onDone: back, onBack: () => { lookup.revoke = null; renderMain(); }, saveLabel: 'Remove' }));
+      return [h('h2', { class: 'sub-title', text: 'Remove access from selected sources' })].concat(planView(lookup.revoke, 'revokeApply', {}, { target: 'revoke', onDone: back, onBack: () => { lookup.revoke = null; renderMain(); }, saveLabel: 'Remove' }));
     }
     const mode = lookup.mode || 'access';
     const modeBar = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'What to look up' }, [['access', 'Object or field'], ['system', 'System permission'], ['custom', 'Custom permission']].map(([m, label]) =>
@@ -1217,17 +1221,17 @@
       .concat(t.object && lookup.fieldsFor === t.object ? (lookup.fields || []).map(f => h('option', { value: t.object + '.' + f.apiName, label: f.label })) : []);
     const find = () => {
       const x = parseTarget(lookup.target);
-      if (!x.object) return;
+      if (!x.object) { toast('warning', 'Type an object, such as Lead, or a field, such as Lead.Rating, then pick it from the list.', { title: 'Nothing to look up' }); return; }
       lookup.object = x.object; lookup.field = x.field;
       lookup.busy = true; lookup.result = null; lookup.why = new Set(); lookup.sel = new Set(); renderMain();
       send({ type: 'lookup', object: x.object, field: x.field || null, level: lookup.level });
       addRecent({ mode: 'access', object: x.object, field: x.field, level: lookup.level, label: x.object + (x.field ? '.' + x.field : '') + (lookup.level !== 'read' ? ' (' + (SHORT[lookup.level] || lookup.level) + ')' : '') });
     };
     return [h('label', { class: 'fld grow' }, [h('span', { text: 'Object or field' }), h('input', { type: 'text', class: 'text', list: 'lk-targets', value: lookup.target || '', 'data-fid': 'lk.target',
-        placeholder: 'Lead, or Lead.Rating', autocomplete: 'off', oninput: e => { lookup.target = e.target.value; const y = parseTarget(lookup.target); if (y.object && lookup.fieldsFor !== y.object) { lookup.fieldsFor = y.object; lookup.fields = null; send({ type: 'wizardFields', object: y.object }); } },
-        onchange: () => renderMain(), onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); find(); } } }), h('datalist', { id: 'lk-targets' }, options)]),
+        placeholder: 'Lead, or Lead.Rating', autocomplete: 'off', oninput: e => { lookup.target = e.target.value; const y = parseTarget(lookup.target); if (y.object && lookup.fieldsFor !== y.object) { lookup.fieldsFor = y.object; lookup.fields = null; send({ type: 'wizardFields', object: y.object }); } debounce(renderMain); },
+        onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); find(); } } }), h('datalist', { id: 'lk-targets' }, options)]),
       h('label', { class: 'fld' }, [h('span', { text: 'Access' }), select(levels, lookup.level, v => { lookup.level = v; renderMain(); }, false, 'lk.level', 'Access')]),
-      h('button', { class: 'btn brand', disabled: lookup.busy || !t.object, onclick: find, text: lookup.busy ? 'Looking…' : 'Find' })];
+      h('button', { class: 'btn brand', disabled: lookup.busy, onclick: find, text: lookup.busy ? 'Looking…' : 'Find' })];
   }
   function permissionInputs(sys) {
     if (!lookupOptions || !lookupOptions.ready) return [lookupOptions && lookupOptions.message ? alertBox('error', lookupOptions.message) : spinner(true)];
@@ -1701,7 +1705,9 @@
   /** Unsaved changes are handed to the extension, so closing the tab or reloading VS Code doesn't lose them. */
   let lastPersisted = '';
   function persistPending() {
-    if (restoreSaved) return; // don't overwrite what's waiting to be restored
+    // Leave the kept set alone until it is restored, unless new changes are being made instead.
+    if (restoreSaved && !pending.size) return;
+    if (restoreSaved) restoreSaved = null;
     const v = pending.size && ui.selected ? { key: ui.selected, entries: [...pending.entries()].map(([k, p]) => [k, Object.assign({}, p, { touched: [...(p.touched || [])] })]) } : null;
     const j = JSON.stringify(v);
     if (j === lastPersisted) return;
@@ -1718,6 +1724,7 @@
   function renderFooter() {
     persistPending();
     if (!pending.size) ui.restored = 0;
+    if (ui.ruleNote && !pending.has(ui.ruleNote.key)) { const k = ui.ruleNote.key; ui.ruleNote = null; patchRows([k]); }
     footer.textContent = '';
     footer.hidden = !pending.size;
     if (!pending.size) return;
@@ -2039,7 +2046,7 @@
         renderMain();
         break;
       }
-      case 'wizardCurrent': if (wizard.object === m.object) { wizard.current = { byKey: m.byKey || {} }; if (m.message) toast('error', m.message, { title: 'Could not read current access' }); if (ui.tool === 'wizard') renderMain(); } break;
+      case 'wizardCurrent': if (wizard.object === m.object && [...wizard.chosen].sort().join(',') === [...(m.fields || [])].sort().join(',')) { wizard.current = { byKey: m.byKey || {} }; if (m.message) toast('error', m.message, { title: 'Could not read current access' }); if (ui.tool === 'wizard') renderMain(); } break;
       case 'objWizardCurrent': if (objWizard.object === m.object) { objWizard.current = { byKey: m.byKey || {} }; if (m.message) toast('error', m.message, { title: 'Could not read current access' }); if (ui.tool === 'objwizard') renderMain(); } break;
       case 'revokePlan': lookup.revoke = { plan: m.error ? { error: m.error } : { plan: m.plan, skipped: m.skipped }, confirm: '', progress: null, results: null }; if (ui.tool === 'lookup') renderMain(); break;
       case 'historySetup': historySetupData = Object.assign(m.entries || [], { denied: !!m.denied }); if (ui.tool === 'history') renderMain(); break;
@@ -2047,8 +2054,10 @@
         const v = m.values || {};
         recentLookups = v.recentLookups || []; grantTemplates = v.grantTemplates || []; lastTicket = v.lastTicket || '';
         if (v.pending && v.pending.entries && v.pending.entries.length && !pending.size) {
+          const kind = v.pending.key.split(':')[0];
+          if (!lists || !(lists[kind] || []).some(r => r.key === v.pending.key)) { send({ type: 'persist', name: 'pending', value: null }); break; } // that item is gone
           restoreSaved = v.pending;
-          if (ui.selected !== v.pending.key) choose(v.pending.key); else restorePending();
+          if (ui.selected !== v.pending.key) { ui.kind = kind; save(); renderSide(); choose(v.pending.key); } else restorePending();
         }
         break;
       }

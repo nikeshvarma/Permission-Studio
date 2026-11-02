@@ -64,4 +64,4 @@ function parse(text) {
   return { root, scalars, entries };
 }
 
-module.exports = { parse, decode };
+module.exports = { parse };

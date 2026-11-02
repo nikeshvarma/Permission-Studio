@@ -2,6 +2,21 @@
 
 All notable changes to Permission Studio. Versions follow `major.minor.patch`; every delivered change raises the patch number.
 
+## 2.2.1
+
+Code review: bugs fixed, dead code removed, nothing new to learn.
+
+- Fixed: after a save that found a conflict (an entry changed in Setup since it was loaded), background refresh stayed off until VS Code restarted.
+- Fixed: Find access's Find button stayed disabled while typing, and the first click after typing could be lost. It now also says so when nothing recognisable was typed.
+- Fixed: unsaved changes kept for an item that no longer exists, or left unrestored while editing another item, stopped new unsaved changes from being kept.
+- Fixed: the permission-rule note stayed under its checkbox after Cancel or Save.
+- Fixed: Changes in Setup and History matched item names inside other words ("Sales" in "Salesforce"); names now match as whole words, longest first.
+- Fixed: Grant field access could show an earlier answer for current access after the field selection changed.
+- Fixed: copying a list showed the whole list in the notification; it now says how many lines were copied.
+- Find access "Remove from selected" is logged as "Find access: remove" in History, not as the field wizard.
+- Faster redraws on wide windows (the narrow-window picker is only built when the window is narrow).
+- Removed unused code: the old change-set module, model comparison and XML-to-model reading, and a few unused loader, SOQL and Metadata API helpers; module exports trimmed to what is actually used; duplicate CSS rules merged.
+
 ## 2.2.0
 
 - **Review screen redesigned**: the impact first (changes, users affected, high-impact permissions granted, access removed), a plain-words warning for risky permissions and removals, then every change on one line with granted and removed chips. Remove a single change with ×, filter long lists, and tag the save with a ticket (for example an ADO story); the ticket is kept in History and in copied summaries.

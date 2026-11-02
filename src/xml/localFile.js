@@ -113,4 +113,4 @@ async function updateLocalFile(file, kind, changes) {
   return r;
 }
 
-module.exports = { findLocalFile, applyToText, updateLocalFile, packageDirs };
+module.exports = { findLocalFile, applyToText, updateLocalFile };

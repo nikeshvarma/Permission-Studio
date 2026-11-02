@@ -87,4 +87,4 @@ function toTsv(entries, options) {
   return lines.join('\n') + '\n';
 }
 
-module.exports = { toMarkdown, toTsv, rows, valueText, AREA };
+module.exports = { toMarkdown, toTsv, rows };

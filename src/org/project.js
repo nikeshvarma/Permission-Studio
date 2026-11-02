@@ -111,4 +111,4 @@ async function resolveDefaultOrg(sfPath, projectDir, options) {
   };
 }
 
-module.exports = { findProject, isProject, configFiles, defaultOrgSetting, defaultOrgFromFiles, resolveDefaultOrg };
+module.exports = { findProject, configFiles, defaultOrgFromFiles, resolveDefaultOrg };

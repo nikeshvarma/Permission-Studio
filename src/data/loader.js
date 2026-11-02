@@ -209,7 +209,6 @@ function assigneeCountQuery(item) {
   return 'SELECT COUNT() FROM PermissionSetAssignment WHERE Assignee.IsActive = true AND PermissionSetId = ' + str(assertId(item.permissionSetId));
 }
 
-async function countActiveAssignees(conn, item) { return conn.count(assigneeCountQuery(item)); }
 
 /**
  * Object and system permissions, labels and assignee count. The describes
@@ -408,13 +407,6 @@ async function loadObjectAccessFor(conn, permissionSetIds, sobject) {
 }
 
 /** Every field permission row of one permission set (for exports). */
-async function loadAllFieldRows(conn, permissionSetId) {
-  const r = await conn.query('SELECT SobjectType, Field, PermissionsRead, PermissionsEdit FROM FieldPermissions WHERE ParentId = ' + str(assertId(permissionSetId)) + ' ORDER BY Field');
-  return r.records;
-}
-
-// ---------- permission set groups ----------
-
 /**
  * A group's members: its permission sets and any muting permission set,
  * with the group's recalculation status. Component rows point at either a
@@ -542,16 +534,21 @@ async function profilePermissionSets(conn) {
   return new Map(r.records.map(x => [x.Id, x.ProfileId]));
 }
 
-/** Setup Audit Trail entries mentioning any of these names, newest first. */
+/**
+ * Setup Audit Trail entries mentioning any of these names, newest first.
+ * Names match as whole words ("Sales" doesn't match "Sales Ops" or
+ * "Salesforce"); the longest matching name wins.
+ */
 async function setupChangesFor(conn, names, days) {
   const r = await conn.query('SELECT CreatedDate, CreatedBy.Name, Action, Section, Display, DelegateUser FROM SetupAuditTrail WHERE CreatedDate = LAST_N_DAYS:' +
     Math.max(1, Math.min(180, days || 30)) + ' ORDER BY CreatedDate DESC LIMIT 2000');
-  const list = names.filter(n => n && n.length > 2).map(n => [n, n.toLowerCase()]);
+  const esc = t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const matchers = [...new Set(names.filter(n => n && n.length > 2))].sort((a, b) => b.length - a.length)
+    .map(n => [n, new RegExp('(^|[^\\w])' + esc(n) + '(?![\\w])', 'i')]);
   const out = [];
   for (const x of r.records) {
-    const t = String(x.Display || '').toLowerCase();
-    const hit = list.filter(([, n]) => t.includes(n)).sort((a, b) => b[1].length - a[1].length)[0];
-    if (hit) out.push({ at: x.CreatedDate, by: (x.CreatedBy && x.CreatedBy.Name) || '', section: x.Section || '', display: x.Display || '', delegate: x.DelegateUser || '', name: hit[0] });
+    const hit = matchers.find(([, re]) => re.test(String(x.Display || '')));
+    if (hit) out.push({ at: x.CreatedDate, by: (x.CreatedBy && x.CreatedBy.Name) || '', action: x.Action || '', section: x.Section || '', display: x.Display || '', delegate: x.DelegateUser || '', name: hit[0] });
     if (out.length >= 300) break;
   }
   return out;
@@ -642,12 +639,8 @@ async function assignmentBlockers(conn, item, userIds) {
  * newest first. Needs View Setup Audit Trail (Winter '27) or View Setup.
  */
 async function setupChanges(conn, item, days) {
-  const r = await conn.query('SELECT CreatedDate, CreatedBy.Name, Action, Section, Display, DelegateUser FROM SetupAuditTrail WHERE CreatedDate = LAST_N_DAYS:' +
-    Math.max(1, Math.min(180, days || 90)) + ' ORDER BY CreatedDate DESC LIMIT 2000');
-  const names = [item.label, item.apiName].filter(Boolean).map(n => n.toLowerCase());
-  const mentions = d => { const t = String(d || '').toLowerCase(); return names.some(n => t.includes('"' + n + '"') || t.includes(n)); };
-  return r.records.filter(x => mentions(x.Display)).slice(0, 200).map(x => ({ at: x.CreatedDate, by: (x.CreatedBy && x.CreatedBy.Name) || '', action: x.Action || '',
-    section: x.Section || '', display: x.Display || '', delegate: x.DelegateUser || '' }));
+  const rows = await setupChangesFor(conn, [item.label, item.apiName], days);
+  return rows.slice(0, 200);
 }
 
 /**
@@ -694,12 +687,9 @@ async function whoHasAccess(conn, q) {
     partial: partial.sort((a, b) => a.name.localeCompare(b.name)), inactive: inactiveGranted.sort((a, b) => a.name.localeCompare(b.name)) };
 }
 
-module.exports = {
-  loadDetail, loadObjectDetail, loadObjectPermissions, loadSystemPermissions, loadFieldRows, loadFieldPermissions,
-  systemPermissionFields, countActiveAssignees, objectCatalog, permissionableObjects, objectPermissionNames, objectLabels, objectColumns, sliceByLength, OBJECT_FIELDS,
-  ENTITY, listEntities, loadAccessRows, loadEntityAccess, listRecordTypes,
-  loadGroupComponents, groupStatus,
-  listTabs, loadTabSettings, loadTabsPage, loadAssignments, expirationField, searchUsers, loadObjectAccessFor, loadAllFieldRows, whoHasAccess, TAB_FROM_API,
-  whoHasPermission, permissionOptions, permissionDependencies, assignmentBlockers, setupChanges, profilesFiltered, sourcesAndUsers,
-  assigneeCounts, fieldAccessAll, objectAccessAll, profilePermissionSets, setupChangesFor
-};
+module.exports = { loadDetail, loadObjectDetail, loadObjectPermissions, loadSystemPermissions, loadFieldRows, loadFieldPermissions,
+  systemPermissionFields, objectCatalog, objectPermissionNames, objectColumns, sliceByLength, OBJECT_FIELDS, ENTITY,
+  listEntities, loadAccessRows, loadEntityAccess, listRecordTypes, loadGroupComponents, groupStatus, listTabs, loadTabSettings,
+  loadTabsPage, loadAssignments, expirationField, searchUsers, loadObjectAccessFor, whoHasAccess, TAB_FROM_API, whoHasPermission,
+  permissionOptions, permissionDependencies, assignmentBlockers, setupChanges, profilesFiltered, assigneeCounts, fieldAccessAll,
+  objectAccessAll, profilePermissionSets, setupChangesFor };

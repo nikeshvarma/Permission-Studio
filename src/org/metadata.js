@@ -214,11 +214,6 @@ async function deployEntries(conn, item, changes) {
   });
 }
 
-/** Kept for callers that only change record types. */
-function deployRecordTypes(conn, item, entries) {
-  return deployEntries(conn, item, entries.map(e => ({ key: 'recordType:' + e.name, after: e })));
-}
-
 // ---------- safety copy around a deploy ----------
 
 /** Every object, field, system and setup-entity grant of the item, for checking and restoring. */
@@ -280,5 +275,5 @@ async function restoreSafety(conn, permissionSetId, safety) {
   return lost.count;
 }
 
-module.exports = { metadataName, retrieveItem, listLayouts, entriesOf, readEntries, readRecordTypes, readAllRecordTypes, readLayouts, readLoginSettings, deployEntries, deployRecordTypes,
-  captureSafety, checkSafety, restoreSafety, packageXml };
+module.exports = { metadataName, listLayouts, readEntries, readRecordTypes, readAllRecordTypes, readLayouts, readLoginSettings, deployEntries,
+  captureSafety, checkSafety, restoreSafety };

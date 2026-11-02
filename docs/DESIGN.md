@@ -93,8 +93,8 @@ The core idea is the **canonical model**. Live org data and local XML are both c
 | `src/data/loader.js` | Reads permissions live into the model, in parallel | Built for object, field and system permissions |
 | `src/model/model.js` | Canonical model and XML-to-model conversion for all categories | Built |
 | `src/model/dependencies.js` | Object and field dependency rules | Built |
-| `src/model/diff.js` | Model comparison | Built |
-| `src/changes/changeSet.js` | Staging, conflict check, inverse for rollback | Built |
+| `src/model/diff.js` | Which flags of an entry differ (conflict checks and read-back after a save) | Built |
+| `src/changes/changeSet.js` | Removed in 2.2.1: staging lives in the screen; conflict checks, snapshots and undo in the save path (`apply.js`) | Removed |
 | `src/xml/flatXml.js` | Fast reader for permission XML | Built |
 | `src/org/project.js` | Finds the SFDX project and its default org | Built |
 | `src/views/mainPanel.js`, `media/app.js` | Main screen: Lightning-style record page with editing, review and undo | Built |

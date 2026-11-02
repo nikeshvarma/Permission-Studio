@@ -192,20 +192,28 @@ class Connection {
   // ---------- writes ----------
 
   /** Inserts records; returns their new Ids. All or none per call. */
-  async create(sobject, records) {
-    return this._write('POST', sobject, records.map(r => Object.assign({ attributes: { type: sobject } }, r)),
-      r => ['data', 'create', 'record', '--sobject', sobject, '--values', values(r)]);
-  }
+  async create(sobject, records) { return this.createRecords(records.map(r => typed(sobject, r))); }
 
   /** Updates records; each must carry its Id. */
-  async update(sobject, records) {
-    return this._write('PATCH', sobject, records.map(r => Object.assign({ attributes: { type: sobject } }, r)),
-      r => ['data', 'update', 'record', '--sobject', sobject, '--record-id', r.Id, '--values', values(omit(r, 'Id'))]);
+  async update(sobject, records) { return this.updateRecords(records.map(r => typed(sobject, r))); }
+
+  async destroy(sobject, ids) { return this.destroyRecords(ids.map(Id => typed(sobject, { Id }))); }
+
+  /**
+   * The same, for records of several types at once: each carries
+   * attributes.type. sObject Collections take mixed types in one call, so a
+   * whole save is one create, one update and one delete at most.
+   */
+  async createRecords(records) {
+    return this._write('POST', null, records, r => ['data', 'create', 'record', '--sobject', r.attributes.type, '--values', values(r)]);
   }
 
-  async destroy(sobject, ids) {
-    return this._write('DELETE', sobject, ids.map(Id => ({ Id })),
-      r => ['data', 'delete', 'record', '--sobject', sobject, '--record-id', r.Id]);
+  async updateRecords(records) {
+    return this._write('PATCH', null, records, r => ['data', 'update', 'record', '--sobject', r.attributes.type, '--record-id', r.Id, '--values', values(omit(r, 'Id'))]);
+  }
+
+  async destroyRecords(records) {
+    return this._write('DELETE', null, records, r => ['data', 'delete', 'record', '--sobject', r.attributes.type, '--record-id', r.Id]);
   }
 
   async _write(method, sobject, records, cliArgs) {
@@ -231,6 +239,42 @@ class Connection {
       ids.push(...r);
     }
     return ids;
+  }
+
+  /**
+   * Creates, updates and deletes in one Composite request: one round trip and,
+   * with allOrNone, one transaction, so either everything is saved or nothing is.
+   * REST only (the CLI has no equivalent); up to 25 batches of 200 records.
+   */
+  async compositeWrite(writes) {
+    if (this.mode === 'cli') throw tagged(new Error('One-request saves need the REST API'), 'COMPOSITE_UNAVAILABLE');
+    const base = this._base();
+    const subs = [];
+    const add = (method, list) => {
+      for (let i = 0; i < list.length; i += COLLECTION_SIZE) {
+        const slice = list.slice(i, i + COLLECTION_SIZE);
+        subs.push(method === 'DELETE'
+          ? { method, url: base + '/composite/sobjects?allOrNone=true&ids=' + slice.map(r => encodeURIComponent(r.Id)).join(','), referenceId: 'w' + subs.length }
+          : { method, url: base + '/composite/sobjects', referenceId: 'w' + subs.length, body: { allOrNone: true, records: slice } });
+      }
+    };
+    add('POST', writes.creates || []);
+    add('PATCH', writes.updates || []);
+    add('DELETE', writes.deletes || []);
+    if (!subs.length) return;
+    if (subs.length > 25) throw tagged(new Error('Too many changes for one request'), 'COMPOSITE_UNAVAILABLE');
+    const r = await this._request('POST', base + '/composite', { allOrNone: true, compositeRequest: subs });
+    const msgs = [];
+    for (const sub of (r && r.compositeResponse) || []) {
+      const body = sub.body;
+      const list = Array.isArray(body) ? body : [];
+      // Collection results carry their own errors; request-level failures come as a list of { errorCode, message }.
+      for (const x of list) {
+        for (const err of x.errors || []) if (err.statusCode !== 'ALL_OR_NONE_OPERATION_ROLLED_BACK') msgs.push((err.statusCode ? err.statusCode + ': ' : '') + err.message);
+        if (x.errorCode && x.errorCode !== 'PROCESSING_HALTED' && x.errorCode !== 'ALL_OR_NONE_OPERATION_ROLLED_BACK') msgs.push(x.errorCode + ': ' + x.message);
+      }
+    }
+    if (msgs.length) { const e = new Error([...new Set(msgs)].join('\n')); e.tag = 'REJECTED'; throw e; }
   }
 
   async _restCollection(method, records) {
@@ -439,6 +483,8 @@ function values(record) {
   }).join(' ');
 }
 
+function typed(type, r) { return r.attributes ? r : Object.assign({ attributes: { type } }, r); }
+
 function omit(o, key) { const c = Object.assign({}, o); delete c[key]; return c; }
 
 function stripAttributes(r) {
@@ -491,4 +537,4 @@ function apiError(status, json, text) {
   return e;
 }
 
-module.exports = { Connection, open, stripAttributes, values, gate, nodeFetch, tokenShape, MAX_QUERY_LENGTH, COLLECTION_SIZE };
+module.exports = { Connection, open, values, gate, nodeFetch, tokenShape, MAX_QUERY_LENGTH };
