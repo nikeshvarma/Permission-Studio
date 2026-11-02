@@ -59,6 +59,7 @@ class MainPanel {
         if (this._loading) { if (this.ctx) this.post(contextMessage(this.ctx, this.conn, { loading: 'Loading…' })); await this._loading; }
         if (this.ctx && this.items.size) this._replay(); else if (this.ctx && this.ctx.status) this.post(contextMessage(this.ctx, this.conn)); else await this.load();
         this._webviewReady = true;
+        this.post({ type: 'persisted', values: this._persisted() });
         if (this._pendingOpen) { this.post({ type: 'selectKey', key: this._pendingOpen }); this._pendingOpen = null; }
         break;
       case 'refresh': await this.load({ force: true }); break;
@@ -79,8 +80,20 @@ class MainPanel {
       case 'wizardPlan': await this.wizardPlan(m); break;
       case 'wizardApply': await this.wizardApply(m); break;
       case 'clonePs': await this.clonePs(m); break;
+      case 'copyProfile': await this.copyProfile(m); break;
       case 'editPs': await this.editPs(m); break;
       case 'loadComponents': await this.openComponents(m.key, { force: m.force }); break;
+      case 'permDeps': await this.postDependencies(); break;
+      case 'wizardCurrent': await this.wizardCurrent(m); break;
+      case 'objWizardCurrent': await this.objWizardCurrent(m); break;
+      case 'revokePlan': await this.revokePlan(m); break;
+      case 'historySetup': await this.historySetup(m); break;
+      case 'persist': await this.persist(m.name, m.value); break;
+      case 'copy': await this.s.clipboard(String(m.text || '')); this.post({ type: 'toast', variant: 'success', title: 'Copied', message: String(m.text || '') }); break;
+      case 'lookupOptions': await this.lookupOptions(); break;
+      case 'lookupPermission': await this.lookupPermission(m); break;
+      case 'checkAssignees': await this.checkAssignees(m); break;
+      case 'loadAudit': await this.openAudit(m.key, { force: m.force }); break;
       case 'copySummary': await this.copySummary(m); break;
       case 'objWizardInfo': await this.objWizardInfo(m.object); break;
       case 'objWizardPlan': await this.objWizardPlan(m); break;
@@ -146,7 +159,7 @@ class MainPanel {
     const cachedLists = o.force ? null : this.cache.get(this._listsKey());
     if (cachedLists) {
       this._setItems(cachedLists.value);
-      this.post(contextMessage(this.ctx, this.conn, { production: meta && meta.value.production, connecting: !this.conn }));
+      this.post(contextMessage(this.ctx, this.conn, { production: meta && meta.value.production, sandbox: meta && meta.value.sandbox, connecting: !this.conn }));
       this.post(this._listsMessage(cachedLists.savedAt, true));
     } else {
       this.post(contextMessage(this.ctx, this.conn, { loading: 'Connecting to ' + (ctx.org.alias || ctx.org.username) + '…', production: meta && meta.value.production }));
@@ -155,7 +168,7 @@ class MainPanel {
     if (!sameOrg || o.force || !this.connReady) {
       this.connReady = this.s.openConnection(ctx.org, ctx.projectDir, this.cache).then(async conn => {
         if (conn.isProduction === null) conn.isProduction = await this.s.detectProduction(conn);
-        this.cache.set('meta', { production: conn.isProduction });
+        this.cache.set('meta', { production: conn.isProduction, sandbox: conn.isSandbox === true });
         return conn;
       });
       this.connReady.catch(() => {});
@@ -180,6 +193,8 @@ class MainPanel {
       const [lists, stamp] = await Promise.all([this._fetchLists(conn), this.s.catalog.changeStamp(conn, this.kinds()).catch(() => null)]);
       if (seq !== this._ctxSeq) return;
       this._listStamp = stamp;
+      this._profilesFiltered = this.kinds().includes('profile')
+        ? await this.s.loader.profilesFiltered(conn, lists.profile, ctx.org.username).catch(() => false) : false;
       this.cache.set(this._listsKey(), lists);
       this._setItems(lists);
       this.post(this._listsMessage(Date.now(), false));
@@ -277,7 +292,7 @@ class MainPanel {
     const lists = { permissionSet: [], group: [], profile: [] };
     const kinds = this.kinds();
     for (const [k, i] of this.items) if (kinds.includes(i.kind)) lists[i.kind].push(listRow(k, i));
-    return { type: 'lists', lists, kinds, savedAt, refreshing };
+    return { type: 'lists', lists, kinds, savedAt, refreshing, profilesFiltered: !!this._profilesFiltered };
   }
 
   _replay() {
@@ -370,6 +385,175 @@ class MainPanel {
     } finally { this._polling = null; }
   }
 
+  // ---------- permission rules, security lookups, licences, Setup Audit Trail ----------
+
+  /** Salesforce's dependency rules for system and custom permissions, cached for a day. */
+  async postDependencies() {
+    try {
+      const conn = await this._conn();
+      const hit = this.cache.get('permDeps');
+      let deps = hit && Date.now() - hit.savedAt < 24 * 3600 * 1000 ? hit.value : null;
+      if (!deps) {
+        deps = await this.s.loader.permissionDependencies(conn);
+        if (deps.problems.length) this.s.log('Permission rules not fully read: ' + deps.problems.join('; '));
+        this.cache.set('permDeps', deps);
+      }
+      this.post({ type: 'permDeps', system: deps.system, custom: deps.custom });
+    } catch (e) { this.s.log('Permission rules not read: ' + e.message); }
+  }
+
+  async lookupOptions() {
+    try { this.post(Object.assign({ type: 'lookupOptions' }, await this.s.loader.permissionOptions(await this._conn()))); }
+    catch (e) { this.post({ type: 'lookupOptions', system: [], custom: [], message: String(e.message || e) }); }
+  }
+
+  /** Find access for a system or custom permission. */
+  async lookupPermission(m) {
+    try {
+      const r = await this.s.loader.whoHasPermission(await this._conn(), m);
+      for (const src of r.sources) src.key = this._keyForSource(src);
+      this.post({ type: 'lookupResult', result: r });
+    } catch (e) { this.post({ type: 'lookupResult', result: { error: String(e.message || e) } }); }
+  }
+
+  _keyForSource(src) {
+    for (const [k, i] of this.items) {
+      if (src.kind === 'profile' && i.kind === 'profile' && i.recordId === src.profileId) return k;
+      if (src.kind === 'group' && i.kind === 'group' && i.recordId === src.groupId) return k;
+      if (src.kind === 'permissionSet' && i.kind === 'permissionSet' && i.permissionSetId === src.permissionSetId) return k;
+    }
+    return null;
+  }
+
+  /** Users about to be assigned who can't hold this permission set (licence rules). */
+  async checkAssignees(m) {
+    const item = this.items.get(m.key);
+    if (!item) return;
+    try {
+      const b = await this.s.loader.assignmentBlockers(await this._conn(), item, m.userIds || []);
+      this.post({ type: 'assigneeChecks', key: m.key, blockers: Object.fromEntries(b) });
+    } catch (e) { this.s.log('Licence check failed: ' + e.message); }
+  }
+
+  /** Setup Audit Trail entries about this item. */
+  async openAudit(key, options) {
+    const item = this.items.get(key);
+    if (!item) return;
+    await this._swr('audit:' + key, async () => {
+      try { return { items: await this.s.loader.setupChanges(await this._conn(), item, 90) }; }
+      catch (e) {
+        if (/INSUFFICIENT_ACCESS|not supported|INVALID_TYPE|sObject type/i.test(e.message)) return { items: [], denied: true };
+        throw e;
+      }
+    }, (data, savedAt, refreshing) => ({ type: 'audit', key, data, savedAt, refreshing }), () => this._selected === key, { type: 'auditError', key }, options);
+  }
+
+  // ---------- screen state kept across sessions ----------
+
+  _persistKey(name) { return 'permStudio.ui.' + name + (name === 'pending' && this.ctx && this.ctx.org ? ':' + this.ctx.org.username : ''); }
+  _persisted() {
+    const m = this.s.memento;
+    if (!m) return {};
+    return Object.fromEntries(['pending', 'recentLookups', 'grantTemplates', 'lastTicket'].map(n => [n, m.get(this._persistKey(n)) || null]));
+  }
+  /** Unsaved changes, recent searches, templates and the last ticket survive closing the tab or reloading VS Code. */
+  async persist(name, value) {
+    if (!['pending', 'recentLookups', 'grantTemplates', 'lastTicket'].includes(name) || !this.s.memento) return;
+    await this.s.memento.update(this._persistKey(name), value == null ? undefined : value);
+    if (name === 'pending' && this.panel) this.panel.title = value && value.entries && value.entries.length ? '● Permission Studio' : 'Permission Studio';
+  }
+
+  // ---------- grant screens: what each item has now ----------
+
+  /** Each item's users and parent permission set, for the grant screens. */
+  async _targetMap(conn) {
+    const [profilePs, counts] = await Promise.all([this.s.loader.profilePermissionSets(conn), this.s.loader.assigneeCounts(conn).catch(() => new Map())]);
+    const byParent = new Map();
+    for (const [k, i] of this.items) {
+      if (i.kind === 'permissionSet' && i.permissionSetId) byParent.set(i.permissionSetId, k);
+    }
+    for (const [psId, profileId] of profilePs) {
+      const hit = [...this.items.entries()].find(([, i]) => i.kind === 'profile' && i.recordId === profileId);
+      if (hit) { byParent.set(psId, hit[0]); hit[1].permissionSetId = hit[1].permissionSetId || psId; }
+    }
+    return { byParent, counts };
+  }
+
+  async wizardCurrent(m) {
+    try {
+      const conn = await this._conn();
+      const [{ byParent, counts }, fields, objs] = await Promise.all([this._targetMap(conn), this.s.loader.fieldAccessAll(conn, m.fields || []), this.s.loader.objectAccessAll(conn, m.object)]);
+      const byKey = {};
+      for (const [psId, key] of byParent) {
+        byKey[key] = { users: counts.get(psId) || 0, fields: fields.get(psId) || {}, objectRead: !!((objs.byParent.get(psId) || {}).read) };
+      }
+      this.post({ type: 'wizardCurrent', object: m.object, fields: m.fields, byKey });
+    } catch (e) { this.post({ type: 'wizardCurrent', object: m.object, fields: m.fields, byKey: {}, message: String(e.message || e) }); }
+  }
+
+  async objWizardCurrent(m) {
+    try {
+      const conn = await this._conn();
+      const [{ byParent, counts }, objs] = await Promise.all([this._targetMap(conn), this.s.loader.objectAccessAll(conn, m.object)]);
+      const byKey = {};
+      for (const [psId, key] of byParent) byKey[key] = { users: counts.get(psId) || 0, props: objs.byParent.get(psId) || {} };
+      this.post({ type: 'objWizardCurrent', object: m.object, byKey, columns: objs.columns });
+    } catch (e) { this.post({ type: 'objWizardCurrent', object: m.object, byKey: {}, columns: [], message: String(e.message || e) }); }
+  }
+
+  /**
+   * Find access "Remove from selected": take the looked-up access away from
+   * some of its sources, as a plan saved with the same path as the wizards.
+   */
+  async revokePlan(m) {
+    try {
+      const conn = await this._conn();
+      const plan = [];
+      const skipped = [];
+      const cat = m.field ? 'field' : 'object';
+      const targets = [];
+      for (const k of m.sourceKeys || []) {
+        const it = this.items.get(k);
+        if (!it) continue;
+        const why = editBlocker(it, cat);
+        if (why) { skipped.push({ key: k, label: it.label, reason: why }); continue; }
+        await this._resolve(it, conn);
+        targets.push([k, it]);
+      }
+      const ids = targets.map(([, it]) => it.permissionSetId);
+      if (m.field) {
+        const now = await this.s.loader.fieldAccessAll(conn, [m.field]);
+        for (const [k, it] of targets) {
+          const cur = (now.get(it.permissionSetId) || {})[m.field] || { read: false, edit: false };
+          const after = m.level === 'edit' ? { read: cur.read, edit: false } : { read: false, edit: false };
+          if (cur.read === after.read && cur.edit === after.edit) { skipped.push({ key: k, label: it.label, reason: 'Gets it another way (for example Modify All Data or View All Fields), not from field access.' }); continue; }
+          plan.push({ key: k, label: it.label, kind: it.kind, changes: [{ key: 'field:' + m.field, before: cur, after, label: m.field }] });
+        }
+      } else {
+        const objs = ids.length ? await this.s.loader.loadObjectAccessFor(conn, ids, m.object) : { byParent: new Map(), columns: [] };
+        for (const [k, it] of targets) {
+          const cur = Object.assign(Object.fromEntries(objs.columns.map(c => [c, false])), objs.byParent.get(it.permissionSetId) || {});
+          if (!cur[m.level]) { skipped.push({ key: k, label: it.label, reason: 'Gets it another way (for example Modify All Data), not from object permissions.' }); continue; }
+          const after = applyObject(cur, m.level, false).props;
+          plan.push({ key: k, label: it.label, kind: it.kind, changes: [{ key: 'object:' + m.object, before: cur, after: Object.fromEntries(objs.columns.map(c => [c, after[c] === true])), label: m.object }] });
+        }
+      }
+      this.post({ type: 'revokePlan', plan, skipped });
+    } catch (e) { this.post({ type: 'revokePlan', error: String(e.message || e) }); }
+  }
+
+  /** Setup Audit Trail entries about any permission set, profile or group, for History. */
+  async historySetup(m) {
+    try {
+      const names = [...new Set([...this.items.values()].map(i => i.label))];
+      const rows = await this.s.loader.setupChangesFor(await this._conn(), names, m.days || 30);
+      const byLabel = new Map([...this.items.entries()].map(([k, i]) => [i.label, k]));
+      this.post({ type: 'historySetup', entries: rows.map(r => Object.assign(r, { key: byLabel.get(r.name) || null })) });
+    } catch (e) {
+      this.post({ type: 'historySetup', entries: [], denied: /INSUFFICIENT_ACCESS|not supported|INVALID_TYPE/i.test(e.message), message: String(e.message || e) });
+    }
+  }
+
   // ---------- change summaries ----------
 
   /** Copies a summary of the given saves (by snapshot id) as Markdown or tab-separated text. */
@@ -392,6 +576,9 @@ class MainPanel {
   }
 
   // ---------- opening an item from elsewhere ----------
+
+  /** Ctrl/Cmd+S pressed while this screen has focus (VS Code's key binding). */
+  shortcut(name) { if (this.panel) this.post({ type: 'shortcut', name }); }
 
   /** Shows the screen and opens the item, once the webview is ready. */
   async openItem(key) {
@@ -511,6 +698,7 @@ class MainPanel {
         targets.push([k, it]);
       }
       const ids = targets.map(([, it]) => it.permissionSetId);
+      const objAllowed = await this.s.loader.objectPermissionNames(conn);
       const [fieldsBy, objs] = ids.length ? await Promise.all([this.s.loader.loadFieldPermissions(conn, ids, m.object), this.s.loader.loadObjectAccessFor(conn, ids, m.object)]) : [new Map(), { byParent: new Map(), columns: [] }];
       const plan = [];
       for (const [k, it] of targets) {
@@ -521,7 +709,7 @@ class MainPanel {
           const want = { read: true, edit: m.level === 'edit' ? !!f.canEdit || cur.edit : cur.edit };
           if (want.read !== cur.read || want.edit !== cur.edit) changes.push({ key: 'field:' + f.name, before: cur, after: want, label: f.label });
         }
-        if (m.grantObject && changes.length) {
+        if (m.grantObject && changes.length && (!objAllowed || objAllowed.has(m.object))) {
           const blank = Object.fromEntries(objs.columns.map(c => [c, false]));
           const cur = Object.assign({}, blank, objs.byParent.get(it.permissionSetId) || {});
           let next = cur;
@@ -578,10 +766,12 @@ class MainPanel {
   async objWizardPlan(m) {
     try {
       const conn = await this._conn();
+      const allowedObjects = await this.s.loader.objectPermissionNames(conn);
+      if (allowedObjects && !allowedObjects.has(m.object)) throw new Error(m.object + ' has no object permissions in Salesforce' + (/^(Task|Event)$/.test(m.object) ? ': activity access comes from the Edit Tasks and Edit Events system permissions.' : '.') + ' Use Grant field access for its fields.');
       const targets = [];
       const skipped = [];
       const needRt = (m.recordTypes || []).length > 0 || !!m.defaultRt;
-      for (const k of m.targets || []) {
+      for (const k of m.perTarget ? Object.keys(m.perTarget) : m.targets || []) {
         const it = this.items.get(k);
         if (!it) continue;
         const why = editBlocker(it, 'object') || (needRt ? editBlocker(it, 'recordType') : null);
@@ -599,7 +789,7 @@ class MainPanel {
         const blank = Object.fromEntries(objs.columns.map(c => [c, false]));
         const cur = Object.assign({}, blank, objs.byParent.get(it.permissionSetId) || {});
         let next = cur;
-        for (const f of m.flags || []) if (objs.columns.includes(f) && !next[f]) next = applyObject(next, f, true).props;
+        for (const f of (m.perTarget ? m.perTarget[k] : m.flags) || []) if (objs.columns.includes(f) && !next[f]) next = applyObject(next, f, true).props;
         const after = Object.fromEntries(objs.columns.map(c => [c, next[c] === true]));
         if (objs.columns.some(c => after[c] !== cur[c])) changes.push({ key: 'object:' + m.object, before: cur, after, label: m.object });
         if (needRt) {
@@ -662,7 +852,7 @@ class MainPanel {
       const r = await this.s.applyChanges(conn, item, changes, {
         force: !!(extra && extra.force), metadata: this.s.metadata,
         onSnapshot: (snapshot, safety) => this.s.history.saveSnapshot(this.ctx.projectDir, { org: this.ctx.org.username, target: item.apiName, permissionSetId: item.permissionSetId, items: snapshot, safety: safety || undefined }),
-        onProgress: extra && extra.onProgress
+        onProgress: extra && extra.onProgress, log: l => this.s.log(l), pollMs: this.s.pollMs
       });
       if (r.status === 'conflict') return { status: 'conflict', conflicts: r.conflicts, message: 'Changed in the org since it was read; nothing written.' };
       await this.s.history.appendLog(this.ctx.projectDir, Object.assign(logBase, { result: r.mismatches.length ? 'saved with differences' : 'saved', snapshot: r.snapshotId,
@@ -671,7 +861,7 @@ class MainPanel {
     } catch (e) {
       this.s.log('Save to ' + item.apiName + ' failed' + (e.failedStep ? ' at "' + e.failedStep + '"' : '') + ': ' + (e.stack || e));
       await this.s.history.appendLog(this.ctx.projectDir, Object.assign(logBase, { result: 'failed', error: String(e.message || e), failedStep: e.failedStep || null,
-        completedSteps: e.completedSteps || [], snapshot: e.snapshotId || null, changes: changes.map(c => ({ key: c.key, label: c.label, from: c.before, to: c.after })) })).catch(() => {});
+        completedSteps: e.completedSteps || [], snapshot: e.snapshotId || null, changes: changes.map(c => ({ key: c.key, label: c.label, from: c.before, to: c.after })), ticket })).catch(() => {});
       return { status: 'error', message: String(e.message || e), partial: !!(e.completedSteps && e.completedSteps.length), snapshotId: e.snapshotId || null, restorable: !!e.restorable };
     }
   }
@@ -713,42 +903,63 @@ class MainPanel {
    * connected app, custom metadata and custom setting grant copied as
    * records, then record type assignments and tab settings deployed.
    */
-  async clonePs(m) {
+  async clonePs(m) { return this._copyInto(m, 'clone'); }
+
+  /**
+   * Profile to permission set: copies a profile's object, field, system,
+   * class, page and other access, tab settings and record types into a new
+   * permission set (with the profile's user license), the permission-set-led
+   * model Salesforce recommends. Page layouts, login hours and IP ranges stay
+   * on the profile; nothing is removed from it.
+   */
+  async copyProfile(m) { return this._copyInto(m, 'copyProfile'); }
+
+  async _copyInto(m, mode) {
     const src = this.items.get(m.key);
     const progress = label => this.post({ type: 'cloneProgress', label });
     try {
       const conn = await this._conn();
-      if (!src || src.kind !== 'permissionSet') throw new Error('Only permission sets can be cloned.');
+      if (!src || src.kind !== (mode === 'clone' ? 'permissionSet' : 'profile')) throw new Error(mode === 'clone' ? 'Only permission sets can be cloned.' : 'Only profiles can be copied to a permission set.');
       if (!await this._confirmWrite(conn, m, 'psSaved')) return;
       await this._resolve(src, conn);
       progress('Creating the permission set');
-      const lic = await conn.query('SELECT LicenseId FROM PermissionSet WHERE Id = ' + soqlStr(src.permissionSetId));
       const rec = { Name: m.name, Label: m.label, Description: m.description || src.description || null };
-      if (lic.records[0] && lic.records[0].LicenseId) rec.LicenseId = lic.records[0].LicenseId;
+      if (mode === 'clone') {
+        const lic = await conn.query('SELECT LicenseId FROM PermissionSet WHERE Id = ' + soqlStr(src.permissionSetId));
+        if (lic.records[0] && lic.records[0].LicenseId) rec.LicenseId = lic.records[0].LicenseId;
+      } else if (m.useLicense !== false) {
+        // Some system permissions only exist with a user license; the profile's own keeps them all valid.
+        const lic = await conn.query('SELECT UserLicenseId FROM Profile WHERE Id = ' + soqlStr(src.recordId));
+        if (lic.records[0] && lic.records[0].UserLicenseId) rec.LicenseId = lic.records[0].UserLicenseId;
+      }
       const [id] = await conn.create('PermissionSet', [rec]);
       progress('Copying object, field, system and other access');
       const safety = await this.s.metadata.captureSafety(conn, src.permissionSetId);
       await this.s.metadata.restoreSafety(conn, id, safety);
       const target = { kind: 'permissionSet', permissionSetId: id, recordId: id, apiName: m.name, label: m.label };
-      progress('Copying record type assignments and tab settings');
+      progress('Copying tab settings and record type assignments');
       const [rts, tabs] = await Promise.all([
-        this.s.metadata.readAllRecordTypes(conn, src).catch(e => { this.s.log('Clone: record types not copied: ' + e.message); return []; }),
+        this.s.metadata.readAllRecordTypes(conn, src).catch(e => { this.s.log('Copy: record types not copied: ' + e.message); return []; }),
         this.s.loader.loadTabSettings(conn, src.permissionSetId)
       ]);
-      const meta = rts.map(t => ({ key: 'recordType:' + t.name, after: { visible: true } }))
-        .concat([...tabs].map(([t, v]) => ({ key: 'tab:' + t, after: { visibility: v } })));
+      // Tab settings are records; record types still need a deploy.
+      const tabRows = [...tabs].map(([t, v]) => ({ attributes: { type: 'PermissionSetTabSetting' }, ParentId: id, Name: t, Visibility: v === 'Visible' ? 'DefaultOn' : 'DefaultOff' }));
+      if (tabRows.length) await conn.createRecords(tabRows);
+      const meta = rts.map(t => ({ key: 'recordType:' + t.name, after: { visible: true } }));
       if (meta.length) {
         const copy = await this.s.metadata.captureSafety(conn, id);
         await this.s.metadata.deployEntries(conn, target, meta);
         const lost = await this.s.metadata.checkSafety(conn, id, copy);
         if (lost.count) await this.s.metadata.restoreSafety(conn, id, copy);
       }
-      await this.s.history.appendLog(this.ctx.projectDir, { org: this.ctx.org.username, target: m.name, kind: 'permissionSet', path: 'clone', result: 'created', from: src.apiName,
-        count: safety.objects.length + safety.fields.length + safety.entities.length + safety.system.length + meta.length }).catch(() => {});
+      const counts = { objects: safety.objects.length, fields: safety.fields.length, system: safety.system.length, entities: safety.entities.length, tabs: tabRows.length, recordTypes: meta.length };
+      await this.s.history.appendLog(this.ctx.projectDir, { org: this.ctx.org.username, target: m.name, kind: 'permissionSet', path: mode === 'clone' ? 'clone' : 'copy from profile',
+        result: 'created', from: src.apiName, count: Object.values(counts).reduce((a, b) => a + b, 0) }).catch(() => {});
       await this._reloadListsAndSelect('permissionSet:' + id);
-      this.post({ type: 'psSaved', mode: 'clone', key: 'permissionSet:' + id, label: m.label });
-    } catch (e) { this.s.log('Clone failed: ' + (e.stack || e)); this.post({ type: 'psSaved', error: String(e.message || e) }); }
+      this.post({ type: 'psSaved', mode, key: 'permissionSet:' + id, label: m.label, counts, from: src.label });
+    } catch (e) { this.s.log((mode === 'clone' ? 'Clone' : 'Copy from profile') + ' failed: ' + (e.stack || e)); this.post({ type: 'psSaved', error: String(e.message || e) }); }
   }
+
 
   // ---------- history ----------
 
@@ -895,6 +1106,7 @@ class MainPanel {
     }
     const changes = (m.changes || []).map(c => ({ key: c.key, ref: c.ref || null, before: c.before || null, after: c.after, label: c.label || undefined }));
     const started = Date.now();
+    const ticket = String(m.ticket || '').trim().slice(0, 80) || undefined;
     this._saving = true;
     const usesDeploy = changes.some(c => c.key.startsWith('recordType:'));
     const logBase = { org: this.ctx.org.username, target: item.apiName, kind: item.kind, path: usesDeploy ? 'records + deploy' : 'records', count: changes.length };
@@ -904,12 +1116,13 @@ class MainPanel {
         force: !!m.force,
         metadata: this.s.metadata,
         onSnapshot: (snapshot, safety) => this.s.history.saveSnapshot(this.ctx.projectDir, { org: this.ctx.org.username, target: item.apiName, permissionSetId: item.permissionSetId, items: snapshot, safety: safety || undefined }),
-        onProgress: (label, done, total) => this.post({ type: 'saveProgress', key: m.key, label, done, total })
+        onProgress: (label, done, total) => this.post({ type: 'saveProgress', key: m.key, label, done, total }),
+        log: l => this.s.log(l), pollMs: this.s.pollMs
       });
       if (result.status === 'conflict') return reply({ status: 'conflict', conflicts: result.conflicts });
       await this.s.history.appendLog(this.ctx.projectDir, Object.assign(logBase, {
         result: result.mismatches.length ? 'saved with differences' : 'saved', snapshot: result.snapshotId,
-        changes: changes.map(c => ({ key: c.key, label: c.label, from: c.before, to: c.after })), ms: Date.now() - started
+        changes: changes.map(c => ({ key: c.key, label: c.label, from: c.before, to: c.after })), ms: Date.now() - started, ticket
       })).catch(e => this.s.log('Change log write failed: ' + e.message));
       this.s.log('Saved ' + changes.length + ' change(s) to ' + item.apiName + ' in ' + (Date.now() - started) + ' ms (snapshot ' + result.snapshotId + ')');
       // Undo = put every entry back to the value read just before the save.
@@ -964,7 +1177,7 @@ function itemKey(i) { return i.kind + ':' + i.recordId; }
 
 function listRow(key, i) {
   return { key, kind: i.kind, label: i.label, apiName: i.apiName, managed: !!i.managed, standard: !!i.standard,
-    status: i.status || '', license: i.license || '' };
+    status: i.status || '', license: i.license || '', sessionBased: !!i.sessionBased };
 }
 
 function contextMessage(ctx, conn, extra) {
@@ -977,6 +1190,7 @@ function contextMessage(ctx, conn, extra) {
     projectDir: (ctx && ctx.projectDir) || '',
     org: org ? { alias: org.alias, username: org.username, location: org.location || '' } : null,
     production: conn ? conn.isProduction === true : e.production === true,
+    sandbox: conn ? conn.isSandbox === true : e.sandbox === true,
     mode: conn ? conn.mode : null,
     connecting: !!e.connecting,
     offline: !!e.offline,
@@ -1003,9 +1217,12 @@ function toView(item, conn, detail) {
       license: item.license || '', status: item.status || '', activeAssignees: detail.activeAssignees,
       managed: !!item.managed, standard: !!item.standard, description: item.description || '',
       modified: item.modified || null, editable: editableCategories(item).length > 0, readOnlyReason: blocked || '',
-      editableCats: editableCategories(item), canRename: item.kind === 'permissionSet' && !item.managed, canClone: item.kind === 'permissionSet'
+      editableCats: editableCategories(item), canRename: item.kind === 'permissionSet' && !item.managed, canClone: item.kind === 'permissionSet',
+      canCopyToPs: item.kind === 'profile', sessionBased: !!item.sessionBased
     },
     objects, system,
+    // Objects where this item grants field access but no object access (Event and Task always work this way).
+    fieldObjects: (detail.fieldObjects || []).filter(f => !objects.some(o => o.name === f.name)),
     objectColumns: detail.objectColumns || ['read', 'create', 'edit', 'delete', 'viewAll', 'modifyAll']
   };
 }

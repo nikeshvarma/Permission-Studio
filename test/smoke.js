@@ -395,7 +395,11 @@ test('older API versions without PermissionsViewAllFields still load', async () 
 
 test('object page: only permissionable fields, Edit blocked on calculated ones, current access filled in', async () => {
   const od = await loader.loadObjectDetail(conn(), item(), 'Lead');
-  assert.deepStrictEqual(od.fields.map(f => f.apiName), ['Description', 'Industry', 'Rating', 'Score__c'], 'Id and required Company left out');
+  assert.deepStrictEqual(od.fields.map(f => f.apiName), ['Company', 'CreatedDate', 'Description', 'Industry', 'LastModifiedDate', 'LastName', 'Rating', 'Score__c'],
+    'required and system fields listed as in Setup; Id, IsDeleted and SystemModstamp hidden');
+  assert.deepStrictEqual(['LastName', 'CreatedDate'].map(n => { const f = od.fields.find(x => x.apiName === n); return [f.fixed, f.read, f.edit, f.canEdit]; }),
+    [[true, true, true, false], [true, true, false, false]], 'fixed: always readable, editable only if Salesforce lets anyone edit it');
+  assert.strictEqual(od.objectPermissions, true);
   assert.deepStrictEqual(od.fields.find(f => f.apiName === 'Rating'), { name: 'Lead.Rating', apiName: 'Rating', label: 'Rating', type: 'picklist', canEdit: true, read: true, edit: false });
   assert.strictEqual(od.fields.find(f => f.apiName === 'Score__c').canEdit, false);
   assert.ok(Object.values(od.props).every(v => v === false), 'no Lead row yet');
@@ -403,7 +407,12 @@ test('object page: only permissionable fields, Edit blocked on calculated ones, 
 
 test('object catalog: permissionable objects only', async () => {
   const cat = await loader.objectCatalog(conn());
-  assert.deepStrictEqual(cat.map(o => o.name), ['Account', 'Custom_Thing__c', 'Lead']);
+  assert.deepStrictEqual(cat.map(o => [o.name, o.objectPerms, o.fieldPerms]), [['Account', true, true], ['Contact', true, true], ['Custom_Thing__c', true, true],
+    ['Event', false, true], ['Lead', true, true], ['Opportunity', true, true], ['Task', false, true]], 'exactly the objects Salesforce lists; activities take field permissions only');
+  S.noObjectPicklist = true;
+  const c2 = conn();
+  assert.deepStrictEqual((await loader.objectCatalog(c2)).map(o => o.name), ['Account', 'Custom_Thing__c', 'Event', 'Lead', 'Region__mdt', 'Task'].filter(n => n !== 'Region__mdt'), 'orgs that don\u2019t say: the old rule');
+  S.noObjectPicklist = false;
 });
 
 test('catalog: three lists in one shape, with last-modified', async () => {
@@ -413,7 +422,7 @@ test('catalog: three lists in one shape, with last-modified', async () => {
   assert.deepStrictEqual(ps.map(p => p.apiName), ['acme__Reader', 'Sales_Ops']);
   assert.deepStrictEqual(ps[1].modified, { at: '2026-10-01T10:00:00.000+0000', by: 'Admin User' });
   const g = await catalog.listGroups(c);
-  assert.strictEqual(g[0].status, 'Updating');
+  assert.strictEqual(g[0].status, 'Updated');
   assert.strictEqual(await catalog.resolveGroupPermissionSet(c, g[0].recordId), '0PS00000000000GAAA');
   const p = await catalog.listProfiles(c);
   assert.deepStrictEqual(p.map(x => [x.label, x.standard]), [['Custom: Sales', false], ['System Administrator', true]]);
@@ -676,7 +685,7 @@ test('profile XML -> same categories as permission sets', () => {
   const m = model.fromXml(PROFILE_XML, 'Custom Sales');
   assert.strictEqual(m.kind, 'profile');
   assert.strictEqual(m.scalars.description, '');
-  assert.deepStrictEqual(m.entries.get('tab:standard-Lead'), { visibility: 'DefaultOn' }, 'tabVisibilities maps to tab');
+  assert.deepStrictEqual(m.entries.get('tab:standard-Lead'), { visibility: 'Visible' }, 'tabVisibilities maps to tab, in the shared words');
   assert.ok(m.entries.has('layout:Lead-Lead Layout|'));
   assert.ok(m.entries.has('layout:Lead-Partner Layout|Lead.Partner'));
   assert.deepStrictEqual(m.entries.get('loginHours:all'), { mondayStart: '480', mondayEnd: '1080' });
@@ -802,7 +811,7 @@ test('main screen: lists, detail and object page come from the org, then from th
   assert.deepStrictEqual([d.refreshing, d.data.header.editable, d.data.header.modified.by], [false, true, 'Admin User']);
   p._send({ type: 'openObject', key, object: 'Lead' });
   await settle();
-  assert.strictEqual(posts(p, 'objectDetail').pop().data.fields.length, 4);
+  assert.strictEqual(posts(p, 'objectDetail').pop().data.fields.filter(f => !f.fixed).length, 4);
   await svc.cacheFor('uat@example.com').flush();
   assert.ok(!JSON.stringify(p.posted).includes(S.token), 'no token reaches the webview');
 
@@ -1173,26 +1182,45 @@ test('what can be changed where', () => {
   const ps = ed({ kind: 'permissionSet' });
   assert.ok(ps.includes('tab') && ps.includes('assignment') && !ps.includes('layoutAssignment') && !ps.includes('loginHours'));
   const prof = ed({ kind: 'profile' });
-  assert.ok(prof.includes('layoutAssignment') && prof.includes('loginIpRanges') && !prof.includes('assignment') && !prof.includes('tab'));
+  assert.ok(prof.includes('layoutAssignment') && prof.includes('loginIpRanges') && !prof.includes('assignment') && prof.includes('tab'), 'profiles take tab settings since 2.1.0');
 });
 
-test('tab settings: read live, saved with a guarded deploy, read back', async () => {
+test('tab settings are records: saved with other changes in one request, for permission sets and profiles, no deploy', async () => {
   resetOrg();
   fs.writeFileSync(tokenFile, S.token);
   await withEnv({ FAKE_SF_TOKEN: tokenFile, FAKE_SF_INSTANCE: INSTANCE }, async () => {
     const c = metaConn();
     const page = await loader.loadTabsPage(c, item());
     assert.deepStrictEqual(page.items.map(t => [t.name, t.visibility]), [['standard-Account', 'None'], ['Custom_Thing__c', 'None'], ['standard-Lead', 'Visible']]);
+    const calls = [];
+    const spy = Object.assign({}, metadata, { deployEntries: async () => { calls.push('deploy'); }, captureSafety: async () => { calls.push('safety'); return {}; } });
+    S.compositeWrites = 0;
     const r = await applyMod.apply(c, item(), [
       { key: 'tab:standard-Account', before: { visibility: 'None' }, after: { visibility: 'Available' } },
-      { key: 'tab:standard-Lead', before: { visibility: 'Visible' }, after: { visibility: 'None' } }
-    ], saveOpts({ metadata }));
-    assert.strictEqual(r.status, 'saved', JSON.stringify(r));
-    assert.deepStrictEqual(r.mismatches, []);
-    assert.deepStrictEqual(F.T.PermissionSetTabSetting.filter(t => t.ParentId === PS1).map(t => [t.Name, t.Visibility]), [['standard-Account', 'DefaultOff']]);
-    await assert.rejects(applyMod.apply(c, { kind: 'profile', recordId: '00e000000000002AAA', permissionSetId: '0PS0000000000PRAAA', apiName: 'Custom: Sales' },
-      [{ key: 'tab:standard-Lead', before: null, after: { visibility: 'Visible' } }], saveOpts({ metadata })), /Profile tab settings/);
+      { key: 'tab:standard-Lead', before: { visibility: 'Visible' }, after: { visibility: 'None' } },
+      { key: 'field:Lead.Industry', before: null, after: { read: true, edit: false } }
+    ], saveOpts({ metadata: spy }));
+    assert.deepStrictEqual([r.status, r.mismatches, r.oneRequest], ['saved', [], true], JSON.stringify(r));
+    assert.deepStrictEqual(calls, [], 'no Metadata API deploy, no safety copy');
+    assert.strictEqual(S.compositeWrites, 1, 'tabs and the field change in one request');
+    assert.deepStrictEqual(F.T.PermissionSetTabSetting.filter(t => t.ParentId === PS1).map(t => [t.Name, t.Visibility]), [['standard-Account', 'DefaultOff']], 'a hidden tab has no row');
+    const prof = { kind: 'profile', recordId: '00e000000000002AAA', permissionSetId: '0PS0000000000PRAAA', apiName: 'Custom: Sales', label: 'Custom: Sales' };
+    const p2 = await applyMod.apply(c, prof, [{ key: 'tab:standard-Lead', before: { visibility: 'None' }, after: { visibility: 'Visible' } }], saveOpts({ metadata: spy }));
+    assert.strictEqual(p2.status, 'saved', 'profile tab settings, through the profile\u2019s permission set');
+    assert.ok(F.T.PermissionSetTabSetting.some(t => t.ParentId === '0PS0000000000PRAAA' && t.Name === 'standard-Lead' && t.Visibility === 'DefaultOn'));
+    await assert.rejects(applyMod.apply(c, prof, [{ key: 'tab:standard-Lead', before: { visibility: 'Visible' }, after: { visibility: 'Sometimes' } }], saveOpts({ metadata: spy })), /unknown tab visibility/);
   });
+});
+
+test('profile files: tab values read and written in the profile\u2019s own words', () => {
+  const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<Profile xmlns="http://soap.sforce.com/2006/04/metadata">\n    <tabVisibilities>\n        <tab>standard-Lead</tab>\n        <visibility>DefaultOn</visibility>\n    </tabVisibilities>\n</Profile>\n';
+  const m = model.fromXml(xml, 'Custom: Sales');
+  assert.deepStrictEqual(m.entries.get('tab:standard-Lead'), { visibility: 'Visible' });
+  const out = localFile.applyToText(xml, 'profile', [{ key: 'tab:standard-Lead', after: { visibility: 'None' } }, { key: 'tab:standard-Account', after: { visibility: 'Available' } }]).text;
+  assert.ok(out.includes('<tab>standard-Lead</tab>\n        <visibility>Hidden</visibility>') && out.includes('<tab>standard-Account</tab>\n        <visibility>DefaultOff</visibility>'), out);
+  const psOut = localFile.applyToText(xml.replace(/Profile/g, 'PermissionSet').replace(/tabVisibilities/g, 'tabSettings').replace('DefaultOn', 'Visible'), 'permissionSet',
+    [{ key: 'tab:standard-Lead', after: { visibility: 'Available' } }]).text;
+  assert.ok(psOut.includes('<visibility>Available</visibility>'), 'permission sets keep Visible / Available / None');
 });
 
 const PROFILE = () => ({ kind: 'profile', recordId: '00e000000000002AAA', permissionSetId: '0PS0000000000PRAAA', apiName: 'Custom: Sales', label: 'Custom: Sales' });
@@ -1632,7 +1660,7 @@ const GROUP = () => ({ kind: 'group', recordId: '0PG000000000001AAA', permission
 test('groups: members with labels, the muting permission set, and the recalculation status', async () => {
   resetOrg();
   const g = await loader.loadGroupComponents(conn(), GROUP());
-  assert.strictEqual(g.status, 'Updating');
+  assert.strictEqual(g.status, 'Updated');
   assert.deepStrictEqual(g.components.map(c => [c.label, c.apiName, c.muting]), [['Sales Ops', 'Sales_Ops', false], ['Sales Bundle Muting', 'Sales_Bundle_Muting', true]]);
 });
 
@@ -1698,7 +1726,7 @@ test('change summary: Markdown table for tickets, tab-separated for Excel, plain
   const both = summaryMod.toMarkdown(entries, { org: 'uat' });
   assert.ok(both.includes('| Item | Area | Entry | Before | After | Saved |') && both.includes('| Sales_Bundle | Permission Sets in Group | Reader | Not included | Included |'));
   const tsv = summaryMod.toTsv(entries, { org: 'uat' }).split('\n');
-  assert.strictEqual(tsv[0], 'Item\tArea\tEntry\tBefore\tAfter\tSaved\tOrg\tResult');
+  assert.strictEqual(tsv[0], 'Item\tArea\tEntry\tBefore\tAfter\tSaved\tOrg\tResult\tTicket');
   assert.strictEqual(tsv[1].split('\t').slice(0, 5).join('|'), 'Sales_Ops|Object Permissions|Lead|Read|Read, Edit');
   assert.strictEqual(tsv.filter(Boolean).length, 9);
 });
@@ -1770,6 +1798,458 @@ test('the file commands appear only on permission set, profile and group files',
   assert.deepStrictEqual(['explorer/context', 'editor/title', 'editor/title/context', 'commandPalette'].map(m => pkg.contributes.menus[m][0].command), Array(4).fill('permStudio.openFile'));
 });
 
+// ---------- 2.0.8: objects without object permissions; required and system fields ----------
+test('saving object access for Event is stopped with a clear reason, before anything is written', async () => {
+  resetOrg();
+  const c = conn();
+  S.writes = [];
+  await assert.rejects(applyMod.apply(c, item(), [
+    { key: 'object:Event', before: null, after: { read: true, create: false, edit: false, delete: false, viewAll: false, modifyAll: false, viewAllFields: false } },
+    { key: 'field:Lead.Industry', before: null, after: { read: true, edit: false } }], saveOpts()),
+  e => /Event: Salesforce has no object permissions for this object \(activity access comes from the Edit Tasks and Edit Events system permissions\)/.test(e.message));
+  assert.strictEqual(S.writes.length, 0, 'nothing written, not even the valid field change');
+  const r = await applyMod.apply(c, item(), [{ key: 'field:Event.Region__c', before: null, after: { read: true, edit: true } }], saveOpts());
+  assert.deepStrictEqual([r.status, r.mismatches], ['saved', []], 'an activity field\u2019s access can still be set');
+});
+
+test('Event opens with its fields and a note instead of object permissions', async () => {
+  const od = await loader.loadObjectDetail(conn(), item(), 'Event');
+  assert.strictEqual(od.objectPermissions, false);
+  assert.deepStrictEqual(od.fields.map(f => [f.apiName, !!f.fixed]), [['Region__c', false], ['Subject', true]]);
+  assert.strictEqual(od.fields.find(f => f.apiName === 'Region__c').read, true, 'the saved field access is shown');
+});
+
+test('who has access on Event: by field only, with a clear message for object-level questions', async () => {
+  const c = conn();
+  await assert.rejects(loader.whoHasAccess(c, { object: 'Event', level: 'read' }), /Event has no object permissions in Salesforce: activity access comes from the Edit Tasks and Edit Events/);
+  const r = await loader.whoHasAccess(c, { object: 'Event', field: 'Region__c', level: 'edit' });
+  assert.strictEqual(r.fieldOnly, true);
+  assert.deepStrictEqual(r.users.map(u => u.name), ['Ana Lima', 'Ben Okafor'], 'everyone who gets the field from Sales Ops');
+  assert.deepStrictEqual(r.partial, []);
+});
+
+test('wizards: field access for activities skips the object step; object access refuses activities', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices());
+  const p = mp.show();
+  await mp.load();
+  const so = posts(p, 'lists').pop().lists.permissionSet.find(r => r.apiName === 'Sales_Ops').key;
+  await mp.wizardPlan({ object: 'Event', fields: [{ name: 'Event.Region__c', canEdit: true }], targets: [so], level: 'read', grantObject: true });
+  assert.deepStrictEqual(posts(p, 'wizardPlan').pop().plan[0].changes.map(c => c.key), ['field:Event.Region__c'], 'no object change attempted');
+  await mp.objWizardPlan({ object: 'Task', flags: ['read'], recordTypes: [], targets: [so] });
+  assert.match(posts(p, 'objWizardPlan').pop().error, /Task has no object permissions in Salesforce/);
+});
+
+// ---------- 2.0.9: permission sets inside recalculating groups ----------
+// The reported save: field access added, an Apex class added and one removed, object access widened, a system permission on.
+const REPORTED = () => [
+  { key: 'field:Lead.Industry', before: null, after: { read: true, edit: false } },
+  { key: 'field:Lead.Description', before: null, after: { read: true, edit: true } },
+  { key: 'apexClass:AccountTriggerHandler', ref: '01p000000000001AAA', before: { enabled: false }, after: { enabled: true } },
+  { key: 'object:Account', before: { read: true, create: true, edit: true, delete: false, viewAll: false, modifyAll: false, viewAllFields: false },
+    after: { read: true, create: true, edit: true, delete: true, viewAll: false, modifyAll: false, viewAllFields: false } },
+  { key: 'user:ApiEnabled', before: { enabled: false }, after: { enabled: true } },
+  { key: 'apexClass:LeadService', ref: '01p000000000002AAA', before: { enabled: true }, after: { enabled: false } }
+];
+function reportedSaved() {
+  assert.ok(F.T.FieldPermissions.some(x => x.ParentId === PS1 && x.Field === 'Lead.Description' && x.PermissionsEdit));
+  assert.ok(!F.T.SetupEntityAccess.some(x => x.ParentId === PS1 && x.SetupEntityId === '01p000000000002AAA'), 'the removal that failed in the report is saved');
+  assert.ok(F.T.SetupEntityAccess.some(x => x.ParentId === PS1 && x.SetupEntityId === '01p000000000001AAA'));
+  assert.strictEqual(F.T.ObjectPermissions.find(x => x.ParentId === PS1 && x.SobjectType === 'Account').PermissionsDelete, true);
+  assert.strictEqual(F.T.PermissionSet.find(x => x.Id === PS1).PermissionsApiEnabled, true);
+}
+
+test('the reported save, inside a group: everything in one request, one transaction, no waiting', async () => {
+  resetOrg();
+  S.lockDuringRecalc = true;
+  try {
+    S.requests = []; S.compositeWrites = 0;
+    const progress = [];
+    const r = await applyMod.apply(conn(), item(), REPORTED(), Object.assign(saveOpts(), { pollMs: 5, onProgress: m => progress.push(m) }));
+    assert.deepStrictEqual([r.status, r.mismatches, r.oneRequest], ['saved', [], true], JSON.stringify(r));
+    assert.strictEqual(S.compositeWrites, 1, 'one request carried the adds, the update and the removal');
+    assert.ok(!S.requests.some(x => /\/composite\/sobjects/.test(x.url)), 'no separate writes');
+    assert.strictEqual(S.refusedWhileUpdating, 0);
+    assert.ok(progress.includes('Saving all 6 record changes in one request'), progress.join(' | '));
+    reportedSaved();
+    assert.strictEqual(F.T.PermissionSetGroup[0].Status, 'Updating', 'the group recalculates once, after the transaction');
+  } finally { S.lockDuringRecalc = false; }
+});
+
+test('if Salesforce locks the permission set inside one request: rolled back, then saved step by step with waiting', async () => {
+  resetOrg();
+  S.lockDuringRecalc = true; S.compositeLocks = true;
+  const logs = [];
+  try {
+    const progress = [];
+    const r = await applyMod.apply(conn(), item(), REPORTED(), Object.assign(saveOpts(), { pollMs: 5, onProgress: m => progress.push(m), log: l => logs.push(l) }));
+    assert.deepStrictEqual([r.status, r.mismatches, r.oneRequest], ['saved', [], false], JSON.stringify(r));
+    assert.ok(logs.some(l => /One-request save not used \(DELETE_FAILED: The Sales_Bundle permission set group is updating/.test(l)) || logs.some(l => /One-request save not used/.test(l)), logs.join(' | '));
+    assert.ok(progress.some(m => /^Waiting for Salesforce to finish recalculating Sales_Bundle/.test(m)), progress.join(' | '));
+    reportedSaved();
+  } finally { S.lockDuringRecalc = false; S.compositeLocks = false; }
+});
+
+test('if a failed request was not rolled back, only what is missing is sent again', async () => {
+  resetOrg();
+  S.lockDuringRecalc = true; S.compositeLocks = true; S.compositeNoRollback = true;
+  try {
+    const r = await applyMod.apply(conn(), item(), REPORTED(), Object.assign(saveOpts(), { pollMs: 5 }));
+    assert.deepStrictEqual([r.status, r.mismatches], ['saved', []], JSON.stringify(r));
+    reportedSaved();
+    assert.strictEqual(F.T.FieldPermissions.filter(x => x.ParentId === PS1 && x.Field === 'Lead.Description').length, 1, 'no duplicate rows');
+  } finally { S.lockDuringRecalc = false; S.compositeLocks = false; S.compositeNoRollback = false; }
+});
+
+test('orgs that refuse writes in one request, and CLI connections, save step by step', async () => {
+  resetOrg();
+  S.noCompositeWrites = true;
+  try {
+    const r = await applyMod.apply(conn(), item(), REPORTED(), Object.assign(saveOpts(), { pollMs: 5 }));
+    assert.deepStrictEqual([r.status, r.oneRequest], ['saved', false]);
+    reportedSaved();
+  } finally { S.noCompositeWrites = false; }
+  resetOrg();
+  fs.writeFileSync(tokenFile, S.token);
+  await withEnv({ FAKE_SF_TOKEN: tokenFile, FAKE_SF_INSTANCE: INSTANCE }, async () => {
+    S.compositeWrites = 0;
+    const r = await applyMod.apply(conn({ mode: 'cli' }), item(), REPORTED(), Object.assign(saveOpts(), { pollMs: 5 }));
+    assert.deepStrictEqual([r.status, r.oneRequest], ['saved', false]);
+    assert.strictEqual(S.compositeWrites, 0);
+    reportedSaved();
+  });
+});
+
+test('a group still recalculating from an earlier change is waited for before the first write; a stuck one stops cleanly', async () => {
+  resetOrg();
+  S.lockDuringRecalc = true;
+  try {
+    F.T.PermissionSetGroup[0].Status = 'Updating';
+    S.groupPolls = 3;
+    S.writes = [];
+    const progress = [];
+    const r = await applyMod.apply(conn(), item(), [{ key: 'field:Lead.Industry', before: null, after: { read: true, edit: false } }],
+      Object.assign(saveOpts(), { pollMs: 5, onProgress: m => progress.push(m) }));
+    assert.strictEqual(r.status, 'saved');
+    assert.strictEqual(S.refusedWhileUpdating, 0, 'waited instead of being refused');
+    assert.ok(progress[0].startsWith('Waiting for Salesforce to finish recalculating Sales_Bundle'));
+    F.T.PermissionSetGroup[0].Status = 'Updating';
+    S.groupPolls = 0;
+    S.writes = [];
+    await assert.rejects(applyMod.apply(conn(), item(), [{ key: 'field:Lead.Description', before: null, after: { read: true, edit: true } }],
+      Object.assign(saveOpts(), { pollMs: 5, maxGroupWaitMs: 40 })), e => e.tag === 'GROUP_BUSY' && /still recalculating Sales_Bundle after .*Save again once the group shows Updated/.test(e.message));
+    assert.strictEqual(S.writes.length, 0, 'nothing sent');
+  } finally { S.lockDuringRecalc = false; }
+});
+
+test('outside groups: one request and no status checks; the CLI path takes each record\u2019s own type', async () => {
+  resetOrg();
+  S.requests = [];
+  const r = await applyMod.apply(conn(), Object.assign(item(), { permissionSetId: '0PS000000000002AAA' }), [
+    { key: 'field:Lead.Industry', before: null, after: { read: true, edit: false } },
+    { key: 'object:Contact', before: null, after: { read: true, create: false, edit: false, delete: false, viewAll: false, modifyAll: false, viewAllFields: false } }
+  ], Object.assign(saveOpts(), { pollMs: 5000 }));
+  assert.deepStrictEqual([r.status, r.oneRequest], ['saved', true]);
+  assert.ok(!S.requests.some(x => /PermissionSetGroup%20WHERE|PermissionSetGroup\+WHERE/.test(x.url)), 'not in a group: no status checks');
+  await withEnv({ FAKE_SF_TOKEN: tokenFile, FAKE_SF_INSTANCE: INSTANCE }, async () => {
+    fs.writeFileSync(tokenFile, S.token);
+    await conn({ mode: 'cli' }).createRecords([{ attributes: { type: 'FieldPermissions' }, ParentId: '0PS000000000002AAA', SobjectType: 'Lead', Field: 'Lead.Rating', PermissionsRead: true, PermissionsEdit: false }]);
+    assert.ok(F.T.FieldPermissions.some(x => x.ParentId === '0PS000000000002AAA' && x.Field === 'Lead.Rating'));
+  });
+});
+
+test('Object Settings lists objects where only fields are granted, such as Event', async () => {
+  resetOrg();
+  const c = conn();
+  await applyMod.apply(c, item(), [{ key: 'field:Event.Region__c', before: null, after: { read: true, edit: false } }], saveOpts());
+  const d = await loader.loadDetail(c, item());
+  assert.deepStrictEqual(d.fieldObjects.find(f => f.name === 'Event'), { name: 'Event', label: 'Event', fields: 1, objectPermissions: false });
+  assert.strictEqual(d.fieldObjects.find(f => f.name === 'Lead').objectPermissions, true, 'Lead can take object access; it just has none yet');
+  assert.ok(d.fieldObjects.some(f => f.name === 'Lead'), 'every object with field grants is counted');
+  const vscode = require('vscode');
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices());
+  const p = mp.show();
+  await mp.load();
+  await mp.select(posts(p, 'lists').pop().lists.permissionSet.find(r => r.apiName === 'Sales_Ops').key);
+  const view = posts(p, 'detail').pop().data;
+  assert.deepStrictEqual(view.fieldObjects.map(f => f.name), ['Event', 'Lead'], 'objects with field grants but no object access are added; Account is listed already');
+});
+
+// ---------- 2.1.0: rules, security view, profile copy, licences, Setup changes, profile filtering ----------
+test('Salesforce\u2019s dependency rules are read for system and custom permissions; other kinds are left out', async () => {
+  resetOrg();
+  const d = await loader.permissionDependencies(conn());
+  assert.deepStrictEqual(d.system, { ModifyAllData: ['ViewAllData'], PermissionsViewAllData: ['PermissionsApiEnabled'] }, 'object-permission rules skipped; names as the org gives them');
+  assert.deepStrictEqual(d.custom, { '0CP000000000002AAA': ['0CP000000000001AAA'] });
+  assert.deepStrictEqual(d.problems, []);
+});
+
+test('the screen gets the rules once and keeps them a day', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices());
+  const p = mp.show();
+  await mp.load();
+  S.requests = [];
+  await mp.postDependencies();
+  await mp.postDependencies();
+  assert.strictEqual(S.requests.filter(r => / FROM PermissionDependency$/.test(decodeURIComponent(r.url).split('?q=').pop())).length, 1, 'read once, then cached');
+  assert.deepStrictEqual(posts(p, 'permDeps').pop().custom, { '0CP000000000002AAA': ['0CP000000000001AAA'] });
+});
+
+test('who has a system or custom permission, through which permission sets, profiles and groups', async () => {
+  resetOrg();
+  const c = conn();
+  const opts = await loader.permissionOptions(c);
+  assert.ok(opts.system.some(o => o.name === 'ModifyAllData'));
+  assert.deepStrictEqual(opts.custom.map(o => [o.id, o.name]), [['0CP000000000001AAA', 'Approve_Discounts'], ['0CP000000000002AAA', 'Bypass_Validation']]);
+  const r = await loader.whoHasPermission(c, { kind: 'system', name: 'ModifyAllData', label: 'Modify All Data' });
+  assert.deepStrictEqual(r.permission, { kind: 'system', name: 'ModifyAllData', label: 'Modify All Data' });
+  assert.ok(r.sources.some(x => x.label === 'Sales Ops' && x.kind === 'permissionSet'));
+  const viaPs1 = new Set(F.T.PermissionSetAssignment.filter(a => a.PermissionSetId === PS1).map(a => a.AssigneeId));
+  for (const u of r.users) assert.ok(u.objectFrom.length);
+  assert.ok([...viaPs1].every(id => !F.T.User.find(x => x.Id === id && x.IsActive) || r.users.some(u => u.userId === id)), 'everyone assigned Sales Ops is listed');
+  const cp = await loader.whoHasPermission(c, { kind: 'custom', id: '0CP000000000001AAA', label: 'Approve Discounts' });
+  assert.deepStrictEqual(cp.sources.map(x => x.label), ['Sales Ops']);
+  await assert.rejects(loader.whoHasPermission(c, { kind: 'system', name: 'Drop; Table' }), /Unknown system permission/);
+  const vscode = require('vscode');
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices());
+  const p = mp.show();
+  await mp.load();
+  await mp.lookupPermission({ kind: 'system', name: 'ModifyAllData', label: 'Modify All Data' });
+  assert.ok(posts(p, 'lookupResult').pop().result.sources.find(x => x.label === 'Sales Ops').key, 'sources link to their item');
+});
+
+test('copy a profile to a new permission set: its access, its licence, tab settings and record types; the profile untouched', async () => {
+  resetOrg();
+  fs.writeFileSync(tokenFile, S.token);
+  F.T.PermissionSetTabSetting.push({ Id: '01P000000000009AAA', ParentId: '0PS0000000000PRAAA', Name: 'standard-Account', Visibility: 'DefaultOff' });
+  const before = JSON.stringify([F.T.ObjectPermissions, F.T.FieldPermissions].map(t => t.filter(x => x.ParentId === '0PS0000000000PRAAA')));
+  await withEnv({ FAKE_SF_TOKEN: tokenFile, FAKE_SF_INSTANCE: INSTANCE }, async () => {
+    const vscode = require('vscode');
+    const c = metaConn();
+    const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices({ openConnection: async () => c }));
+    const p = mp.show();
+    await mp.load();
+    const key = posts(p, 'lists').pop().lists.profile.find(r => r.label === 'Custom: Sales').key;
+    await mp.select(key);
+    assert.strictEqual(posts(p, 'detail').pop().data.header.canCopyToPs, true);
+    await mp.copyProfile({ key, label: 'Sales Access', name: 'Sales_Access', description: 'From the Custom: Sales profile' });
+    const done = posts(p, 'psSaved').pop();
+    assert.ok(!done.error, done.error);
+    assert.strictEqual(done.mode, 'copyProfile');
+    const id = done.key.split(':')[1];
+    const made = F.T.PermissionSet.find(x => x.Id === id);
+    assert.deepStrictEqual([made.Name, made.LicenseId, made.IsOwnedByProfile], ['Sales_Access', '100000000000001AAA', false], 'with the profile\u2019s user licence');
+    const objs = t => F.T[t].filter(x => x.ParentId === '0PS0000000000PRAAA').length;
+    assert.strictEqual(F.T.ObjectPermissions.filter(x => x.ParentId === id).length, objs('ObjectPermissions'));
+    assert.strictEqual(F.T.FieldPermissions.filter(x => x.ParentId === id).length, objs('FieldPermissions'));
+    assert.deepStrictEqual(F.T.PermissionSetTabSetting.filter(t => t.ParentId === id).map(t => [t.Name, t.Visibility]), [['standard-Account', 'DefaultOff']], 'tab settings copied as records');
+    assert.ok(done.counts && done.counts.tabs === 1 && typeof done.counts.recordTypes === 'number');
+    assert.strictEqual(JSON.stringify([F.T.ObjectPermissions, F.T.FieldPermissions].map(t => t.filter(x => x.ParentId === '0PS0000000000PRAAA'))), before, 'nothing removed from the profile');
+    await mp.copyProfile({ key: posts(p, 'lists').pop().lists.permissionSet[0].key, label: 'X', name: 'X' });
+    assert.match(posts(p, 'psSaved').pop().error, /Only profiles can be copied/);
+  });
+});
+
+test('licences are checked before assigning: user licence and permission set licence', async () => {
+  resetOrg();
+  const c = conn();
+  const ps1 = F.T.PermissionSet.find(x => x.Id === PS1);
+  Object.assign(ps1, { LicenseId: '100000000000001AAA', License: { Name: 'Salesforce' } });
+  const cara = F.T.User.find(u => u.Name === 'Cara Diaz');
+  cara.Profile = Object.assign({}, cara.Profile, { UserLicenseId: '100000000000002AAA', UserLicense: { Name: 'Salesforce Platform' } });
+  const b = await loader.assignmentBlockers(c, item(), ['005000000000001AAA', cara.Id]);
+  assert.deepStrictEqual([...b.keys()], [cara.Id]);
+  assert.match(b.get(cara.Id), /has the Salesforce Platform user license; this permission set needs Salesforce/);
+  S.writes = [];
+  await assert.rejects(applyMod.apply(c, item(), [
+    { key: 'assignment:' + cara.Id, ref: cara.Id, label: 'Cara Diaz', before: { assigned: false, expires: null }, after: { assigned: true, expires: null } },
+    { key: 'field:Lead.Industry', before: null, after: { read: true, edit: false } }], saveOpts()), /Cara Diaz has the Salesforce Platform user license/);
+  assert.strictEqual(S.writes.length, 0, 'nothing written');
+  const reader = F.T.PermissionSet.find(x => x.Id === '0PS000000000002AAA');
+  Object.assign(reader, { LicenseId: '0PL000000000001AAA', License: { Name: 'Sales Cloud Einstein' } });
+  const item2 = Object.assign(item(), { permissionSetId: '0PS000000000002AAA', recordId: '0PS000000000002AAA' });
+  assert.match((await loader.assignmentBlockers(c, item2, ['005000000000001AAA'])).get('005000000000001AAA'), /needs the Sales Cloud Einstein permission set license assigned first/);
+  F.T.PermissionSetLicenseAssign.push({ Id: '2LA000000000001AAA', AssigneeId: '005000000000001AAA', PermissionSetLicenseId: '0PL000000000001AAA' });
+  assert.strictEqual((await loader.assignmentBlockers(c, item2, ['005000000000001AAA'])).size, 0);
+  const vscode = require('vscode');
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices());
+  const p = mp.show();
+  await mp.load();
+  await mp.checkAssignees({ key: 'permissionSet:' + PS1, userIds: [cara.Id] });
+  assert.ok(posts(p, 'assigneeChecks').pop().blockers[cara.Id]);
+});
+
+test('session-based permission sets are marked; orgs without the field still list everything', async () => {
+  resetOrg();
+  F.T.PermissionSet.find(x => x.Id === PS1).HasActivationRequired = true;
+  const list = await catalog.listPermissionSets(conn());
+  assert.deepStrictEqual(list.map(x => [x.apiName, x.sessionBased]), [['acme__Reader', false], ['Sales_Ops', true]]);
+  S.noActivationField = true;
+  try { assert.strictEqual((await catalog.listPermissionSets(conn())).length, 2); } finally { S.noActivationField = false; }
+});
+
+test('changes made in Setup: Setup Audit Trail entries about the item, or a clear note without the permission', async () => {
+  resetOrg();
+  const c = conn();
+  const ps = await loader.setupChanges(c, { label: 'Sales Ops', apiName: 'Sales_Ops' }, 90);
+  assert.deepStrictEqual(ps.map(x => [x.by, x.section]), [['Jordan Lee', 'Manage Users']]);
+  assert.match(ps[0].display, /Export Reports/);
+  const prof = await loader.setupChanges(c, { label: 'Custom: Sales', apiName: 'Custom: Sales' }, 90);
+  assert.strictEqual(prof.length, 1);
+  assert.strictEqual((await loader.setupChanges(c, { label: 'Reader', apiName: 'acme__Reader' }, 90))[0].delegate, 'Support Agent');
+  const vscode = require('vscode');
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices());
+  const p = mp.show();
+  await mp.load();
+  const key = 'permissionSet:' + PS1;
+  await mp.select(key);
+  S.noAuditAccess = true;
+  try {
+    await mp.openAudit(key, { force: true });
+    assert.deepStrictEqual(posts(p, 'audit').pop().data, { items: [], denied: true });
+  } finally { S.noAuditAccess = false; }
+});
+
+test('profile filtering (Winter \u201927): a list cut down to your own profile is recognised', async () => {
+  resetOrg();
+  const c = conn();
+  assert.strictEqual(await loader.profilesFiltered(c, [{ recordId: '00e000000000001AAA' }], 'ben@example.com'), true, 'only Ben\u2019s own profile');
+  assert.strictEqual(await loader.profilesFiltered(c, [{ recordId: '00e000000000002AAA' }], 'ben@example.com'), false, 'one profile, but not his own');
+  assert.strictEqual(await loader.profilesFiltered(c, [{ recordId: 'a' }, { recordId: 'b' }], 'ben@example.com'), false);
+  const vscode = require('vscode');
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices());
+  const p = mp.show();
+  await mp.load();
+  assert.strictEqual(posts(p, 'lists').pop().profilesFiltered, false, 'normal org: both profiles visible');
+});
+
+// ---------- 2.2.0: review, Find access, grant screens, History, kept changes ----------
+const mem22 = () => { const m = new Map(); return { get: k => m.get(k), update: async (k, v) => { if (v === undefined) m.delete(k); else m.set(k, v); }, _m: m }; };
+
+test('tickets: kept with the save in the change log and in the copied summary', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  let clip = '';
+  const svc = panelServices({ summary: summaryMod, clipboard: async t => { clip = t; } });
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, svc);
+  const p = mp.show();
+  await mp.load();
+  const key = 'permissionSet:' + PS1;
+  await mp.select(key);
+  await mp.save({ key, ticket: '  ADO US 11581701 ', changes: [{ key: 'field:Lead.Industry', label: 'Industry', before: null, after: { read: true, edit: false } }] });
+  const log = await history.readLog(svc.projectDir, {});
+  assert.strictEqual(log[log.length - 1].ticket, 'ADO US 11581701', 'trimmed and stored');
+  await mp.copySummary({ snapshotIds: [log[log.length - 1].snapshot], format: 'markdown' });
+  assert.match(clip.split('\n')[0], / · ADO US 11581701$/);
+  const two = summaryMod.toMarkdown([{ at: '2026-11-01T10:00:00Z', target: 'A', ticket: 'T-1', changes: [{ key: 'user:ApiEnabled', from: { enabled: false }, to: { enabled: true } }] },
+    { at: '2026-11-01T11:00:00Z', target: 'B', ticket: 'T-2', changes: [{ key: 'user:ApiEnabled', from: { enabled: false }, to: { enabled: true } }] }], {});
+  assert.ok(two.includes('| Ticket |') && two.includes('| T-2 |'), 'several tickets: a Ticket column');
+});
+
+test('Find access: inactive users kept apart, licences shown, and which group members give the access', async () => {
+  resetOrg();
+  const c = conn();
+  const ana = F.T.User.find(u => u.Name === 'Ana Lima');
+  ana.IsActive = false;
+  F.T.PermissionSetGroupComponent.push({ Id: '0PU000000000009AAA', PermissionSetGroupId: '0PG000000000001AAA', PermissionSetId: '0PS00000000000GAAA' });
+  const r = await loader.whoHasAccess(c, { object: 'Account', level: 'read' });
+  assert.ok(!r.users.some(u => u.name === 'Ana Lima') && (r.inactive || []).some(u => u.name === 'Ana Lima' && u.active === false), 'inactive users listed separately');
+  assert.ok(r.users.every(u => typeof u.license === 'string'));
+  const grp = r.sources.find(x => x.kind === 'group');
+  if (grp) assert.ok(Array.isArray(grp.includes), 'groups say which member permission sets grant it');
+  const sp = await loader.whoHasPermission(c, { kind: 'system', name: 'ModifyAllData', label: 'Modify All Data' });
+  assert.ok(Array.isArray(sp.inactive));
+});
+
+test('grant screens: each item\u2019s current access and users, for fields and for an object', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices());
+  const p = mp.show();
+  await mp.load();
+  await mp.wizardCurrent({ object: 'Lead', fields: ['Lead.Rating', 'Lead.Industry'] });
+  const w = posts(p, 'wizardCurrent').pop();
+  const ps1 = w.byKey['permissionSet:' + PS1];
+  assert.ok(ps1, JSON.stringify(Object.keys(w.byKey)));
+  assert.deepStrictEqual(ps1.fields['Lead.Rating'], F.T.FieldPermissions.filter(x => x.ParentId === PS1 && x.Field === 'Lead.Rating').map(x => ({ read: x.PermissionsRead, edit: x.PermissionsEdit }))[0]);
+  assert.strictEqual(typeof ps1.users, 'number');
+  assert.ok(Object.keys(w.byKey).some(k => k.startsWith('profile:')), 'profiles are mapped through their own permission sets');
+  await mp.objWizardCurrent({ object: 'Account' });
+  const o = posts(p, 'objWizardCurrent').pop();
+  assert.strictEqual(o.byKey['permissionSet:' + PS1].props.read, true);
+  assert.ok(o.columns.includes('read'));
+});
+
+test('grant object access, one grid: different permissions per item in one plan', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices());
+  const p = mp.show();
+  await mp.load();
+  const lists = posts(p, 'lists').pop().lists;
+  const so = lists.permissionSet.find(r => r.apiName === 'Sales_Ops').key;
+  const prof = lists.profile.find(r => r.label === 'Custom: Sales').key;
+  await mp.objWizardPlan({ object: 'Contact', perTarget: { [so]: ['read', 'edit'], [prof]: ['read'] }, recordTypes: [], defaultRt: null });
+  const plan = posts(p, 'objWizardPlan').pop();
+  assert.ok(!plan.error, plan.error);
+  const a = plan.plan.find(t => t.key === so).changes[0].after;
+  const b = plan.plan.find(t => t.key === prof).changes[0].after;
+  assert.deepStrictEqual([a.read, a.edit, b.read, b.edit], [true, true, true, false]);
+});
+
+test('Find access \u201cRemove from selected\u201d: a plan that takes the access away, saved like the wizards', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices());
+  const p = mp.show();
+  await mp.load();
+  const so = 'permissionSet:' + PS1;
+  await mp.revokePlan({ object: 'Lead', field: 'Lead.Rating', level: 'read', sourceKeys: [so, 'permissionSet:0PS000000000002AAA'] });
+  const plan = posts(p, 'revokePlan').pop();
+  assert.deepStrictEqual(plan.plan.map(t => [t.key, t.changes[0].after]), [[so, { read: false, edit: false }]]);
+  assert.deepStrictEqual(plan.skipped.map(x => x.label), ['Reader'], 'managed: skipped with the reason');
+  await mp.wizardApply({ plan: plan.plan });
+  assert.deepStrictEqual(posts(p, 'wizardResult').pop().results.map(r => r.status), ['saved']);
+  assert.ok(!F.T.FieldPermissions.some(x => x.ParentId === PS1 && x.Field === 'Lead.Rating'));
+  await mp.revokePlan({ object: 'Account', level: 'edit', sourceKeys: [so] });
+  const o = posts(p, 'revokePlan').pop().plan[0].changes[0];
+  assert.deepStrictEqual([o.before.edit, o.after.edit, o.after.read], [true, false, true], 'removing Edit keeps Read');
+});
+
+test('History: Setup changes about any item; screen state kept across sessions; the tab shows \u25cf with unsaved changes', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  const memento = mem22();
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices({ memento }));
+  const p = mp.show();
+  await mp.load();
+  await mp.historySetup({ days: 30 });
+  const hs = posts(p, 'historySetup').pop();
+  assert.ok(hs.entries.length >= 2 && hs.entries.every(e => e.name), JSON.stringify(hs));
+  assert.ok(hs.entries.some(e => e.key && e.key.startsWith('profile:')));
+  const pend = { key: 'permissionSet:' + PS1, entries: [['field:Lead.Rating', { before: { read: true, edit: false }, after: { read: true, edit: true }, label: 'Rating', cat: 'field', touched: ['edit'] }]] };
+  await mp.persist('pending', pend);
+  assert.strictEqual(mp.panel.title, '\u25cf Permission Studio');
+  await mp.persist('recentLookups', [{ mode: 'access', object: 'Lead', label: 'Lead' }]);
+  await mp.persist('nonsense', 1);
+  p._send({ type: 'ready' });
+  await settle(60);
+  const v = posts(p, 'persisted').pop().values;
+  assert.deepStrictEqual([v.pending.key, v.recentLookups[0].label, 'nonsense' in v], [pend.key, 'Lead', false]);
+  await mp.persist('pending', null);
+  assert.strictEqual(mp.panel.title, 'Permission Studio');
+});
+
+test('Ctrl/Cmd+S: a key binding only while Permission Studio has focus, hidden from the Command Palette', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const kb = pkg.contributes.keybindings.find(k => k.command === 'permStudio.saveShortcut');
+  assert.deepStrictEqual([kb.key, kb.mac, kb.when], ['ctrl+s', 'cmd+s', "activeWebviewPanelId == 'permStudio.main'"]);
+  assert.ok(pkg.contributes.menus.commandPalette.some(m => m.command === 'permStudio.saveShortcut' && m.when === 'false'));
+});
+
 // ---------- extension wiring ----------
 test('activation: commands and settings match package.json; status bar; version and author', async () => {
   const vscode = require('vscode');
@@ -1780,7 +2260,7 @@ test('activation: commands and settings match package.json; status bar; version 
   assert.deepStrictEqual([...code.matchAll(/c\.get\('([\w.]+)'/g)].map(m => 'permStudio.' + m[1]).sort(), Object.keys(pkg.contributes.configuration.properties).sort());
   assert.ok(vscode.__statusItems[0].shown && vscode.__statusItems[0].command === 'permStudio.open');
   for (const f of ['media/app.js', 'media/app.css', 'media/tab-light.svg', 'media/tab-dark.svg', 'src/model/dependencies.js', pkg.icon]) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
-  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.0.7', 'nikeshvarma', 'Nikesh Varma']);
+  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.2.0', 'nikeshvarma', 'Nikesh Varma']);
   const png = fs.readFileSync(path.join(ROOT, pkg.icon));
   assert.deepStrictEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [256, 256], 'Marketplace icon is 256 px');
   for (const t of ['light', 'dark']) assert.match(fs.readFileSync(path.join(ROOT, 'media', 'tab-' + t + '.svg'), 'utf8'), /fill="#[0-9A-F]{6}"/i, 'tab icon has an explicit colour');
@@ -1793,7 +2273,7 @@ test('webview and panel agree on every message type', () => {
   const sent = [...new Set([...js.matchAll(/send\(\{ type: '(\w+)'/g)].map(m => m[1]))].sort();
   const handled = [...new Set([...panel.matchAll(/case '(\w+)':/g)].map(m => m[1]))].sort();
   assert.deepStrictEqual(sent.filter(t => !handled.includes(t)), [], 'webview sends something the panel ignores');
-  const posted = new Set([...panel.matchAll(/type: '(\w+)'/g)].map(m => m[1]));
+  const posted = new Set([...panel.matchAll(/(?<!attributes: \{ )type: '(\w+)'/g)].map(m => m[1]));
   for (const t of ['loading', 'error']) posted.delete(t);
   for (const t of ['detailLoading', 'objectLoading', 'accessLoading', 'rtLoading', 'tabsLoading', 'assignLoading', 'layoutsLoading', 'loginLoading', 'componentsLoading']) posted.add(t);
   assert.ok(!sent.includes('export') && !sent.includes('createPs') && !sent.includes('licenses'), 'removed features stay removed');

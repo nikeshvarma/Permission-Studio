@@ -2,6 +2,44 @@
 
 All notable changes to Permission Studio. Versions follow `major.minor.patch`; every delivered change raises the patch number.
 
+## 2.2.0
+
+- **Review screen redesigned**: the impact first (changes, users affected, high-impact permissions granted, access removed), a plain-words warning for risky permissions and removals, then every change on one line with granted and removed chips. Remove a single change with ×, filter long lists, and tag the save with a ticket (for example an ADO story); the ticket is kept in History and in copied summaries.
+- **Find access redesigned**: one box for an object or field (`Lead.Rating`), recent searches, filters (granted through, profile, license, active or inactive users, full or partial access), coloured sources, **Why?** showing how each user gets the access (through which group and member permission set), an at-a-glance panel, and **Remove from selected…** / **Grant to more…**.
+- **Grant field access redesigned**: steps across the top, each permission set's and profile's current access next to what will change, filters, a running summary (users reached, Read added on the object where missing), and templates to reuse a set of choices.
+- **Grant object access redesigned**: one grid of items × permissions with what's already granted, per-item choices, set a whole column at once, and record types with profile defaults.
+- **History redesigned**: grouped by day, changes as chips, tickets, clear Saved / Failed / Undo status, filters, and Setup Audit Trail changes mixed in.
+- Unsaved changes are kept if the tab is closed or VS Code reloads, and the tab title shows ● while changes wait.
+- **Ctrl/Cmd+S** opens the review and saves from it, **Esc** closes a dialog or leaves a tool page, **/** jumps to search (no hints on screen).
+- Column headers stay visible while scrolling; narrow windows show the list and section menu as pickers; placeholder rows while loading; the permission-rule note sits under the checkbox; a **Sandbox** badge; copy any API name on hover.
+
+## 2.1.0
+
+- **Tab settings are saved as records** (PermissionSetTabSetting) instead of a Metadata API deploy, so they go in the same single save request as everything else. Profiles now have Tab Settings too, in Setup's wording (Default On, Default Off, Tab Hidden), and profile source files are written in the profile's own values.
+- **Salesforce's permission rules for system and custom permissions**, read from the org (PermissionDependency and CustomPermissionDependency) and cached for a day: turning a permission on turns on what it needs, turning one off turns off what needs it, as Setup does. The review marks those entries **auto**.
+- **Find access for system and custom permissions**: who has Modify All Data, Use Any API Client or a custom permission, and through which permission sets, profiles and groups. High-impact permissions are listed first. Use Any API Client and Approve Uninstalled Connected Apps are now tagged **High impact**.
+- **Copy to permission set** on profile pages: a new permission set with the profile's user license and its object, field, system and other access, tab settings and record types. Page layouts, login hours and IP ranges stay on the profile; nothing is removed from it.
+- **License checks before assigning**: users whose user license, or missing permission set license, doesn't fit the permission set are tagged **License mismatch**, and the save stops with the reason before writing anything. Session-based permission sets are tagged **Session-based**.
+- **Changes in Setup**: the last 90 days of Setup Audit Trail entries about the open item, or a note when the View Setup Audit Trail permission is missing.
+- When the profile list shows only your own profile, a note explains Winter '27 profile filtering (View All Profiles).
+
+## 2.0.10
+
+- Saves now go in one request: every addition, update and removal is sent together as a single Composite request and one transaction, so either all of it is saved or none of it. If Salesforce refuses that request (for example while a permission set group recalculates), the extension re-reads the org and saves whatever did not land step by step, waiting for the group as in 2.0.9. CLI connections save step by step.
+- Object Settings lists objects where the item grants field access but no object access, with the number of fields, such as Event and Task. Searching Object Settings looks through every object in the org, not only those listed.
+
+## 2.0.9
+
+- Fixed: saving several kinds of change to a permission set that belongs to a permission set group could stop partway with "The … permission set group is updating". Each write to such a permission set makes Salesforce recalculate the group, and Salesforce refuses further changes until that finishes.
+- A save is now at most three writes (everything added, everything updated, everything removed), whatever the mix of permissions.
+- Before the first write, and whenever Salesforce reports the group is updating, the save waits for the recalculation to finish and carries on. The review dialog shows what it is waiting for. If a group is still recalculating after 5 minutes, the save stops cleanly and says which steps were not sent.
+
+## 2.0.8
+
+- Fixed: object permissions offered on objects that can't have them, such as Event and Task, which failed with "bad value for restricted picklist field". The object list now comes from Salesforce's own list of objects that take object or field permissions. Activities open with their fields editable and a note that their access comes from the Edit Tasks and Edit Events system permissions; Find access answers by field for them.
+- Saving checks the objects first and stops with a clear reason before anything is written.
+- Object pages list required and system fields (Name, Created Date, Last Modified Date and so on) as in Setup, tagged **Always visible**, with their access locked because Salesforce doesn't allow field-level security on them.
+
 ## 2.0.7
 
 - Released under the MIT License.
