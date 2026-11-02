@@ -54,7 +54,7 @@ function rows(entries) {
       const name = i > 0 ? c.key.slice(i + 1) : '';
       const label = c.label && c.label !== name && !name.endsWith('.' + c.label) ? c.label : '';
       const entry = cat === 'assignment' || cat === 'groupComponent' ? (c.label || name) : cat === 'loginHours' || cat === 'loginIpRanges' ? AREA[cat] : label ? label + ' (' + name + ')' : name;
-      out.push({ item: e.target || '', area: AREA[cat] || cat, entry, before: valueText(cat, c.from), after: valueText(cat, c.to), saved: when(e.at), result: e.result || '' });
+      out.push({ item: e.target || '', area: AREA[cat] || cat, entry, before: valueText(cat, c.from), after: valueText(cat, c.to), saved: when(e.at), result: e.result || '', ticket: e.ticket || '' });
     }
   }
   return out;
@@ -67,22 +67,24 @@ function toMarkdown(entries, options) {
   const list = rows(entries);
   const items = [...new Set(entries.map(e => e.target).filter(Boolean))];
   const failed = entries.filter(e => e.result === 'failed').length;
-  const head = ['### Permission changes: ' + (items.join(', ') || 'no item') + (o.org ? ' (' + o.org + ')' : ''),
+  const tickets = [...new Set(entries.map(e => e.ticket).filter(Boolean))];
+  const head = ['### Permission changes: ' + (items.join(', ') || 'no item') + (o.org ? ' (' + o.org + ')' : '') + (tickets.length === 1 ? ' · ' + tickets[0] : ''),
     entries.length === 1 ? 'Saved ' + when(entries[0].at) + ' · ' + list.length + (list.length === 1 ? ' change' : ' changes') + (entries[0].result && entries[0].result !== 'saved' ? ' · ' + entries[0].result : '')
       : entries.length + ' saves, ' + list.length + ' changes, ' + when(entries.map(e => e.at).sort()[0]) + ' to ' + when(entries.map(e => e.at).sort().pop()) + (failed ? ' · ' + failed + ' failed' : '')];
   const multi = items.length > 1;
-  const cols = (multi ? ['Item'] : []).concat(['Area', 'Entry', 'Before', 'After'], entries.length > 1 ? ['Saved'] : []);
+  const tcol = tickets.length > 1;
+  const cols = (multi ? ['Item'] : []).concat(['Area', 'Entry', 'Before', 'After'], entries.length > 1 ? ['Saved'] : [], tcol ? ['Ticket'] : []);
   const lines = ['| ' + cols.join(' | ') + ' |', '| ' + cols.map(() => '---').join(' | ') + ' |'];
-  for (const r of list) lines.push('| ' + (multi ? [r.item] : []).concat([r.area, r.entry, r.before, r.after], entries.length > 1 ? [r.saved] : []).map(cell).join(' | ') + ' |');
+  for (const r of list) lines.push('| ' + (multi ? [r.item] : []).concat([r.area, r.entry, r.before, r.after], entries.length > 1 ? [r.saved] : [], tcol ? [r.ticket] : []).map(cell).join(' | ') + ' |');
   return head.join('\n') + '\n\n' + lines.join('\n') + '\n';
 }
 
 function toTsv(entries, options) {
   const o = options || {};
   const t = s => String(s == null ? '' : s).replace(/[\t\r\n]+/g, ' ');
-  const lines = [['Item', 'Area', 'Entry', 'Before', 'After', 'Saved', 'Org', 'Result'].join('\t')];
-  for (const r of rows(entries)) lines.push([r.item, r.area, r.entry, r.before, r.after, r.saved, o.org || '', r.result].map(t).join('\t'));
+  const lines = [['Item', 'Area', 'Entry', 'Before', 'After', 'Saved', 'Org', 'Result', 'Ticket'].join('\t')];
+  for (const r of rows(entries)) lines.push([r.item, r.area, r.entry, r.before, r.after, r.saved, o.org || '', r.result, r.ticket].map(t).join('\t'));
   return lines.join('\n') + '\n';
 }
 
-module.exports = { toMarkdown, toTsv, rows, valueText, AREA };
+module.exports = { toMarkdown, toTsv, rows };

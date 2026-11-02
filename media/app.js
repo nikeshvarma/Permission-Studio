@@ -25,13 +25,29 @@
   let loginPage = null;     // { key, data: { hours, ranges } } profile login settings
   let componentsPage = null; // { key, data: { status, components } } a group's member permission sets
   let historyPicked = new Set();
+  let permDeps = { system: {}, custom: {} };
+  let depsAsked = false;
+  let auditPage = null;      // { key, data: { items, denied } } Setup Audit Trail entries
+  let assigneeBlockers = {}; // userId -> why they can't be assigned
   let layoutPage = null;    // { key, object, data: { layouts, rows } } profile layout assignments
   let localFile = null;     // { key, path, mode }
   let userResults = null;   // { text, users }
-  let lookup = { object: '', field: '', level: 'read', result: null, busy: false, fields: null };
-  let wizard = { object: '', fields: null, chosen: new Set(), level: 'read', targets: new Set(), grantObject: true, filter: '', targetFilter: '', customOnly: true, plan: null, busy: false, results: null, progress: null, confirm: '' };
-  let objWizard = { object: '', info: null, flags: new Set(['read']), rts: new Set(), defaultRt: '', targets: new Set(), targetFilter: '', plan: null, busy: false, results: null, progress: null, confirm: '' };
+  let lookup = { object: '', field: '', level: 'read', result: null, busy: false, fields: null, target: '',
+    f: { through: 'any', profile: 'any', license: 'any', users: 'active', show: 'full', q: '' }, why: new Set(), sel: new Set(), revoke: null };
+  let wizard = { object: '', fields: null, chosen: new Set(), level: 'read', targets: new Set(), grantObject: true, filter: '', targetFilter: '', customOnly: true, plan: null, busy: false, results: null, progress: null, confirm: '',
+    types: 'all', hideHave: false, current: null, currentSig: '', templateName: null };
+  let objWizard = { object: '', info: null, rts: new Set(), defaultRt: '', targetFilter: '', plan: null, busy: false, results: null, progress: null, confirm: '',
+    adds: new Map(), types: 'all', current: null, currentFor: '', rtRows: new Set() };
   let historyData = null;
+  let lookupOptions = null;
+  let historySetupData = null;      // Setup Audit Trail entries for History
+  let hf = { q: '', days: '7', item: '', result: '', setup: false, open: new Set() };
+  let recentLookups = [];
+  let grantTemplates = [];
+  let lastTicket = '';
+  let restoreSaved = null;          // unsaved changes kept from an earlier session
+  let applyTarget = 'wizard';       // which screen is waiting for a bulk save result
+  let lastKeyShortcut = 0;
   let stageAfterLoad = null; // stageChanges waiting for its item to open
   let saving = null;     // { label, done, total }
   let modal = null;
@@ -49,12 +65,13 @@
   // The record page menu, grouped the way Setup groups a permission set's overview.
   const SECTIONS = [
     ['Group', [['components', 'Permission Sets', k => k === 'group']]],
-    ['Apps', [['app'], ['objects', 'Object Settings'], ['apexClass'], ['apexPage'], ['flow'], ['connectedApp'], ['customPermission'], ['customMetadata'], ['customSetting'], ['tab', 'Tab Settings', k => k === 'permissionSet']]],
+    ['Apps', [['app'], ['objects', 'Object Settings'], ['apexClass'], ['apexPage'], ['flow'], ['connectedApp'], ['customPermission'], ['customMetadata'], ['customSetting'], ['tab', 'Tab Settings', k => k === 'permissionSet' || k === 'profile']]],
     ['System', [['system', 'System Permissions'], ['login', 'Login Hours & IP Ranges', k => k === 'profile']]],
-    ['Users', [['assignment', 'Assignments', k => k !== 'profile'], ['users', 'Users', k => k === 'profile']]]
+    ['Users', [['assignment', 'Assignments', k => k !== 'profile'], ['users', 'Users', k => k === 'profile']]],
+    ['Activity', [['audit', 'Changes in Setup']]]
   ];
   const CATEGORY_TITLES = [['groupComponent', 'Permission Sets in Group'], ['object', 'Object Permissions'], ['field', 'Field Permissions'], ['recordType', 'Record Type Assignments'], ['layoutAssignment', 'Page Layout Assignments'],
-    ['user', 'System Permissions'], ['tab', 'Tab Settings'], ['loginHours', 'Login Hours'], ['loginIpRanges', 'Login IP Ranges'], ['assignment', 'Assignments']]
+    ['user', 'System Permissions'], ['tab', 'Tab Settings'], ['loginHours', 'Login Hours'], ['loginIpRanges', 'Login IP Ranges'], ['assignment', 'Assignments'], ['audit', 'Changes in Setup']]
     .concat(ACCESS_TABS.map(t => [t[0], t[2]]));
   // One colour per object permission, used everywhere the permission appears.
   const TONE = { read: 'perm-read', create: 'perm-create', edit: 'perm-edit', delete: 'perm-delete', viewAll: 'perm-viewall', modifyAll: 'perm-modifyall', viewAllFields: 'perm-viewall' };
@@ -79,6 +96,10 @@
     assignment: ['M16 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm-8 0a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm0 2c-2.3 0-7 1.2-7 3.5V19h14v-2.5C15 14.2 10.3 13 8 13Zm8 0c-.3 0-.6 0-1 .1 1.2.8 2 1.9 2 3.4V19h6v-2.5c0-2.3-4.7-3.5-7-3.5Z']
   };
   NAV_ICONS.users = NAV_ICONS.assignment;
+  NAV_ICONS.audit = ['M13 3a9 9 0 0 0-9 9H1l3.9 3.9.1.1L9 12H6a7 7 0 1 1 2.1 5l-1.4 1.4A9 9 0 1 0 13 3Zm-1 5v5l4.3 2.5.7-1.2-3.5-2.1V8H12Z'];
+  // Salesforce: grant these connected-app permissions sparingly (since the September 2025 restrictions).
+  const HIGH_IMPACT_LABELS = /^(use any api client|approve uninstalled connected apps)$/i;
+  function isHighImpact(s) { return HIGH_IMPACT.has(s.name) || HIGH_IMPACT_LABELS.test(s.label || ''); }
   NAV_ICONS.components = ['M12 2 3 6.5 12 11l9-4.5L12 2ZM3 11.5 12 16l9-4.5v2.2L12 18.2l-9-4.5v-2.2ZM3 16.5 12 21l9-4.5v2.2L12 23.2l-9-4.5v-2.2Z'];
   const DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
   const HOURS = Array.from({ length: 25 }, (_, i) => [String(i * 60), i === 24 ? 'Midnight (end of day)' : String(((i + 11) % 12) + 1) + ':00 ' + (i < 12 ? 'AM' : 'PM')]);
@@ -105,11 +126,66 @@
     for (const d of paths) { const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', d); s.appendChild(p); }
     return s;
   }
+  /** Two overlapping squares: copy. */
+  function copyIcon() {
+    const NS = 'http://www.w3.org/2000/svg';
+    const s2 = document.createElementNS(NS, 'svg');
+    s2.setAttribute('viewBox', '0 0 16 16'); s2.setAttribute('aria-hidden', 'true'); s2.setAttribute('class', 'copy-icon');
+    const r = document.createElementNS(NS, 'rect'); r.setAttribute('x', '5.5'); r.setAttribute('y', '5.5'); r.setAttribute('width', '8'); r.setAttribute('height', '8'); r.setAttribute('rx', '1.5');
+    const pth = document.createElementNS(NS, 'path'); pth.setAttribute('d', 'M3 10.5v-7a1 1 0 0 1 1-1h7');
+    for (const el of [r, pth]) { el.setAttribute('fill', 'none'); el.setAttribute('stroke', 'currentColor'); el.setAttribute('stroke-width', '1.4'); el.setAttribute('stroke-linecap', 'round'); s2.appendChild(el); }
+    return s2;
+  }
+  /** How favourites name an item: "permissionSet:Sales_Ops". */
+  function favId(r) { return r ? r.kind + ':' + r.apiName : ''; }
+  const SRC_CLASS = { permissionSet: 'ps', profile: 'pr', group: 'gr' };
+  const SRC_TYPE = { permissionSet: 'Permission set', profile: 'Profile', group: 'Group' };
+  /** A grant source as a coloured chip: blue permission sets, green profiles, purple groups. Opens the item. */
+  function srcChip(src) {
+    if (!src) return null;
+    const attrs = { class: 'src ' + SRC_CLASS[src.kind], title: SRC_TYPE[src.kind], text: src.label };
+    if (src.key) { attrs.onclick = () => { ui.tool = null; renderTop(); guard(() => choose(src.key)); }; attrs.role = 'link'; attrs.tabindex = '0'; }
+    return h('span', attrs);
+  }
+  const chip = (sign, text, title) => h('span', { class: 'rv-chip ' + (sign === '+' ? 'rv-add' : sign === '-' ? 'rv-del' : 'rv-mod'), title: title || null, text: (sign === '+' ? '+ ' : sign === '-' ? '− ' : '') + text });
+  /** A filter chip holding a select: "Profile Custom: Sales ▾". */
+  function filterChip(label, value, options, onPick, fallback) {
+    return h('label', { class: 'flt' + (value !== fallback ? ' on' : '') }, [label + ' ', h('select', { 'aria-label': label, onchange: e => onPick(e.target.value) },
+      options.map(([v, t]) => h('option', { value: v, selected: v === value, text: t })))]);
+  }
+  const ADD_LABEL = { enabled: 'Enabled', visible: 'Assigned', assigned: 'Assigned', included: 'Included', default: 'Default' };
+  /** What changes in an entry, as + / − / ~ chips: [{ sign, text, auto }]. */
+  function changeChips(before, after, touched) {
+    const out = [];
+    const b = before || {};
+    const a = after || {};
+    for (const f of new Set([...Object.keys(b), ...Object.keys(a)])) {
+      if (!valueDiffers(b[f], a[f])) continue;
+      const name = SHORT[f] || ADD_LABEL[f] || f.replace(/(Start|End)$/, ' $1').replace(/^./, c => c.toUpperCase());
+      const auto = touched ? !touched.has(f) : false;
+      if (typeof a[f] === 'boolean' || typeof b[f] === 'boolean') out.push({ sign: a[f] ? '+' : '-', text: name, auto });
+      else out.push({ sign: '~', text: name + ': ' + shown(b[f], a[f]) + ' → ' + shown(a[f], b[f]), auto });
+    }
+    return out;
+  }
+
+  /** An outline magnifier: a thin ring and a round-ended handle stay crisp at 14 px, where a filled glyph blurs. */
+  function searchIcon() {
+    const NS = 'http://www.w3.org/2000/svg';
+    const s = document.createElementNS(NS, 'svg');
+    s.setAttribute('viewBox', '0 0 16 16'); s.setAttribute('aria-hidden', 'true'); s.setAttribute('class', 'search-icon');
+    const c = document.createElementNS(NS, 'circle');
+    c.setAttribute('cx', '6.75'); c.setAttribute('cy', '6.75'); c.setAttribute('r', '4.75');
+    const l = document.createElementNS(NS, 'path');
+    l.setAttribute('d', 'M10.3 10.3 14 14');
+    for (const el of [c, l]) { el.setAttribute('fill', 'none'); el.setAttribute('stroke', 'currentColor'); el.setAttribute('stroke-width', '1.6'); el.setAttribute('stroke-linecap', 'round'); s.appendChild(el); }
+    return s;
+  }
   const ICONS = {
     permissionSet: ['M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3Zm-1 14-4-4 1.4-1.4 2.6 2.6 5.6-5.6L18 9l-7 7Z'],
     group: ['M12 2 3 6.5 12 11l9-4.5L12 2Z', 'M3 11.5 12 16l9-4.5v2.2L12 18.2l-9-4.5v-2.2Z', 'M3 16.5 12 21l9-4.5v2.2L12 23.2l-9-4.5v-2.2Z'],
     profile: ['M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0 2c-4.4 0-9 2.2-9 5.5V22h18v-2.5c0-3.3-4.6-5.5-9-5.5Z'],
-    chevron: ['M9 6l6 6-6 6'], search: ['M15.5 14h-.8l-.3-.3A6.5 6.5 0 1 0 14 15.5l.3.3v.8l5 5 1.5-1.5-5-5Zm-6 0a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9Z'],
+    chevron: ['M9 6l6 6-6 6'],
     refresh: ['M17.7 6.3A8 8 0 1 0 19.9 13h-2.1a6 6 0 1 1-1.5-5.3L13 11h7V4l-2.3 2.3Z'], info: ['M11 7h2v2h-2V7Zm0 4h2v6h-2v-6Zm1-9a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z'],
     warning: ['M1 21h22L12 2 1 21Zm12-3h-2v-2h2v2Zm0-4h-2v-4h2v4Z'], close: ['M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4Z'],
     success: ['M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm-2 15-5-5 1.4-1.4 3.6 3.6 7.6-7.6L19 8l-9 9Z'],
@@ -152,7 +228,7 @@
   }
   /** A search box. `fid` keeps focus and the caret across redraws; `later` delays the redraw while typing. */
   function searchBox(value, placeholder, onInput, fid, later) {
-    return h('div', { class: 'search' }, [svg(ICONS.search, 'search-icon'),
+    return h('div', { class: 'search' }, [searchIcon(),
       h('input', { type: 'search', value, placeholder, 'aria-label': placeholder, 'data-fid': fid,
         oninput: e => { const v = e.target.value; if (later) debounce(() => onInput(v)); else onInput(v); } })]);
   }
@@ -172,10 +248,11 @@
   /** Can this category be changed on the open item? */
   const can = cat => ready() && (detail.data.header.editableCats || []).includes(cat);
   function eff(k, base) { const p = pending.get(k); return p ? p.after : base; }
-  function stage(k, base, after, flag, label, cat, quiet, ref) {
+  function stage(k, base, after, flag, label, cat, quiet, ref, auto) {
     const prev = pending.get(k);
     const touched = new Set(prev ? prev.touched : []);
-    touched.add(flag);
+    // Entries the permission rules change are left untouched, so the review marks them "auto".
+    if (!auto) touched.add(flag);
     const before = prev ? prev.before : base;
     if (!differs(before, after)) pending.delete(k);
     else pending.set(k, { before, after, touched, label, cat, ref: ref || (prev && prev.ref) });
@@ -200,6 +277,7 @@
   }
   function bulkFields(fields, objectBase, flag, value) {
     for (const f of fields) {
+      if (f.fixed) continue;
       if (flag === 'edit' && !f.canEdit) continue;
       const k = 'field:' + f.name;
       const base = { read: f.read, edit: f.edit };
@@ -213,8 +291,68 @@
     patchRows(fields.map(f => 'field:' + f.name));
     renderFooter();
   }
-  function toggleSystem(s, value) { stage('user:' + s.name, { enabled: s.enabled }, { enabled: value }, 'enabled', s.label, 'user', true); patchRows(['user:' + s.name]); }
-  function toggleEntity(cat, x, value) { const k = cat + ':' + x.name; stage(k, { enabled: x.enabled }, { enabled: value }, 'enabled', x.label, cat, true, x.entityId); patchRows([k]); }
+  /**
+   * Salesforce's own rules (PermissionDependency, CustomPermissionDependency):
+   * turning a permission on turns on what it needs, turning one off turns off
+   * what needs it, as Setup does. `graph` maps a permission to those it requires.
+   */
+  function ruleText(value, names) {
+    const list = names.length > 1 ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] : names[0];
+    return value ? 'Also turned on ' + list + ', which Salesforce requires for it.' : 'Also turned off ' + list + ', which ' + (names.length > 1 ? 'need' : 'needs') + ' it.';
+  }
+  function withRules(graph, start, value) {
+    const out = new Set();
+    const next = value ? id => graph.get(id) || [] : id => [...graph.keys()].filter(k => (graph.get(k) || []).includes(id));
+    const walk = id => { for (const n of next(id)) if (!out.has(n) && n !== start) { out.add(n); walk(n); } };
+    walk(start);
+    return [...out];
+  }
+  const norm = t => String(t || '').toLowerCase().replace(/^permissions/, '').replace(/[^a-z0-9]/g, '');
+  function systemGraph() {
+    const list = (detail && detail.data && detail.data.system) || [];
+    const byKey = new Map();
+    for (const x of list) { byKey.set(norm(x.name), x.name); byKey.set(norm(x.label), x.name); }
+    const g = new Map();
+    for (const [a, reqs] of Object.entries(permDeps.system || {})) {
+      const from = byKey.get(norm(a));
+      if (!from) continue;
+      g.set(from, reqs.map(r => byKey.get(norm(r))).filter(Boolean));
+    }
+    return g;
+  }
+  function toggleSystem(s, value) {
+    stage('user:' + s.name, { enabled: s.enabled }, { enabled: value }, 'enabled', s.label, 'user', true);
+    const keys = ['user:' + s.name];
+    const list = detail.data.system;
+    for (const n of withRules(systemGraph(), s.name, value)) {
+      const x = list.find(y => y.name === n);
+      if (!x || eff('user:' + n, { enabled: x.enabled }).enabled === value) continue;
+      stage('user:' + n, { enabled: x.enabled }, { enabled: value }, 'enabled', x.label, 'user', true, null, true);
+      keys.push('user:' + n);
+    }
+    const was = ui.ruleNote && ui.ruleNote.key;
+    ui.ruleNote = keys.length > 1 ? { key: 'user:' + s.name, text: ruleText(value, keys.slice(1).map(k => (list.find(y => 'user:' + y.name === k) || {}).label || k)) } : null;
+    patchRows(keys.concat(was && !keys.includes(was) ? [was] : []));
+  }
+  function toggleEntity(cat, x, value) {
+    const k = cat + ':' + x.name;
+    stage(k, { enabled: x.enabled }, { enabled: value }, 'enabled', x.label, cat, true, x.entityId);
+    const keys = [k];
+    if (cat === 'customPermission' && access.customPermission && access.customPermission.data) {
+      const rows = access.customPermission.data.items;
+      const g = new Map(Object.entries(permDeps.custom || {}));
+      for (const id of withRules(g, x.entityId, value)) {
+        const y = rows.find(r => r.entityId === id);
+        if (!y || eff(cat + ':' + y.name, { enabled: y.enabled }).enabled === value) continue;
+        stage(cat + ':' + y.name, { enabled: y.enabled }, { enabled: value }, 'enabled', y.label, cat, true, y.entityId, true);
+        keys.push(cat + ':' + y.name);
+      }
+      const was = ui.ruleNote && ui.ruleNote.key;
+      ui.ruleNote = keys.length > 1 ? { key: k, text: ruleText(value, keys.slice(1).map(kk => (pending.get(kk) || {}).label || kk)) } : null;
+      if (was && !keys.includes(was)) keys.push(was);
+    }
+    patchRows(keys);
+  }
 
   function rtBase(t) { return rtPage.data.profile ? { visible: t.visible, default: t.default } : { visible: t.visible }; }
   function toggleRecordType(t, value) {
@@ -306,7 +444,7 @@
       h('div', { class: 'org-text' }, [
         h('div', { class: 'org-line' }, [
           h('span', { class: 'org-name', text: org ? (org.alias || org.username) : 'Permission Studio' }),
-          ctx.production ? h('span', { class: 'badge warning', text: 'Production' }) : null,
+          ctx.production ? h('span', { class: 'badge warning', text: 'Production' }) : ctx.sandbox ? h('span', { class: 'badge sandbox', text: 'Sandbox' }) : null,
           ctx.mode === 'cli' ? h('span', { class: 'badge', title: 'Direct API calls were refused or blocked, so calls go through the Salesforce CLI.', text: 'CLI connection' }) : null,
           ctx.offline ? h('span', { class: 'badge error', text: 'Offline · saved data' }) : null
         ]),
@@ -348,12 +486,11 @@
     box.textContent = '';
     const q = ui.search.trim().toLowerCase();
     const rows = lists[ui.kind].filter(r => !q || r.label.toLowerCase().includes(q) || r.apiName.toLowerCase().includes(q));
-    const favId = r => r.kind + ':' + r.apiName;
     const favRows = rows.filter(r => favs.items.has(favId(r)));
     const rest = rows.filter(r => !favs.items.has(favId(r)));
     const frag = document.createDocumentFragment();
     const item = r => {
-      const marks = [r.managed ? 'Managed' : '', r.standard ? 'Standard' : '', r.status && r.status !== 'Updated' ? r.status : ''].filter(Boolean);
+      const marks = [r.managed ? 'Managed' : '', r.standard ? 'Standard' : '', r.sessionBased ? 'Session-based' : '', r.status && r.status !== 'Updated' ? r.status : ''].filter(Boolean);
       const on = ui.selected === r.key;
       const isFav = favs.items.has(favId(r));
       return h('div', { role: 'option', tabindex: '0', class: 'split-item' + (on ? ' on' : ''), 'aria-selected': String(on), 'data-key': r.key,
@@ -364,6 +501,7 @@
         star(isFav, r.label, () => send({ type: 'toggleFavorite', kind: 'item', id: favId(r) }))
       ]);
     };
+    if (ui.kind === 'profile' && lists.profilesFiltered) frag.appendChild(h('div', { class: 'si-note' }, alertBox('info', 'Only your own profile is visible. Since Winter ’27, Salesforce shows other profiles only to users with the View All Profiles permission.')));
     if (favRows.length) {
       frag.appendChild(h('div', { class: 'si-group', text: 'Favorites' }));
       favRows.forEach(r => frag.appendChild(item(r)));
@@ -377,7 +515,7 @@
   function choose(key) {
     ui.selected = key; ui.page = 'detail'; ui.object = null; save();
     pending.clear(); objectPage = null; rtPage = null; access = {}; accessLimit = 300;
-    tabsPage = null; assignPage = null; loginPage = null; layoutPage = null; componentsPage = null; localFile = null; userResults = null; ui.tool = null; renderTop();
+    tabsPage = null; assignPage = null; loginPage = null; layoutPage = null; componentsPage = null; auditPage = null; assigneeBlockers = {}; localFile = null; userResults = null; ui.tool = null; renderTop();
     document.querySelectorAll('.split-item').forEach(b => { const on = b.getAttribute('data-key') === key; b.classList.toggle('on', on); b.setAttribute('aria-selected', String(on)); });
     detail = { key, state: 'loading' };
     renderMain(); renderFooter();
@@ -413,9 +551,30 @@
       else main.appendChild(h('div', { class: 'loading-block' }, [spinner(), h('p', { class: 'muted', text: 'Reading from the org…' })]));
       return;
     }
+    if (ui.restored && pending.size) main.appendChild(h('div', { class: 'restored', role: 'status' }, [
+      h('span', { class: 'grow' }, [h('b', { text: pending.size + (pending.size === 1 ? ' unsaved change' : ' unsaved changes') }), ' from your last session ' + (pending.size === 1 ? 'was' : 'were') + ' kept and ' + (pending.size === 1 ? 'is' : 'are') + ' ready to review.']),
+      h('button', { class: 'btn neutral', onclick: () => { pending.clear(); ui.restored = 0; renderMain(); renderFooter(); }, text: 'Discard' }),
+      h('button', { class: 'btn brand', onclick: () => openModal({ kind: 'review' }), text: 'Review' })]));
+    if (isNarrow()) main.appendChild(narrowPicker());
     main.appendChild(pageHeader(detail.data.header));
     if (detail.data.header.readOnlyReason) main.appendChild(h('div', { class: 'pad-x' }, alertBox('info', detail.data.header.readOnlyReason)));
     main.appendChild(sectionsView());
+  }
+
+  // Narrow windows (the same 900 px as the CSS): pickers replace the list and the section menu.
+  const narrowQuery = window.matchMedia('(max-width: 900px)');
+  const isNarrow = () => narrowQuery.matches;
+  narrowQuery.addEventListener('change', () => renderMain());
+  /** Narrow windows: the item list becomes a picker. */
+  function narrowPicker() {
+    const groups = KINDS.map(([kind, title]) => h('optgroup', { label: title }, ((lists && lists[kind]) || []).map(r => h('option', { value: r.key, selected: r.key === ui.selected, text: r.label }))));
+    return h('div', { class: 'narrow-bar' }, [h('select', { class: 'select', 'aria-label': 'Open an item', onchange: e => { const k = e.target.value; guard(() => { ui.kind = k.split(':')[0]; save(); renderSide(); choose(k); }); } }, groups),
+      ui.selected && (lists[ui.kind] || []).some(r => r.key === ui.selected) ? star(favs.items.has(favId((lists[ui.kind] || []).find(r => r.key === ui.selected))), 'this item', () => {
+        const r = (lists[ui.kind] || []).find(x => x.key === ui.selected); if (r) send({ type: 'toggleFavorite', kind: 'item', id: favId(r) }); }) : null]);
+  }
+  function narrowSections(kind) {
+    const opts = SECTIONS.flatMap(([g, entries]) => entries.filter(e => !e[2] || e[2](kind)).map(e => [e[0], e[1]]));
+    return h('div', { class: 'narrow-sections' }, select(opts, ui.section, v => { ui.section = v; ui.page = 'detail'; save(); renderMain(); }, false, 'nav.narrow', 'Section'));
   }
 
   function statusView() {
@@ -435,11 +594,12 @@
       h('div', { class: 'ph-row' }, [
         h('div', { class: 'ph-title' }, [
           h('span', { class: 'icon-tile ' + hd.kindId, 'aria-hidden': 'true' }, svg(ICONS[hd.kindId] || ICONS.permissionSet)),
-          h('div', {}, [h('div', { class: 'ph-type', text: hd.kind }), h('h1', { text: hd.label })])
+          h('div', {}, [h('div', { class: 'ph-type', text: hd.kind }), h('h1', {}, [hd.label, hd.sessionBased ? h('span', { class: 'pill warn', title: 'Session-based: assigned users switch this permission set on for a session.', text: 'Session-based' }) : null])])
         ]),
         h('div', { class: 'ph-actions' }, [meta,
           hd.canRename ? h('button', { class: 'btn neutral', onclick: () => guard(() => openPsForm('edit')), text: 'Edit' }) : null,
           hd.canClone ? h('button', { class: 'btn neutral', onclick: () => guard(() => openPsForm('clone')), text: 'Clone' }) : null,
+          hd.canCopyToPs ? h('button', { class: 'btn neutral', title: 'Copy this profile’s access into a new permission set', onclick: () => guard(() => openPsForm('copyProfile')), text: 'Copy to permission set' }) : null,
           h('button', { class: 'btn neutral', onclick: () => guard(() => reloadCurrent()), text: 'Reload' })])
       ]),
       h('dl', { class: 'highlights' }, fields.map(([k, v]) => h('div', { class: 'hl' }, [h('dt', { text: k }), h('dd', { text: v, title: v })]))),
@@ -468,6 +628,7 @@
     if (tabsPage) send({ type: 'loadTabs', key: ui.selected, force: true });
     if (assignPage) send({ type: 'loadAssignments', key: ui.selected, force: true });
     if (componentsPage) send({ type: 'loadComponents', key: ui.selected, force: true });
+    if (auditPage) send({ type: 'loadAudit', key: ui.selected, force: true });
     if (loginPage) send({ type: 'loadLogin', key: ui.selected, force: true });
     if (layoutPage && ui.object) send({ type: 'loadLayouts', key: ui.selected, object: ui.object, force: true });
   }
@@ -476,15 +637,15 @@
   function sectionsView() {
     const d = detail.data;
     const kind = d.header.kindId;
-    if (ui.page === 'object' && ui.object) return h('div', { class: 'sections' }, [nav(kind), h('div', { class: 'section-body' }, objectView())]);
+    if (ui.page === 'object' && ui.object) return h('div', { class: 'sections' }, [nav(kind), h('div', { class: 'section-body' }, [isNarrow() ? narrowSections(kind) : null].concat(objectView()))]);
     const valid = SECTIONS.flatMap(g => g[1]).filter(e => !e[2] || e[2](kind)).map(e => e[0]);
     if (!valid.includes(ui.section)) ui.section = 'objects';
-    return h('div', { class: 'sections' }, [nav(kind), h('div', { class: 'section-body' }, sectionContent(ui.section))]);
+    return h('div', { class: 'sections' }, [nav(kind), h('div', { class: 'section-body' }, [isNarrow() ? narrowSections(kind) : null].concat(sectionContent(ui.section)))]);
   }
   function sectionLabel(id) { const t = ACCESS_TABS.find(x => x[0] === id); return t ? t[1] : (SECTIONS.flatMap(g => g[1]).find(e => e[0] === id) || [])[1] || id; }
   function sectionCount(id) {
     const d = detail.data;
-    if (id === 'objects') return d.objects.filter(o => Object.values(eff('object:' + o.name, o.props)).some(Boolean)).length;
+    if (id === 'objects') return d.objects.filter(o => Object.values(eff('object:' + o.name, o.props)).some(Boolean)).length + (d.fieldObjects || []).length;
     if (id === 'system') return d.system.filter(x => eff('user:' + x.name, { enabled: x.enabled }).enabled).length;
     if (access[id] && access[id].data) return access[id].data.items.filter(x => eff(id + ':' + x.name, { enabled: x.enabled }).enabled).length;
     if (id === 'tab' && tabsPage && tabsPage.data) return tabsPage.data.items.filter(t => eff('tab:' + t.name, { visibility: t.visibility }).visibility !== 'None').length;
@@ -527,14 +688,17 @@
     if (id === 'assignment' || id === 'users') return assignCard();
     if (id === 'login') return loginCard();
     if (id === 'components') return componentsCard();
+    if (id === 'audit') return auditCard();
     return h('p', { class: 'empty-line', text: 'Unknown section.' });
   }
   function loadingCard(title, page, retry, message) {
     const head = h('div', { class: 'card-head' }, [h('h2', { text: title })]);
     const inner = page && page.state === 'error'
       ? alertBox('error', 'Could not read this. ', [h('pre', { text: page.message || '' }), retry ? h('button', { class: 'btn neutral', onclick: retry, text: 'Try again' }) : null])
-      : h('div', { class: 'loading-block' }, [spinner(), h('p', { class: 'muted', text: message || 'Reading from the org…' })]);
-    return h('section', { class: 'card' }, [head, h('div', { class: 'card-body' }, inner)]);
+      : h('div', { class: 'skeleton', 'aria-busy': 'true' }, [0, 1, 2, 3, 4].map(i => h('div', { class: 'sk-row' }, [
+        h('span', { style: 'width:' + [38, 30, 44, 28, 36][i] + '%' }), h('span', { style: 'width:' + [22, 26, 18, 24, 20][i] + '%' }), h('span', { style: 'width:' + [30, 18, 26, 34, 22][i] + '%' })]))
+        .concat([h('p', { class: 'muted sk-text', text: message || 'Reading from the org…' })]));
+    return h('section', { class: 'card' }, [head, h('div', { class: 'card-body' + (page && page.state === 'error' ? '' : ' flush') }, inner)]);
   }
   function select(options, value, onChange, disabled, fid, aria) {
     return h('select', { class: 'select', disabled, 'data-fid': fid, 'aria-label': aria, onchange: e => { lastFocus = fid; onChange(e.target.value); } },
@@ -562,7 +726,7 @@
           const k = 'tab:' + t.name;
           const v = eff(k, { visibility: t.visibility }).visibility;
           return h('tr', { class: pending.has(k) ? 'row-edited' : '' }, [h('td', { class: 'strong', text: t.label }), h('td', { class: 'muted mono', text: t.name }),
-            h('td', {}, select([['Visible', 'Visible'], ['Available', 'Available'], ['None', 'Hidden']], v, val => stage(k, { visibility: t.visibility }, { visibility: val }, 'visibility', t.label, 'tab'), !ok, k, 'Visibility of ' + t.label))]);
+            h('td', {}, select(detail.data.header.kindId === 'profile' ? [['Visible', 'Default On'], ['Available', 'Default Off'], ['None', 'Tab Hidden']] : [['Visible', 'Visible'], ['Available', 'Available'], ['None', 'Hidden']], v, val => stage(k, { visibility: t.visibility }, { visibility: val }, 'visibility', t.label, 'tab'), !ok, k, 'Visibility of ' + t.label))]);
         }))]) : h('p', { class: 'empty-line', text: q ? 'No tabs match.' : 'No tab settings. Search or turn off “Show only set” to add some.' })),
       h('div', { class: 'card-body' }, h('p', { class: 'muted flat', text: 'Tab settings are saved through the Metadata API, with the same safety copy as record types.' }))
     ]);
@@ -589,7 +753,9 @@
         return h('li', {}, [h('span', { class: 'strong', text: u.name }), h('span', { class: 'muted', text: ' ' + u.username + (u.profile ? ' · ' + u.profile : '') }),
           h('button', { class: 'btn neutral small', disabled: has, onclick: () => {
             stage('assignment:' + u.userId, { assigned: false, expires: null }, { assigned: true, expires: null }, 'assigned', u.name, 'assignment', true, u.userId);
-            pending.get('assignment:' + u.userId).meta = { username: u.username, profile: u.profile }; renderMain(); }, text: has ? 'Added' : 'Add' })]);
+            pending.get('assignment:' + u.userId).meta = { username: u.username, profile: u.profile };
+            send({ type: 'checkAssignees', key: ui.selected, userIds: [u.userId] });
+            renderMain(); }, text: has ? 'Added' : 'Add' })]);
       }) : [h('li', { class: 'muted', text: userResults.message || 'No active users match.' })]) : null]) : null;
     return h('section', { class: 'card' }, [
       h('div', { class: 'card-head' }, [h('h2', {}, [title + ' ', h('span', { class: 'count', text: String(d.items.length) })]), h('div', { class: 'card-tools' }, [
@@ -604,7 +770,9 @@
           const p = eff(k, base);
           const left = p.expires ? Math.ceil((new Date(p.expires + 'T23:59:59') - Date.now()) / 86400000) : null;
           const expiry = left === null ? null : left < 0 ? h('span', { class: 'pill risk', text: 'Expired' }) : left <= 30 ? h('span', { class: 'pill warn', text: left === 0 ? 'Expires today' : 'Expires in ' + left + (left === 1 ? ' day' : ' days') }) : null;
-          const cells = [h('td', { class: 'strong' }, [u.name, u.isNew ? h('span', { class: 'pill on', text: 'New' }) : null, u.active === false ? h('span', { class: 'pill', text: 'Inactive' }) : null, expiry]),
+          const blocked = u.isNew && assigneeBlockers[u.userId];
+          const cells = [h('td', { class: 'strong' }, [u.name, u.isNew ? h('span', { class: 'pill on', text: 'New' }) : null, u.active === false ? h('span', { class: 'pill', text: 'Inactive' }) : null, expiry,
+            blocked ? h('span', { class: 'pill risk', title: u.name + ' ' + blocked, text: 'License mismatch' }) : null]),
             h('td', { class: 'muted', text: u.username }), h('td', { class: 'muted', text: u.profile || '' })];
           if (!d.readOnly) {
             if (d.expiration) cells.push(h('td', {}, h('input', { type: 'date', class: 'date' + (edited(k, 'expires') ? ' edited' : ''), value: p.expires || '', disabled: !ok || !p.assigned, 'data-fid': k + '.expires', 'aria-label': 'Expiry for ' + u.name,
@@ -666,6 +834,24 @@
             h('td', { class: 'muted mono', text: c.apiName })]);
         }))]) : h('p', { class: 'empty-line', text: q ? 'Nothing matches.' : 'This group holds no permission sets yet.' })),
       h('div', { class: 'card-body' }, h('p', { class: 'muted flat', text: 'Adding or removing a permission set changes the group’s access for everyone assigned to it. Muting permission sets are shown but not edited here.' }))
+    ]);
+  }
+
+  // ---------- changes made in Setup (Setup Audit Trail) ----------
+  function auditCard() {
+    if (!auditPage || auditPage.key !== ui.selected) { auditPage = { key: ui.selected, state: 'loading' }; send({ type: 'loadAudit', key: ui.selected }); }
+    if (!auditPage.data) return loadingCard('Changes in Setup', auditPage, () => { auditPage = null; renderMain(); });
+    const d = auditPage.data;
+    return h('section', { class: 'card' }, [
+      h('div', { class: 'card-head' }, [h('h2', {}, ['Changes in Setup ', h('span', { class: 'count', text: String(d.items.length) })]), h('div', { class: 'card-tools' }, [
+        auditPage.refreshing ? h('span', { class: 'muted status' }, [spinner(true), ' Refreshing…']) : null,
+        h('span', { class: 'muted', text: 'Last 90 days, from Setup Audit Trail' })])]),
+      d.denied ? h('div', { class: 'card-body' }, alertBox('info', 'Reading Setup Audit Trail needs the View Setup Audit Trail permission (from Winter ’27; View Setup before that). Changes made with Permission Studio are in History either way.'))
+      : h('div', { class: 'card-body flush' }, d.items.length ? h('table', { class: 'datatable' }, [
+        h('thead', {}, h('tr', {}, [h('th', { text: 'When' }), h('th', { text: 'Who' }), h('th', { text: 'What changed' }), h('th', { text: 'Section' })])),
+        h('tbody', {}, d.items.map(x => h('tr', {}, [h('td', { class: 'muted', text: fmtDate(x.at) }), h('td', { class: 'strong', text: x.by + (x.delegate ? ' (as ' + x.delegate + ')' : '') }),
+          h('td', { class: 'wrap', text: x.display }), h('td', { class: 'muted', text: x.section })])))])
+        : h('p', { class: 'empty-line', text: 'No changes to this item in Setup in the last 90 days.' }))
     ]);
   }
 
@@ -752,7 +938,7 @@
     const on = eff(k, { enabled: x.enabled }).enabled;
     return h('tr', { class: pending.has(k) ? 'row-edited' : on ? '' : 'dim', 'data-row': k }, [
       h('td', { class: 'c narrow' }, checkbox({ checked: on, disabled: !ok, edited: edited(k, 'enabled'), fid: k, aria: x.label, onChange: v => toggleEntity(cat, x, v) })),
-      h('td', { class: 'strong', text: x.label }), h('td', { class: 'muted mono', text: x.name }),
+      h('td', { class: 'strong' }, [x.label, ui.ruleNote && ui.ruleNote.key === k ? h('span', { class: 'rule-note', role: 'status', text: ui.ruleNote.text }) : null]), h('td', { class: 'muted mono', text: x.name }),
       h('td', { class: 'muted' }, cat === 'customPermission' ? (x.description || '') : x.namespace ? h('span', { class: 'pill', text: x.namespace }) : '')]);
   }
 
@@ -763,17 +949,23 @@
     let rows = d.objects.slice();
     // Favourite objects are always listed, even without access, so access is one click away.
     for (const n of favs.objects) if (!byName.has(n)) { rows.push({ name: n, label: labelOf(n), props: {} }); byName.set(n, rows[rows.length - 1]); }
-    if (ui.allObjects && Array.isArray(catalog)) {
-      for (const c of catalog) if (!byName.has(c.name)) rows.push({ name: c.name, label: c.label, props: {} });
-    } else rows = rows.filter(o => Object.values(o.props).some(Boolean) || pending.has('object:' + o.name) || favs.objects.has(o.name));
-    rows.sort((a, b) => (favs.objects.has(b.name) - favs.objects.has(a.name)) || a.label.localeCompare(b.label));
+    // Objects where only fields are granted (Event and Task can't be granted any other way).
+    for (const f of d.fieldObjects || []) if (!byName.has(f.name)) { rows.push({ name: f.name, label: f.label, props: {}, fields: f.fields, fieldOnly: f.objectPermissions === false }); byName.set(f.name, rows[rows.length - 1]); }
     const q = ui.objFilter.trim().toLowerCase();
+    // Searching looks at every object in the org, not only the ones listed.
+    if (q && catalog === null) { catalog = 'loading'; send({ type: 'objectCatalog' }); }
+    if ((ui.allObjects || q) && Array.isArray(catalog)) {
+      for (const c of catalog) if (!byName.has(c.name)) rows.push({ name: c.name, label: c.label, props: {}, fieldOnly: c.objectPerms === false, other: !ui.allObjects });
+    }
+    if (!ui.allObjects) rows = rows.filter(o => o.other || o.fields || Object.values(o.props).some(Boolean) || pending.has('object:' + o.name) || favs.objects.has(o.name)
+      || [...pending.keys()].some(k => k.startsWith('field:' + o.name + '.')));
+    rows.sort((a, b) => (!!a.other - !!b.other) || (favs.objects.has(b.name) - favs.objects.has(a.name)) || a.label.localeCompare(b.label));
     if (q) rows = rows.filter(o => o.label.toLowerCase().includes(q) || o.name.toLowerCase().includes(q));
     const cols = d.objectColumns;
     const tools = h('div', { class: 'card-tools' }, [
       searchBox(ui.objFilter, 'Search objects', v => { ui.objFilter = v; renderMain(); }, 'search.objects', true),
       toggle('Show all objects', ui.allObjects, v => { ui.allObjects = v; if (v && catalog === null) { catalog = 'loading'; send({ type: 'objectCatalog' }); } renderMain(); }),
-      catalog === 'loading' && ui.allObjects ? spinner(true) : null
+      catalog === 'loading' && (ui.allObjects || q) ? spinner(true) : null
     ]);
     const table = rows.length ? h('table', { class: 'datatable clickable' }, [
       h('thead', {}, h('tr', {}, [h('th', { class: 'narrow', 'aria-label': 'Favorite' }), h('th', { text: 'Object' }), h('th', { text: 'API Name' }), h('th', { text: 'Access' }), h('th', { class: 'narrow', 'aria-label': 'Open' })])),
@@ -781,11 +973,14 @@
         const p = eff('object:' + o.name, o.props);
         const flags = cols.filter(c => p[c]);
         const changed = pending.has('object:' + o.name) || [...pending.keys()].some(k => k.startsWith('field:' + o.name + '.'));
-        return h('tr', { tabindex: '0', class: changed ? 'row-edited' : flags.length ? '' : 'dim', onclick: () => openObject(o.name), onkeydown: e => { if (e.key === 'Enter') openObject(o.name); } }, [
+        return h('tr', { tabindex: '0', class: changed ? 'row-edited' : flags.length || o.fields ? '' : 'dim', onclick: () => openObject(o.name), onkeydown: e => { if (e.key === 'Enter') openObject(o.name); } }, [
           h('td', { class: 'narrow' }, star(favs.objects.has(o.name), o.label, () => send({ type: 'toggleFavorite', kind: 'object', id: o.name }))),
           h('td', { class: 'strong' }, [o.label, changed ? h('span', { class: 'dot', title: 'Unsaved changes' }) : null]),
           h('td', { class: 'muted mono', text: o.name }),
-          h('td', {}, flags.length ? flags.map(f => h('span', { class: 'pill perm ' + TONE[f], text: SHORT[f] })) : h('span', { class: 'muted', text: 'No access' })),
+          h('td', {}, flags.length ? flags.map(f => h('span', { class: 'pill perm ' + TONE[f], text: SHORT[f] }))
+            : o.fields ? [h('span', { class: 'pill perm ' + TONE.read, title: 'This item grants access to ' + o.fields + (o.fields === 1 ? ' field' : ' fields') + ' on ' + o.label + '.', text: o.fields + (o.fields === 1 ? ' field' : ' fields') }),
+              o.fieldOnly ? h('span', { class: 'muted', text: ' Field access only' }) : null]
+            : o.fieldOnly ? h('span', { class: 'muted', title: 'Salesforce has no object permissions for this object; open it to set its fields’ access.', text: 'Field access only' }) : h('span', { class: 'muted', text: 'No access' })),
           h('td', { class: 'narrow' }, svg(ICONS.chevron, 'chev'))
         ]);
       }))
@@ -817,7 +1012,9 @@
     const objEff = eff(objKey, od.props);
     const objCard = h('section', { class: 'card' }, [
       h('div', { class: 'card-head' }, [h('h2', { text: 'Object Permissions' }), objectPage.refreshing ? h('span', { class: 'muted status' }, [spinner(true), ' Refreshing…']) : null]),
-      h('div', { class: 'card-body' }, h('div', { class: 'perm-grid' }, OBJECT_FLAGS.filter(([f]) => od.columns.includes(f)).map(([f, label]) =>
+      od.objectPermissions === false ? h('div', { class: 'card-body' }, alertBox('info', 'Salesforce has no object permissions for ' + od.label + '. ' + (/^(Task|Event)$/.test(od.object)
+        ? 'Activity access comes from the Edit Tasks and Edit Events system permissions; the fields below can still be set here.' : 'Only its fields’ access is set here.')))
+      : h('div', { class: 'card-body' }, h('div', { class: 'perm-grid' }, OBJECT_FLAGS.filter(([f]) => od.columns.includes(f)).map(([f, label]) =>
         checkbox({ label, checked: objEff[f] === true, disabled: !ok, edited: edited(objKey, f), fid: objKey + '.' + f, tone: TONE[f],
           onChange: v => toggleObject(od.object, od.label, od.props, od.columns, f, v) }))))
     ]);
@@ -863,30 +1060,42 @@
       }))
     ])), d.unavailable ? h('div', { class: 'card-body' }, h('p', { class: 'muted flat', text: 'Groups get record types from their permission sets.' })) : null]);
   }
-  function needsNote(od) { return od.fields.some(f => eff('field:' + f.name, f).read) && !eff('object:' + od.object, od.props).read; }
-  function fieldCountText(od) { return od.fields.filter(f => eff('field:' + f.name, f).read).length + ' of ' + od.fields.length + ' readable'; }
+  function needsNote(od) { return od.objectPermissions !== false && od.fields.some(f => !f.fixed && eff('field:' + f.name, f).read) && !eff('object:' + od.object, od.props).read; }
+  function fieldCountText(od) {
+    const settable = od.fields.filter(f => !f.fixed);
+    const fixed = od.fields.length - settable.length;
+    return settable.filter(f => eff('field:' + f.name, f).read).length + ' of ' + settable.length + ' readable' + (fixed ? ' · ' + fixed + ' always visible' : '');
+  }
   function shownFields(od) {
     const q = ui.fieldFilter.trim().toLowerCase();
     let fields = od.fields;
     if (q) fields = fields.filter(f => f.label.toLowerCase().includes(q) || f.apiName.toLowerCase().includes(q));
-    if (ui.fieldsGranted) fields = fields.filter(f => f.read || pending.has('field:' + f.name));
+    if (ui.fieldsGranted) fields = fields.filter(f => !f.fixed && (f.read || pending.has('field:' + f.name)));
     return fields;
   }
   function fieldHead(fields, od, ok) {
-    const readAll = fields.length && fields.every(f => eff('field:' + f.name, f).read);
-    const readSome = fields.some(f => eff('field:' + f.name, f).read);
-    const editableFields = fields.filter(f => f.canEdit);
+    const settable = fields.filter(f => !f.fixed);
+    const readAll = settable.length && settable.every(f => eff('field:' + f.name, f).read);
+    const readSome = settable.some(f => eff('field:' + f.name, f).read);
+    const editableFields = settable.filter(f => f.canEdit);
     const editAll = editableFields.length && editableFields.every(f => eff('field:' + f.name, f).edit);
     const editSome = editableFields.some(f => eff('field:' + f.name, f).edit);
     return h('thead', { id: 'fieldHead' }, h('tr', {}, [h('th', { text: 'Field Label' }), h('th', { text: 'API Name' }), h('th', { text: 'Type' }),
-      h('th', { class: 'c' }, checkbox({ label: 'Read Access', checked: !!readAll, indeterminate: !readAll && readSome, disabled: !ok, fid: 'all.read', aria: 'Read access for all shown fields', tone: TONE.read,
-        onChange: v => bulkFields(fields, od.props, 'read', v) })),
+      h('th', { class: 'c' }, checkbox({ label: 'Read Access', checked: !!readAll, indeterminate: !readAll && readSome, disabled: !ok || !settable.length, fid: 'all.read', aria: 'Read access for all shown fields', tone: TONE.read,
+        onChange: v => bulkFields(settable, od.props, 'read', v) })),
       h('th', { class: 'c' }, checkbox({ label: 'Edit Access', checked: !!editAll, indeterminate: !editAll && editSome, disabled: !ok || !editableFields.length, fid: 'all.edit', aria: 'Edit access for all shown fields', tone: TONE.edit,
-        onChange: v => bulkFields(fields, od.props, 'edit', v) }))]));
+        onChange: v => bulkFields(settable, od.props, 'edit', v) }))]));
   }
   function fieldRow(f, od, ok) {
     const k = 'field:' + f.name;
     const p = eff(k, f);
+    if (f.fixed) {
+      const why = 'Required and system fields can’t have field-level security: everyone with access to ' + od.label + ' can see this field' + (f.edit ? ' and edit it.' : '.');
+      return h('tr', { 'data-row': k, class: 'fixed' }, [
+        h('td', { class: 'strong' }, [f.label, h('span', { class: 'pill', title: why, text: 'Always visible' })]), h('td', { class: 'muted mono', text: f.apiName }), h('td', {}, h('span', { class: 'type', text: f.type })),
+        h('td', { class: 'c' }, checkbox({ checked: true, disabled: true, fid: k + '.read', aria: 'Read ' + f.label + ' (always)', title: why, tone: TONE.read, onChange: () => {} })),
+        h('td', { class: 'c' }, checkbox({ checked: !!f.edit, disabled: true, fid: k + '.edit', aria: 'Edit ' + f.label + ' (fixed)', title: why, tone: TONE.edit, onChange: () => {} }))]);
+    }
     return h('tr', { class: pending.has(k) ? 'row-edited' : p.read ? '' : 'dim', 'data-row': k }, [
       h('td', { class: 'strong', text: f.label }), h('td', { class: 'muted mono', text: f.apiName }), h('td', {}, h('span', { class: 'type', text: f.type })),
       h('td', { class: 'c' }, checkbox({ checked: p.read, disabled: !ok, edited: edited(k, 'read'), fid: k + '.read', aria: 'Read ' + f.label, tone: TONE.read, onChange: v => toggleField(f, od.props, 'read', v) })),
@@ -917,7 +1126,8 @@
     const on = eff(k, s).enabled;
     return h('tr', { class: pending.has(k) ? 'row-edited' : on ? '' : 'dim', 'data-row': k }, [
       h('td', { class: 'c narrow' }, checkbox({ checked: on, disabled: !ok, edited: edited(k, 'enabled'), fid: k, aria: s.label, onChange: v => toggleSystem(s, v) })),
-      h('td', { class: 'strong' }, [s.label, HIGH_IMPACT.has(s.name) ? h('span', { class: 'pill risk', title: 'Reaches far beyond a single object: review carefully', text: 'High impact' }) : null]),
+      h('td', { class: 'strong' }, [s.label, isHighImpact(s) ? h('span', { class: 'pill risk', title: 'Reaches far beyond a single object: review carefully', text: 'High impact' }) : null,
+        ui.ruleNote && ui.ruleNote.key === k ? h('span', { class: 'rule-note', role: 'status', text: ui.ruleNote.text }) : null]),
       h('td', { class: 'muted mono', text: s.name })]);
   }
 
@@ -962,8 +1172,8 @@
     return h('div', { class: 'tool' }, [h('div', { class: 'page-header' }, [back, h('div', { class: 'ph-title tool-title' }, [h('h1', { text: titles[ui.tool][0] })]), h('p', { class: 'muted flat', text: titles[ui.tool][1] })]),
       h('div', { class: 'tab-body' }, body)]);
   }
-  function objectPicker(value, onPick, fid) {
-    const list = Array.isArray(catalog) ? catalog : [];
+  function objectPicker(value, onPick, fid, objectPermsOnly) {
+    const list = (Array.isArray(catalog) ? catalog : []).filter(o => !objectPermsOnly || o.objectPerms !== false);
     const id = 'objects-' + fid;
     return h('div', { class: 'picker' }, [
       h('input', { type: 'text', class: 'text', list: id, value, placeholder: catalog === 'loading' ? 'Loading objects…' : 'Object API name, e.g. Lead', 'data-fid': fid, 'aria-label': 'Object',
@@ -972,188 +1182,473 @@
   }
 
   function lookupPage() {
-    const levels = lookup.field ? [['read', 'Read'], ['edit', 'Edit']] : [['read', 'Read'], ['create', 'Create'], ['edit', 'Edit'], ['delete', 'Delete'], ['viewAll', 'View All'], ['modifyAll', 'Modify All']];
-    if (!levels.some(l => l[0] === lookup.level)) lookup.level = 'read';
-    const fieldOpts = [['', 'Any (object access only)']].concat((lookup.fields || []).map(f => [f.apiName, f.label + ' (' + f.apiName + ')']));
-    const form = h('section', { class: 'card' }, h('div', { class: 'card-body form-row' }, [
-      h('label', { class: 'fld' }, [h('span', { text: 'Object' }), objectPicker(lookup.object, v => { lookup.object = v; lookup.field = ''; lookup.fields = null; lookup.result = null; if (v) send({ type: 'wizardFields', object: v }); renderMain(); }, 'lk.obj')]),
-      h('label', { class: 'fld' }, [h('span', { text: 'Field' }), select(fieldOpts, lookup.field, v => { lookup.field = v; lookup.result = null; renderMain(); }, !lookup.object || !lookup.fields, 'lk.field', 'Field')]),
-      h('label', { class: 'fld' }, [h('span', { text: 'Access' }), select(levels, lookup.level, v => { lookup.level = v; lookup.result = null; renderMain(); }, false, 'lk.level', 'Access')]),
-      h('button', { class: 'btn brand', disabled: !lookup.object || lookup.busy, onclick: () => { lookup.busy = true; lookup.result = null; renderMain(); send({ type: 'lookup', object: lookup.object, field: lookup.field || null, level: lookup.level }); }, text: lookup.busy ? 'Looking…' : 'Find' })]));
-    const out = [form];
-    const r = lookup.result;
-    if (lookup.busy) out.push(h('div', { class: 'loading-block' }, [spinner(), h('p', { class: 'muted', text: 'Checking permission sets, profiles, groups and assignments…' })]));
-    if (r && r.error) out.push(alertBox('error', r.error));
-    if (r && !r.error) {
-      const what = (SHORT[r.level] || r.level) + ' on ' + r.object + (r.field ? '.' + r.field.split('.').pop() : '');
-      const label = new Map(r.sources.map(x => [x.permissionSetId, x]));
-      const link = id => { const src = label.get(id); if (!src) return h('span', { text: id }); return src.key ? h('button', { class: 'link', onclick: () => { ui.tool = null; renderTop(); guard(() => choose(src.key)); }, text: src.label }) : h('span', { text: src.label }); };
-      const joinLinks = ids => { const out2 = []; ids.forEach((id, i) => { if (i) out2.push(', '); out2.push(link(id)); }); return out2; };
-      out.push(h('div', { class: 'summary-line' }, [h('strong', { text: r.users.length + (r.users.length === 1 ? ' active user has ' : ' active users have ') + what }),
-        h('span', { class: 'muted', text: ' through ' + r.sources.length + (r.sources.length === 1 ? ' source.' : ' sources.') })]));
-      out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, h('h2', { text: 'Users' })), h('div', { class: 'card-body flush' }, r.users.length ? h('table', { class: 'datatable' }, [
-        h('thead', {}, h('tr', {}, [h('th', { text: 'User' }), h('th', { text: 'Username' }), h('th', { text: 'Profile' }), h('th', { text: r.field ? 'Object access from' : 'Access from' })].concat(r.field ? [h('th', { text: 'Field access from' })] : []))),
-        h('tbody', {}, r.users.map(u => h('tr', {}, [h('td', { class: 'strong', text: u.name }), h('td', { class: 'muted', text: u.username }), h('td', { class: 'muted', text: u.profile }),
-          h('td', { class: 'wrap' }, joinLinks(u.objectFrom))].concat(r.field ? [h('td', { class: 'wrap' }, joinLinks(u.fieldFrom))] : []))))]) : h('p', { class: 'empty-line', text: 'No active user has this access.' }))]));
-      if (r.partial && r.partial.length) out.push(h('details', { class: 'card disclosure' }, [h('summary', { text: r.partial.length + ' more users have only half of it (object or field access, not both)' }),
-        h('div', { class: 'card-body flush' }, h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'User' }), h('th', { text: 'Has object access' }), h('th', { text: 'Has field access' })])),
-          h('tbody', {}, r.partial.map(u => h('tr', {}, [h('td', { class: 'strong', text: u.name }), h('td', { text: u.objectFrom.length ? 'Yes' : 'No' }), h('td', { text: u.fieldFrom.length ? 'Yes' : 'No' })])))]))]));
-      const why = v => ({ object: 'Object permission', ViewAllData: 'View All Data', ModifyAllData: 'Modify All Data', field: 'Field permission', ViewAllFields: 'View All Fields' }[v] || v);
-      out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, h('h2', { text: 'Sources' })), h('div', { class: 'card-body flush' }, r.sources.length ? h('table', { class: 'datatable' }, [
-        h('thead', {}, h('tr', {}, [h('th', { text: 'Name' }), h('th', { text: 'Type' }), h('th', { text: 'Grants' }), h('th', { class: 'c', text: 'Active users' })])),
-        h('tbody', {}, r.sources.map(x => h('tr', {}, [h('td', { class: 'strong' }, link(x.permissionSetId)), h('td', { class: 'muted', text: { permissionSet: 'Permission set', profile: 'Profile', group: 'Group' }[x.kind] }),
-          h('td', {}, x.objectVia.concat(x.fieldVia).map(v => h('span', { class: 'pill perm ' + ({ object: TONE.read, field: TONE.create, ViewAllFields: TONE.viewAll }[v] || TONE.modifyAll), text: why(v) }))),
-          h('td', { class: 'c', text: String(x.users) })])))]) : h('p', { class: 'empty-line', text: 'Nothing grants this.' }))]));
+    if (lookup.revoke && (lookup.revoke.plan || lookup.revoke.results || lookup.revoke.busy)) {
+      if (lookup.revoke.busy) return [h('div', { class: 'loading-block' }, [spinner(), h('p', { class: 'muted', text: 'Working out what to remove…' })])];
+      const back = () => { lookup.revoke = null; rerunLookup(); };
+      return [h('h2', { class: 'sub-title', text: 'Remove access from selected sources' })].concat(planView(lookup.revoke, 'revokeApply', {}, { target: 'revoke', onDone: back, onBack: () => { lookup.revoke = null; renderMain(); }, saveLabel: 'Remove' }));
     }
+    const mode = lookup.mode || 'access';
+    const modeBar = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'What to look up' }, [['access', 'Object or field'], ['system', 'System permission'], ['custom', 'Custom permission']].map(([m, label]) =>
+      h('button', { class: mode === m ? 'on' : '', role: 'radio', 'aria-checked': String(mode === m),
+        onclick: () => { lookup.mode = m; lookup.result = null; lookup.sel = new Set(); if (m !== 'access' && !lookupOptions) { lookupOptions = 'loading'; send({ type: 'lookupOptions' }); } renderMain(); }, text: label })));
+    const out = [h('div', { class: 'lk-bar' }, [h('div', { class: 'fld' }, [h('span', { text: 'Look up' }), modeBar])].concat(mode === 'access' ? accessInputs() : permissionInputs(mode === 'system'))
+      .concat([recentLookups.length ? h('div', { class: 'lk-recent' }, ['Recent: '].concat(recentLookups.slice(0, 5).flatMap((r, i) => [i ? ' · ' : '', h('button', { class: 'link', onclick: () => runRecent(r), text: r.label })]))) : null]))];
+    if (lookup.busy) out.push(h('div', { class: 'loading-block' }, [spinner(), h('p', { class: 'muted', text: 'Checking permission sets, profiles, groups and assignments…' })]));
+    const r = lookup.result;
+    if (r && r.error) out.push(alertBox('error', r.error));
+    if (r && !r.error && (r.object || r.permission)) out.push(...lookupResults(r));
     return out;
   }
 
+  function parseTarget(v) {
+    const t = String(v || '').trim();
+    const list = Array.isArray(catalog) ? catalog : [];
+    const objPart = t.includes('.') ? t.slice(0, t.indexOf('.')) : t;
+    const obj = list.find(o => o.name.toLowerCase() === objPart.toLowerCase()) || (!t.includes('.') && list.find(o => o.label.toLowerCase() === t.toLowerCase()));
+    if (!obj) return { object: '', field: '' };
+    if (!t.includes('.')) return { object: obj.name, field: '' };
+    const fp = t.slice(t.indexOf('.') + 1).toLowerCase();
+    const fld = (lookup.fieldsFor === obj.name && lookup.fields || []).find(f => f.apiName.toLowerCase() === fp || f.label.toLowerCase() === fp);
+    return { object: obj.name, field: fld ? fld.apiName : '', pendingField: !fld && fp ? fp : '' };
+  }
+  function accessInputs() {
+    if (catalog === null) { catalog = 'loading'; send({ type: 'objectCatalog' }); }
+    const t = parseTarget(lookup.target);
+    if (t.object && lookup.fieldsFor !== t.object && t.pendingField !== undefined) { lookup.fieldsFor = t.object; lookup.fields = null; lookup.object = t.object; send({ type: 'wizardFields', object: t.object }); }
+    const levels = t.field ? [['read', 'Read'], ['edit', 'Edit']] : [['read', 'Read'], ['create', 'Create'], ['edit', 'Edit'], ['delete', 'Delete'], ['viewAll', 'View All'], ['modifyAll', 'Modify All']];
+    if (!levels.some(l => l[0] === lookup.level)) lookup.level = 'read';
+    const options = (Array.isArray(catalog) ? catalog : []).map(o => h('option', { value: o.name, label: o.label }))
+      .concat(t.object && lookup.fieldsFor === t.object ? (lookup.fields || []).map(f => h('option', { value: t.object + '.' + f.apiName, label: f.label })) : []);
+    const find = () => {
+      const x = parseTarget(lookup.target);
+      if (!x.object) { toast('warning', 'Type an object, such as Lead, or a field, such as Lead.Rating, then pick it from the list.', { title: 'Nothing to look up' }); return; }
+      lookup.object = x.object; lookup.field = x.field;
+      lookup.busy = true; lookup.result = null; lookup.why = new Set(); lookup.sel = new Set(); renderMain();
+      send({ type: 'lookup', object: x.object, field: x.field || null, level: lookup.level });
+      addRecent({ mode: 'access', object: x.object, field: x.field, level: lookup.level, label: x.object + (x.field ? '.' + x.field : '') + (lookup.level !== 'read' ? ' (' + (SHORT[lookup.level] || lookup.level) + ')' : '') });
+    };
+    return [h('label', { class: 'fld grow' }, [h('span', { text: 'Object or field' }), h('input', { type: 'text', class: 'text', list: 'lk-targets', value: lookup.target || '', 'data-fid': 'lk.target',
+        placeholder: 'Lead, or Lead.Rating', autocomplete: 'off', oninput: e => { lookup.target = e.target.value; const y = parseTarget(lookup.target); if (y.object && lookup.fieldsFor !== y.object) { lookup.fieldsFor = y.object; lookup.fields = null; send({ type: 'wizardFields', object: y.object }); } debounce(renderMain); },
+        onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); find(); } } }), h('datalist', { id: 'lk-targets' }, options)]),
+      h('label', { class: 'fld' }, [h('span', { text: 'Access' }), select(levels, lookup.level, v => { lookup.level = v; renderMain(); }, false, 'lk.level', 'Access')]),
+      h('button', { class: 'btn brand', disabled: lookup.busy, onclick: find, text: lookup.busy ? 'Looking…' : 'Find' })];
+  }
+  function permissionInputs(sys) {
+    if (!lookupOptions || !lookupOptions.ready) return [lookupOptions && lookupOptions.message ? alertBox('error', lookupOptions.message) : spinner(true)];
+    const opts = sys ? lookupOptions.system : lookupOptions.custom;
+    const high = sys ? opts.filter(isHighImpact) : [];
+    const rest = sys ? opts.filter(o => !isHighImpact(o)) : opts;
+    const value = sys ? lookup.sysName || '' : lookup.customId || '';
+    const sel = h('select', { class: 'select', 'aria-label': sys ? 'System permission' : 'Custom permission', 'data-fid': 'lk.perm', onchange: e => { if (sys) lookup.sysName = e.target.value; else lookup.customId = e.target.value; renderMain(); } },
+      [h('option', { value: '', text: sys ? 'Choose a system permission' : (opts.length ? 'Choose a custom permission' : 'This org has no custom permissions') })]
+        .concat(high.length ? [h('optgroup', { label: 'High impact' }, high.map(o => h('option', { value: o.name, selected: value === o.name, text: o.label })))] : [])
+        .concat([h('optgroup', { label: sys ? 'All system permissions' : 'Custom permissions' }, rest.map(o => h('option', { value: sys ? o.name : o.id, selected: value === (sys ? o.name : o.id), text: o.label + (sys ? '' : ' (' + o.name + ')') })))]));
+    const chosen = opts.find(o => (sys ? o.name : o.id) === value);
+    return [h('label', { class: 'fld grow' }, [h('span', { text: sys ? 'System permission' : 'Custom permission' }), sel]),
+      h('button', { class: 'btn brand', disabled: !chosen || lookup.busy, onclick: () => {
+        lookup.busy = true; lookup.result = null; lookup.why = new Set(); lookup.sel = new Set(); renderMain();
+        send(sys ? { type: 'lookupPermission', kind: 'system', name: chosen.name, label: chosen.label } : { type: 'lookupPermission', kind: 'custom', id: chosen.id, label: chosen.label });
+        addRecent(sys ? { mode: 'system', sysName: chosen.name, label: chosen.label } : { mode: 'custom', customId: chosen.id, label: chosen.label }); }, text: lookup.busy ? 'Looking…' : 'Find' })];
+  }
+  function addRecent(r) {
+    recentLookups = [r].concat(recentLookups.filter(x => x.label !== r.label)).slice(0, 8);
+    send({ type: 'persist', name: 'recentLookups', value: recentLookups });
+  }
+  function runRecent(r) {
+    lookup.mode = r.mode; lookup.why = new Set(); lookup.sel = new Set(); lookup.result = null;
+    if (r.mode === 'access') { lookup.target = r.object + (r.field ? '.' + r.field : ''); lookup.object = r.object; lookup.field = r.field || ''; lookup.level = r.level || 'read';
+      lookup.busy = true; send({ type: 'lookup', object: r.object, field: r.field || null, level: lookup.level }); }
+    else { if (r.mode === 'system') lookup.sysName = r.sysName; else lookup.customId = r.customId;
+      if (!lookupOptions) { lookupOptions = 'loading'; send({ type: 'lookupOptions' }); }
+      lookup.busy = true; send(r.mode === 'system' ? { type: 'lookupPermission', kind: 'system', name: r.sysName, label: r.label } : { type: 'lookupPermission', kind: 'custom', id: r.customId, label: r.label }); }
+    addRecent(r); renderMain();
+  }
+  function rerunLookup() {
+    const r = recentLookups[0];
+    if (r) runRecent(r); else renderMain();
+  }
+
+  /** Results: filters as chips, users with who-and-why, an at-a-glance panel and the sources with next steps. */
+  function lookupResults(r) {
+    const out = [];
+    for (const x of r.sources) { x.objectVia = x.objectVia || []; x.fieldVia = x.fieldVia || []; }
+    for (const u of (r.users || []).concat(r.inactive || [], r.partial || [])) { u.objectFrom = u.objectFrom || []; u.fieldFrom = u.fieldFrom || []; }
+    const perm = !!r.permission;
+    const byId = new Map(r.sources.map(x => [x.permissionSetId, x]));
+    const what = perm ? r.permission.label : (SHORT[r.level] || r.level) + ' on ' + r.object + (r.field ? '.' + r.field.split('.').pop() : '');
+    if (r.fieldOnly) out.push(alertBox('info', 'Salesforce has no object permissions for ' + r.object + ', so this shows field access only.' + (/^(Task|Event)$/.test(r.object) ? ' Activity access itself comes from the Edit Tasks and Edit Events system permissions.' : '')));
+    const f = lookup.f;
+    const base = f.show === 'partial' && r.partial ? r.partial : f.users === 'inactive' ? r.inactive || [] : f.users === 'all' ? r.users.concat(r.inactive || []) : r.users;
+    const kindsOf = u => new Set(u.objectFrom.concat(u.fieldFrom).map(id => (byId.get(id) || {}).kind));
+    const profiles = [...new Set(r.users.concat(r.inactive || []).map(u => u.profile).filter(Boolean))].sort();
+    const licenses = [...new Set(r.users.concat(r.inactive || []).map(u => u.license).filter(Boolean))].sort();
+    const q = f.q.trim().toLowerCase();
+    const users = base.filter(u => (f.through === 'any' || kindsOf(u).has(f.through)) && (f.profile === 'any' || u.profile === f.profile) && (f.license === 'any' || u.license === f.license) &&
+      (!q || (u.name + ' ' + u.username).toLowerCase().includes(q)));
+    const set = (k, v) => { lookup.f[k] = v; renderMain(); };
+    out.push(h('div', { class: 'filters' }, [h('span', { class: 'muted small', text: 'Filter' }),
+      filterChip('Granted through', f.through, [['any', 'Any'], ['permissionSet', 'Permission set'], ['profile', 'Profile'], ['group', 'Group']], v => set('through', v), 'any'),
+      filterChip('Profile', f.profile, [['any', 'Any']].concat(profiles.map(p => [p, p])), v => set('profile', v), 'any'),
+      filterChip('License', f.license, [['any', 'Any']].concat(licenses.map(l => [l, l])), v => set('license', v), 'any'),
+      filterChip('Users', f.users, [['active', 'Active'], ['inactive', 'Inactive'], ['all', 'All']], v => set('users', v), 'active'),
+      !perm && r.field ? filterChip('Show', f.show, [['full', 'full access'], ['partial', 'only half of it']], v => set('show', v), 'full') : null,
+      h('div', { class: 'grow' }), searchBox(f.q, 'Search users', v => set('q', v), 'lk.users', true)]));
+    const grants = src => {
+      const g = [];
+      if (perm) g.push(chip('+', r.permission.label));
+      for (const v of src.objectVia) g.push(v === 'object' ? chip('+', (SHORT[r.level] || r.level) + ' on ' + r.object) : v === 'system' || v === 'custom' ? null : chip('+', { ModifyAllData: 'Modify All Data', ViewAllData: 'View All Data' }[v] || v));
+      for (const v of src.fieldVia) g.push(v === 'field' ? chip('+', (SHORT[r.level] || r.level) + ' on ' + r.field) : chip('+', v === 'ViewAllFields' ? 'View All Fields' : v));
+      return g.filter(Boolean);
+    };
+    const pathFor = u => {
+      const parts = [h('b', { text: 'How ' + u.name.split(' ')[0] + ' gets ' + what + ':' })];
+      [...new Set(u.objectFrom.concat(u.fieldFrom))].forEach((id, i) => {
+        const src = byId.get(id);
+        if (!src) return;
+        if (i) parts.push(h('span', { class: 'arrow', text: 'and' }));
+        parts.push(srcChip(src));
+        if (src.includes && src.includes.length) { parts.push(h('span', { class: 'arrow', text: '→ includes' })); src.includes.forEach(l => parts.push(h('span', { class: 'src ps', text: l }))); }
+        parts.push(h('span', { class: 'arrow', text: '→' }));
+        parts.push(...grants(src));
+      });
+      return h('div', { class: 'path' }, parts);
+    };
+    const chips = ids => ids.map(id => srcChip(byId.get(id)));
+    const cols = perm ? ['User', 'Profile', 'Granted by', ''] : r.field ? ['User', 'Profile', 'Object access from', 'Field access from', ''] : ['User', 'Profile', 'Access from', ''];
+    const rows = [];
+    for (const u of users) {
+      const open = lookup.why.has(u.userId);
+      rows.push(h('tr', { class: open ? 'why' : '' }, [
+        h('td', {}, [h('b', { text: u.name }), u.active === false ? h('span', { class: 'pill', text: 'Inactive' }) : null, h('div', { class: 'cur', text: u.username })]),
+        h('td', { class: 'muted', text: u.profile })].concat(perm || !r.field ? [h('td', { class: 'wrap' }, chips(u.objectFrom))] : [h('td', { class: 'wrap' }, chips(u.objectFrom)), h('td', { class: 'wrap' }, chips(u.fieldFrom))])
+        .concat([h('td', { class: 'c narrow' }, h('button', { class: 'link', onclick: () => { if (open) lookup.why.delete(u.userId); else lookup.why.add(u.userId); renderMain(); }, text: open ? 'Hide' : 'Why?' }))])));
+      if (open) rows.push(h('tr', { class: 'why' }, h('td', { colspan: String(cols.length) }, pathFor(u))));
+    }
+    const usersCard = h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, ['Users ', h('span', { class: 'count', text: users.length === base.length ? String(users.length) : users.length + ' of ' + base.length })]),
+      h('div', { class: 'card-tools' }, h('button', { class: 'btn neutral small', disabled: !users.length, onclick: () => send({ type: 'copy', text: users.map(u => [u.name, u.username, u.profile].join('\t')).join('\n') }), text: 'Copy list' }))]),
+      h('div', { class: 'card-body flush' }, users.length ? h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, cols.map(c => h('th', { text: c })))), h('tbody', {}, rows)])
+        : h('p', { class: 'empty-line', text: base.length ? 'No users match these filters.' : 'No ' + (f.users === 'inactive' ? 'inactive' : 'active') + ' user has this.' })),
+      !perm && r.partial && r.partial.length && f.show !== 'partial' ? h('div', { class: 'card-body' }, h('button', { class: 'link', onclick: () => set('show', 'partial'), text: '▸ ' + r.partial.length + (r.partial.length === 1 ? ' more user has' : ' more users have') + ' only half of it (object or field access, not both)' })) : null]);
+    // at a glance
+    const kinds = { permissionSet: 0, profile: 0, group: 0 };
+    for (const x of r.sources) if (x.users || x.kind !== 'permissionSet') kinds[x.kind]++;
+    const total = kinds.permissionSet + kinds.profile + kinds.group || 1;
+    const sysOnly = r.users.filter(u => u.objectFrom.length && u.objectFrom.every(id => { const x = byId.get(id); return x && x.objectVia.every(v => v === 'ModifyAllData' || v === 'ViewAllData'); }));
+    const glance = h('section', { class: 'card' }, [h('div', { class: 'card-head' }, h('h2', { text: 'At a glance' })), h('div', { class: 'card-body' }, [
+      h('div', { class: 'big-num' }, [h('b', { text: String(r.users.length) }), ' ' + (r.users.length === 1 ? 'active user has ' : 'active users have ') + what,
+        perm && isHighImpact({ name: r.permission.name, label: r.permission.label }) ? h('span', { class: 'rv-risk', text: 'High impact' }) : null]),
+      h('div', { class: 'mix', 'aria-hidden': 'true' }, [['permissionSet', '--vscode-charts-blue'], ['profile', '--vscode-charts-green'], ['group', '--vscode-charts-purple']].map(([k, c]) => h('i', { style: 'width:' + (kinds[k] / total * 100) + '%;background:var(' + c + ')' }))),
+      h('div', { class: 'legend2' }, [h('span', { class: 'lg ps', text: kinds.permissionSet + (kinds.permissionSet === 1 ? ' permission set' : ' permission sets') }), h('span', { class: 'lg pr', text: kinds.profile + (kinds.profile === 1 ? ' profile' : ' profiles') }),
+        h('span', { class: 'lg gr', text: kinds.group + (kinds.group === 1 ? ' group' : ' groups') })]),
+      sysOnly.length ? h('p', { class: 'muted small', text: sysOnly.length + (sysOnly.length === 1 ? ' user gets' : ' users get') + ' it only through Modify All Data or View All Data.' }) : null])]);
+    // sources, with next steps
+    const selectable = x => !!x.key && !perm;
+    const srcRows = r.sources.map(x => h('tr', { class: lookup.sel.has(x.key) ? 'row-edited' : '' }, [
+      !perm ? h('td', { class: 'c narrow' }, selectable(x) ? checkbox({ checked: lookup.sel.has(x.key), fid: 'lksrc.' + x.permissionSetId, aria: 'Select ' + x.label, onChange: v => { if (v) lookup.sel.add(x.key); else lookup.sel.delete(x.key); renderMain(); } }) : null) : null,
+      h('td', {}, [srcChip(x), !perm && r.field && !x.fieldVia.length ? h('span', { class: 'muted small', text: ' object only' }) : null,
+        x.objectVia.some(v => v === 'ModifyAllData' || v === 'ViewAllData') ? h('span', { class: 'rv-risk', text: x.objectVia.includes('ModifyAllData') ? 'Modify All Data' : 'View All Data' }) : null]),
+      h('td', { class: 'c', text: String(x.users) })].filter(Boolean)));
+    const sourcesCard = h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', { text: 'Sources' }), h('span', { class: 'muted small', text: 'users' })]),
+      h('div', { class: 'card-body flush' }, r.sources.length ? h('table', { class: 'datatable' }, h('tbody', {}, srcRows)) : h('p', { class: 'empty-line', text: 'Nothing grants this.' })),
+      !perm && r.sources.length ? h('div', { class: 'card-body btns' }, [
+        h('button', { class: 'btn neutral small', disabled: !lookup.sel.size, onclick: () => { lookup.revoke = { busy: true }; applyTarget = 'revoke'; renderMain();
+          send({ type: 'revokePlan', object: r.object, field: r.field || null, level: r.level, sourceKeys: [...lookup.sel] }); }, text: 'Remove from selected…' }),
+        h('button', { class: 'btn neutral small', onclick: () => grantMore(r), text: 'Grant to more…' })]) : null]);
+    out.push(h('div', { class: 'lk-cols' }, [h('div', {}, usersCard), h('div', { class: 'lk-side' }, [glance, sourcesCard])]));
+    return out;
+  }
+  /** "Grant to more…": the matching grant screen, with the object, field and access already chosen. */
+  function grantMore(r) {
+    if (r.field) {
+      Object.assign(wizard, { object: r.object, fields: null, chosen: new Set([r.object + '.' + r.field.split('.').pop()]), level: r.level === 'edit' ? 'edit' : 'read', targets: new Set(), plan: null, results: null, currentSig: '' });
+      send({ type: 'wizardFields', object: r.object });
+      ui.tool = 'wizard';
+    } else {
+      Object.assign(objWizard, { object: r.object, info: null, adds: new Map(), plan: null, results: null, currentFor: '' });
+      send({ type: 'objWizardInfo', object: r.object });
+      ui.tool = 'objwizard';
+    }
+    renderTop(); renderMain();
+  }
+
+  function steps(list) {
+    const first = list.findIndex(x => !x.done);
+    return h('div', { class: 'steps' }, list.map((x, i) => h('div', { class: x.done ? 'done' : i === first ? 'on' : '' }, [h('b', { text: x.title }), x.text])));
+  }
+  /** Who can be granted: unmanaged permission sets and custom profiles (others listed, locked). */
+  function grantCandidates(w) {
+    const all = ((lists && lists.permissionSet) || []).concat((lists && lists.profile) || []);
+    const q = (w.targetFilter || '').trim().toLowerCase();
+    return all.filter(r => (w.types === 'all' || r.kind === w.types) && (!q || r.label.toLowerCase().includes(q) || r.apiName.toLowerCase().includes(q)));
+  }
+  const accessWords = p => p && p.read ? (p.edit ? 'Read, Edit' : 'Read') : 'No access';
   function wizardPage() {
     const w = wizard;
     if (w.results || w.plan) return planView(w, 'wizardApply', { chosen: new Set() });
-    const out = [];
-    // Step 1: object and fields
     const fields = w.fields || [];
+    const chosen = fields.filter(f => w.chosen.has(f.name));
+    const sig = w.object + '|' + [...w.chosen].sort().join(',');
+    if (w.object && w.chosen.size && w.currentSig !== sig) { w.currentSig = sig; w.current = null; send({ type: 'wizardCurrent', object: w.object, fields: [...w.chosen] }); }
+    const cur = key => (w.current && w.current.byKey && w.current.byKey[key]) || null;
+    const want = f => ({ read: true, edit: w.level === 'edit' && f.canEdit });
+    const missing = (key, f) => { const c = ((cur(key) || {}).fields || {})[f.name] || { read: false, edit: false }; const n = want(f); return { read: n.read && !c.read, edit: n.edit && !c.edit }; };
+    const hasAll = key => chosen.every(f => { const m = missing(key, f); return !m.read && !m.edit; });
+    const editable = r => !r.managed && !(r.kind === 'profile' && r.standard);
+    const targets = [...w.targets];
+    let changes = 0, inPlace = 0, reach = 0, noRead = 0;
+    for (const k of targets) {
+      for (const f of chosen) { const m = missing(k, f); if (m.read || m.edit) changes++; else inPlace++; }
+      const c = cur(k); if (c) { reach += c.users || 0; if (!c.objectRead) noRead++; }
+    }
+    const out = [steps([{ title: 'What', text: chosen.length ? chosen.length + (chosen.length === 1 ? ' field' : ' fields') + ' on ' + w.object : 'Pick fields', done: !!chosen.length },
+      { title: 'Access', text: w.level === 'edit' ? 'Read and Edit' : 'Read', done: !!chosen.length },
+      { title: 'Who', text: targets.length + ' selected', done: !!targets.length },
+      { title: 'Review and save', text: changes + (changes === 1 ? ' change' : ' changes'), done: false }])];
+    // 1. fields
     const q = w.filter.trim().toLowerCase();
     let shownFields = fields.filter(f => !q || f.label.toLowerCase().includes(q) || f.apiName.toLowerCase().includes(q));
     if (w.customOnly && !q) shownFields = shownFields.filter(f => f.custom || w.chosen.has(f.name));
-    out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', { text: '1. Fields' }), h('div', { class: 'card-tools' }, [
+    const left = [h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', { text: '1. Fields' }), h('div', { class: 'card-tools' }, [
+      grantTemplates.length ? select([['', 'Templates']].concat(grantTemplates.map((t, i) => [String(i), t.name])), '', v => { if (v === '') return; const t = grantTemplates[Number(v)];
+        Object.assign(w, { object: t.object, fields: null, chosen: new Set(t.fields), level: t.level, grantObject: t.grantObject !== false, targets: new Set(t.targets || []), currentSig: '' });
+        send({ type: 'wizardFields', object: t.object }); renderMain(); }, false, 'wz.tpl', 'Templates') : null,
       objectPicker(w.object, v => { w.object = v; w.fields = null; w.chosen = new Set(); if (v) send({ type: 'wizardFields', object: v }); renderMain(); }, 'wz.obj'),
       w.object ? searchBox(w.filter, 'Search fields', v => { w.filter = v; renderMain(); }, 'wz.filter', true) : null,
       w.object ? toggle('Custom fields only', w.customOnly, v => { w.customOnly = v; renderMain(); }) : null])]),
-      h('div', { class: 'card-body flush' }, !w.object ? h('p', { class: 'empty-line', text: 'Pick an object first.' }) : !w.fields ? h('div', { class: 'loading-block' }, spinner())
+      h('div', { class: 'card-body flush scroll-y short' }, !w.object ? h('p', { class: 'empty-line', text: 'Pick an object first.' }) : !w.fields ? h('div', { class: 'loading-block' }, spinner())
         : shownFields.length ? h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, [h('th', { class: 'c narrow', text: 'Grant' }), h('th', { text: 'Field' }), h('th', { text: 'API Name' }), h('th', { text: 'Type' })])),
           h('tbody', {}, shownFields.map(f => h('tr', { class: w.chosen.has(f.name) ? 'row-edited' : '' }, [h('td', { class: 'c narrow' }, checkbox({ checked: w.chosen.has(f.name), fid: 'wz.' + f.name, aria: f.label,
             onChange: v => { if (v) w.chosen.add(f.name); else w.chosen.delete(f.name); renderMain(); } })), h('td', { class: 'strong', text: f.label }), h('td', { class: 'muted mono', text: f.apiName }),
-            h('td', { class: 'muted', text: f.type + (f.canEdit ? '' : ' (read-only)') })])))]) : h('p', { class: 'empty-line', text: 'No fields match.' }))]));
-    // Step 2: access
-    out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, h('h2', { text: '2. Access' })), h('div', { class: 'card-body form-row' }, [
-      h('label', { class: 'radio-line' }, [h('input', { type: 'radio', name: 'wzlevel', checked: w.level === 'read', onchange: () => { w.level = 'read'; renderMain(); } }), ' Read only']),
-      h('label', { class: 'radio-line' }, [h('input', { type: 'radio', name: 'wzlevel', checked: w.level === 'edit', onchange: () => { w.level = 'edit'; renderMain(); } }), ' Read and Edit']),
-      checkbox({ checked: w.grantObject, fid: 'wz.obj.grant', label: 'Also grant object ' + (w.level === 'edit' ? 'Read and Edit' : 'Read') + ' where missing', onChange: v => { w.grantObject = v; renderMain(); } })])]));
-    out.push(targetsCard(w, '3. Grant to'));
-    out.push(h('div', { class: 'btns' }, [h('button', { class: 'btn brand', disabled: !w.chosen.size || !w.targets.size || w.busy,
-      onclick: () => { w.busy = true; renderMain(); send({ type: 'wizardPlan', object: w.object, fields: fields.filter(f => w.chosen.has(f.name)), targets: [...w.targets], level: w.level, grantObject: w.grantObject }); },
-      text: w.busy ? 'Working out the changes…' : 'Review changes' })]));
+            h('td', {}, h('span', { class: 'type', text: f.type + (f.canEdit ? '' : ' · read-only') }))])))]) : h('p', { class: 'empty-line', text: 'No fields match.' }))]),
+      h('section', { class: 'card' }, [h('div', { class: 'card-head' }, h('h2', { text: '2. Access' })), h('div', { class: 'card-body form-row' }, [
+        h('label', { class: 'radio-line' }, [h('input', { type: 'radio', name: 'wzlevel', checked: w.level === 'read', onchange: () => { w.level = 'read'; renderMain(); } }), ' Read only']),
+        h('label', { class: 'radio-line' }, [h('input', { type: 'radio', name: 'wzlevel', checked: w.level === 'edit', onchange: () => { w.level = 'edit'; renderMain(); } }), ' Read and Edit'])])])];
+    // 3. who, with what each has now and what changes
+    const cands = grantCandidates(w).filter(r => !w.hideHave || !chosen.length || !w.current || !hasAll(r.key) || w.targets.has(r.key));
+    const shownCols = chosen.slice(0, 3);
+    const selectableShown = cands.filter(editable);
+    const allOn = selectableShown.length && selectableShown.every(r => w.targets.has(r.key));
+    const someOn = selectableShown.some(r => w.targets.has(r.key));
+    left.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, ['3. Grant to ', h('span', { class: 'count', text: targets.length + ' selected' })]), h('div', { class: 'card-tools' }, [
+      h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Show' }, [['all', 'All'], ['permissionSet', 'Permission sets'], ['profile', 'Profiles']].map(([v, t]) => h('button', { class: w.types === v ? 'on' : '', role: 'radio', 'aria-checked': String(w.types === v), onclick: () => { w.types = v; renderMain(); }, text: t }))),
+      toggle('Hide those that have it', w.hideHave, v => { w.hideHave = v; renderMain(); }),
+      searchBox(w.targetFilter, 'Search', v => { w.targetFilter = v; renderMain(); }, 'wz.tg', true),
+      h('button', { class: 'btn neutral small', onclick: () => { for (const r of grantCandidates(Object.assign({}, w, { types: 'all', targetFilter: '' }))) if (editable(r) && favs.items.has(favId(r))) w.targets.add(r.key); renderMain(); }, text: 'Add favorites' })])]),
+      h('div', { class: 'card-body flush scroll-y' }, h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, [
+        h('th', { class: 'c narrow' }, checkbox({ checked: !!allOn, indeterminate: !allOn && someOn, fid: 'wz.all', aria: 'Select all shown', onChange: v => { for (const r of selectableShown) { if (v) w.targets.add(r.key); else w.targets.delete(r.key); } renderMain(); } })),
+        h('th', { text: 'Name' })].concat(shownCols.map(f => h('th', { text: f.label + ' now' })), chosen.length > 3 ? [h('th', { text: 'Others now' })] : [], [h('th', { text: 'After saving' })]))),
+        h('tbody', {}, cands.slice(0, 400).map(r => {
+          const c = cur(r.key);
+          const on = w.targets.has(r.key);
+          const ok = editable(r);
+          const afterCells = !on || !c ? (on ? [h('span', { class: 'muted small', text: chosen.length ? 'Checking…' : '' })] : [h('span', { class: 'muted', text: '—' })])
+            : chosen.map(f => { const m = missing(r.key, f); return m.read || m.edit ? chip('+', [m.read ? 'Read' : null, m.edit ? 'Edit' : null].filter(Boolean).join(', '), f.label) : h('span', { class: 'muted small', text: 'has ' + f.label + ' ' }); });
+          return h('tr', { class: on ? 'row-edited' : ok ? '' : 'dim' }, [
+            h('td', { class: 'c narrow' }, ok ? checkbox({ checked: on, fid: 'tgt.' + r.key, aria: r.label, onChange: v => { if (v) w.targets.add(r.key); else w.targets.delete(r.key); renderMain(); } }) : null),
+            h('td', {}, [h('b', { text: r.label }), favs.items.has(favId(r)) ? h('span', { class: 'pill', text: 'Favorite' }) : null, r.managed ? h('span', { class: 'pill', text: 'Managed' }) : null,
+              h('div', { class: 'cur', text: ok ? SRC_TYPE[r.kind] + (c ? ' · ' + c.users + (c.users === 1 ? ' user' : ' users') : '') : 'Can’t be changed' })])]
+            .concat(shownCols.map(f => h('td', { class: 'cur', text: c ? accessWords((c.fields || {})[f.name]) : '…' })),
+              chosen.length > 3 ? [h('td', { class: 'cur', text: c ? chosen.slice(3).filter(f => ((c.fields || {})[f.name] || {}).read).length + ' of ' + (chosen.length - 3) + ' readable' : '…' })] : [],
+              [h('td', { class: 'wrap' }, afterCells)]));
+        }))]))]));
+    // summary
+    const nPs = targets.filter(k => k.startsWith('permissionSet:')).length;
+    const nPr = targets.length - nPs;
+    const side = h('aside', { class: 'card grant-sum' }, [h('div', { class: 'card-head' }, h('h2', { text: 'You’re granting' })), h('div', { class: 'card-body' }, [
+      chosen.length ? h('p', {}, [h('b', { text: w.level === 'edit' ? 'Read and Edit' : 'Read' }), ' on ', h('b', { text: chosen.map(f => f.label).join(', ') }), ' (' + w.object + ')']) : h('p', { class: 'muted', text: 'Pick fields on the left.' }),
+      h('div', { class: 'k', text: 'To' }), h('p', {}, targets.length ? [nPs + (nPs === 1 ? ' permission set' : ' permission sets') + (nPr ? ' and ' + nPr + (nPr === 1 ? ' profile' : ' profiles') : '')]
+        .concat(w.current ? [', reaching up to ', h('b', { text: String(reach) }), ' users'] : []) : 'Nobody yet'),
+      h('div', { class: 'k', text: 'Also' }),
+      checkbox({ checked: w.grantObject, fid: 'wz.obj.grant', label: 'Grant ' + (w.level === 'edit' ? 'Read and Edit' : 'Read') + ' on ' + (w.object || 'the object') + ' where it’s missing' + (w.current && targets.length ? ' (' + noRead + (noRead === 1 ? ' item)' : ' items)') : ''), onChange: v => { w.grantObject = v; renderMain(); } }),
+      h('div', { class: 'k', text: 'Changes' }), h('p', { text: w.current ? changes + ' field ' + (changes === 1 ? 'change' : 'changes') + (inPlace ? ', ' + inPlace + ' already in place' : '') : chosen.length && targets.length ? 'Checking current access…' : '—' }),
+      h('div', { class: 'btns' }, [h('button', { class: 'btn brand', disabled: !chosen.length || !targets.length || w.busy,
+        onclick: () => { w.busy = true; renderMain(); send({ type: 'wizardPlan', object: w.object, fields: chosen, targets, level: w.level, grantObject: w.grantObject }); },
+        text: w.busy ? 'Working out the changes…' : 'Review ' + (w.current ? changes + (changes === 1 ? ' change' : ' changes') : 'changes') })]),
+      w.templateName === null ? h('button', { class: 'link small', disabled: !chosen.length, onclick: () => { w.templateName = ''; renderMain(); }, text: 'Save these choices as a template' })
+        : h('div', { class: 'form-row' }, [h('input', { type: 'text', class: 'text', placeholder: 'Template name', value: w.templateName, 'data-fid': 'wz.tplname', oninput: e => { w.templateName = e.target.value; } }),
+          h('button', { class: 'btn neutral small', onclick: () => { const n = (w.templateName || '').trim(); if (!n) return;
+            grantTemplates = grantTemplates.filter(t => t.name !== n).concat([{ name: n, object: w.object, fields: [...w.chosen], level: w.level, grantObject: w.grantObject, targets }]);
+            send({ type: 'persist', name: 'grantTemplates', value: grantTemplates }); w.templateName = null; toast('success', 'Saved the template “' + n + '”.', { title: 'Template' }); renderMain(); }, text: 'Save' })])])]);
+    out.push(h('div', { class: 'grant-cols' }, [h('div', { class: 'grant-main' }, left), side]));
     return out;
   }
-  /** The "grant to" list shared by both wizards: unmanaged permission sets and custom profiles. */
-  function targetsCard(w, title) {
-    const all = (lists ? lists.permissionSet || [] : []).filter(r => !r.managed).concat((lists ? lists.profile || [] : []).filter(r => !r.standard));
-    const tq = w.targetFilter.trim().toLowerCase();
-    const shownTargets = all.filter(r => !tq || r.label.toLowerCase().includes(tq) || r.apiName.toLowerCase().includes(tq));
-    return h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, [title + ' ', h('span', { class: 'count', text: w.targets.size + ' selected' })]), h('div', { class: 'card-tools' }, [
-      searchBox(w.targetFilter, 'Search permission sets and profiles', v => { w.targetFilter = v; renderMain(); }, 'tg.' + title, true),
-      h('button', { class: 'btn neutral', onclick: () => { for (const r of all) if (favs.items.has(r.kind + ':' + r.apiName)) w.targets.add(r.key); renderMain(); }, text: 'Add favorites' }),
-      h('button', { class: 'btn neutral', onclick: () => { w.targets.clear(); renderMain(); }, text: 'Clear' })])]),
-      h('div', { class: 'card-body flush scroll-y' }, h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, [h('th', { class: 'c narrow', text: 'Grant' }), h('th', { text: 'Name' }), h('th', { text: 'Type' })])),
-        h('tbody', {}, shownTargets.slice(0, 400).map(r => h('tr', { class: w.targets.has(r.key) ? 'row-edited' : '' }, [h('td', { class: 'c narrow' }, checkbox({ checked: w.targets.has(r.key), fid: 'tgt.' + r.key, aria: r.label,
-          onChange: v => { if (v) w.targets.add(r.key); else w.targets.delete(r.key); renderMain(); } })), h('td', { class: 'strong' }, [r.label, favs.items.has(r.kind + ':' + r.apiName) ? h('span', { class: 'pill', text: 'Favorite' }) : null]),
-          h('td', { class: 'muted', text: r.kind === 'profile' ? 'Profile' : 'Permission set' })])))]))]);
-  }
-
   /** Plan review, progress and results, shared by both wizards. */
-  function planView(w, applyType, resetTo) {
+  function planView(w, applyType, resetTo, opts) {
+    const o = opts || {};
     const out = [];
     if (w.results) {
       const ok = w.results.filter(r => r.status === 'saved').length;
       out.push(alertBox(ok === w.results.length ? 'info' : 'warning', ok + ' of ' + w.results.length + ' saved.'));
       out.push(h('section', { class: 'card' }, h('div', { class: 'card-body flush' }, h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Item' }), h('th', { text: 'Result' })])),
         h('tbody', {}, w.results.map(r => h('tr', {}, [h('td', { class: 'strong', text: r.label }), h('td', { class: 'wrap', text: r.status === 'saved' ? r.count + ' change' + (r.count === 1 ? '' : 's') + ' saved' : r.message })])))]))));
-      out.push(h('div', { class: 'btns' }, [h('button', { class: 'btn brand', onclick: () => { Object.assign(w, resetTo, { plan: null, results: null, confirm: '' }); renderMain(); }, text: 'Grant more' }),
+      out.push(h('div', { class: 'btns' }, o.onDone ? [h('button', { class: 'btn brand', onclick: o.onDone, text: 'Back to results' })] : [h('button', { class: 'btn brand', onclick: () => { Object.assign(w, resetTo, { plan: null, results: null, confirm: '' }); renderMain(); }, text: 'Grant more' }),
         h('button', { class: 'btn neutral', onclick: closeTool, text: 'Done' })]));
       return out;
     }
     const total = w.plan.plan ? w.plan.plan.reduce((n, t) => n + t.changes.length, 0) : 0;
     const deploys = w.plan.plan ? w.plan.plan.some(t => t.changes.some(c => c.key.startsWith('recordType:'))) : false;
     out.push(w.plan.error ? alertBox('error', w.plan.error) : h('p', { text: total + ' change' + (total === 1 ? '' : 's') + ' across ' + w.plan.plan.length + ' item' + (w.plan.plan.length === 1 ? '' : 's') + '. Each item is saved on its own, with its own snapshot.' }));
+    if (w.plan.plan && w.plan.plan.length) {
+      out.push(h('div', { class: 'rv-scroll' }, h('table', { class: 'rv-table' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Item' }), h('th', { text: 'Entry' }), h('th', { text: 'Change' })])),
+        h('tbody', {}, w.plan.plan.flatMap(t => t.changes.map((c, i) => h('tr', {}, [h('td', {}, i ? null : h('b', { text: t.label })), h('td', { class: 'mono', text: c.label || c.key }),
+          h('td', {}, changeChips(c.before, c.after).map(x => chip(x.sign, x.text)))]))))])));
+    }
     if (deploys) out.push(alertBox('info', 'Record type assignments are saved with a Metadata API deploy per item, guarded by a full copy of its access.'));
-    if (w.plan.plan && w.plan.plan.length) out.push(h('section', { class: 'card' }, h('div', { class: 'card-body flush' }, h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Item' }), h('th', { text: 'Changes' })])),
-      h('tbody', {}, w.plan.plan.map(t => h('tr', {}, [h('td', { class: 'strong', text: t.label }), h('td', { class: 'wrap' }, t.changes.map(c => h('div', { class: 'muted', text: (c.key.startsWith('recordType:') ? 'Record type ' : '') + c.label + ': ' + accessText(c.before) + ' → ' + accessText(c.after) })))])))]))));
     if (w.plan.skipped && w.plan.skipped.length) out.push(h('details', { class: 'card disclosure' }, [h('summary', { text: w.plan.skipped.length + ' skipped' }), h('ul', { class: 'plain' }, w.plan.skipped.map(x => h('li', {}, [h('strong', { text: x.label }), ' — ' + x.reason])))]));
     if (w.progress) out.push(h('p', { class: 'muted status' }, [spinner(true), ' Saving ' + w.progress.label + ' (' + (w.progress.done + 1) + ' of ' + w.progress.total + ')']));
     if (w.applyError) out.push(alertBox('error', w.applyError));
     if (ctx.production && w.plan.plan && w.plan.plan.length) out.push(h('div', { class: 'confirm' }, [alertBox('warning', 'This is a production org.'), h('label', { text: 'Type ' + (ctx.org.alias || ctx.org.username) + ' to confirm' }),
       h('input', { type: 'text', class: 'text', value: w.confirm, 'data-fid': applyType + '.confirm', oninput: e => { w.confirm = e.target.value; const b = document.getElementById('wzApply'); if (b) b.disabled = !confirmOk(w.confirm); } })]));
-    out.push(h('div', { class: 'btns' }, [h('button', { class: 'btn neutral', disabled: !!w.progress, onclick: () => { w.plan = null; renderMain(); }, text: 'Back' }),
+    out.push(h('div', { class: 'btns' }, [h('button', { class: 'btn neutral', disabled: !!w.progress, onclick: o.onBack || (() => { w.plan = null; renderMain(); }), text: 'Back' }),
       h('button', { class: 'btn brand', id: 'wzApply', disabled: !!w.progress || !(w.plan.plan && w.plan.plan.length) || (ctx.production && !confirmOk(w.confirm)),
-        onclick: () => { w.progress = { label: '', done: 0, total: w.plan.plan.length }; w.applyError = null; renderMain(); send({ type: applyType, plan: w.plan.plan, confirm: w.confirm }); }, text: 'Save all' })]));
+        onclick: () => { applyTarget = o.target || 'wizard'; w.progress = { label: '', done: 0, total: w.plan.plan.length }; w.applyError = null; renderMain(); send({ type: applyType, plan: w.plan.plan, confirm: w.confirm }); }, text: o.saveLabel || 'Save all' })]));
     return out;
   }
 
   function objWizardPage() {
     const w = objWizard;
-    if (w.results || w.plan) return planView(w, 'objWizardApply', { flags: new Set(['read']), rts: new Set(), defaultRt: '' });
-    const out = [];
+    if (w.results || w.plan) return planView(w, 'objWizardApply', { adds: new Map(), rts: new Set(), defaultRt: '' });
     const info = w.info;
-    const cols = info ? info.columns : [];
-    const flagsNow = () => { let p = Object.fromEntries(cols.map(c => [c, false])); for (const f of w.flags) p = Deps.applyObject(p, f, true).props; return p; };
-    const eff2 = flagsNow();
-    out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', { text: '1. Object and access' }), h('div', { class: 'card-tools' }, [
-      objectPicker(w.object, v => { w.object = v; w.info = null; w.rts = new Set(); w.defaultRt = ''; if (v) send({ type: 'objWizardInfo', object: v }); renderMain(); }, 'ow.obj')])]),
-      h('div', { class: 'card-body' }, !w.object ? h('p', { class: 'muted flat', text: 'Pick an object first.' }) : !info ? spinner() : h('div', { class: 'perm-grid' },
-        OBJECT_FLAGS.filter(([f]) => cols.includes(f)).map(([f, label]) => checkbox({ label, checked: eff2[f] === true, fid: 'ow.' + f, tone: TONE[f],
-          onChange: v => {
-            if (v) w.flags.add(f);
-            else {
-              // Keep everything still ticked, minus this box and whatever needs it (as in Setup).
-              const now = flagsNow();
-              w.flags = new Set(Object.keys(now).filter(c => now[c] && c !== f && !(Deps.OBJECT_REQUIRED_BY[f] || []).includes(c)));
-            }
-            renderMain();
-          } })))),
-      w.object && info ? h('div', { class: 'card-body' }, h('p', { class: 'muted flat', text: 'Access is only added: anything an item already has stays. Granting Edit also grants Read, Modify All grants everything below it.' })) : null]));
-    if (info) {
-      const rts = info.recordTypes || [];
-      out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, h('h2', { text: '2. Record types' })),
-        h('div', { class: 'card-body flush' }, rts.length ? h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, [h('th', { class: 'c narrow', text: 'Assign' }), h('th', { text: 'Record Type' }), h('th', { text: 'API Name' }), h('th', { class: 'c', text: 'Default on profiles' })])),
-          h('tbody', {}, rts.map(t => h('tr', { class: w.rts.has(t.name) ? 'row-edited' : '' }, [
-            h('td', { class: 'c narrow' }, checkbox({ checked: w.rts.has(t.name), fid: 'owrt.' + t.name, aria: 'Assign ' + t.label, onChange: v => { if (v) w.rts.add(t.name); else { w.rts.delete(t.name); if (w.defaultRt === t.name) w.defaultRt = ''; } renderMain(); } })),
-            h('td', { class: 'strong', text: t.label }), h('td', { class: 'muted mono', text: t.developerName }),
-            h('td', { class: 'c' }, h('label', { class: 'radio' }, [h('input', { type: 'radio', name: 'ow-default', checked: w.defaultRt === t.name, 'aria-label': 'Default ' + t.label,
-              onchange: () => { w.defaultRt = t.name; w.rts.add(t.name); renderMain(); } }), h('span', { class: 'dot-radio', 'aria-hidden': 'true' })]))])))])
-          : h('p', { class: 'empty-line', text: 'This object has no active record types.' })),
-        rts.length ? h('div', { class: 'card-body' }, h('div', { class: 'btns' }, [h('button', { class: 'btn neutral small', disabled: !w.defaultRt, onclick: () => { w.defaultRt = ''; renderMain(); }, text: 'No default change' }),
-          h('span', { class: 'muted', text: w.defaultRt ? 'Profiles get ' + w.defaultRt.split('.').pop() + ' as their default. Permission sets have no default.' : 'Profiles keep their current default (or get the first assigned one if they have none).' })])) : null]));
-    }
-    out.push(targetsCard(w, info && (info.recordTypes || []).length ? '3. Grant to' : '2. Grant to'));
-    out.push(h('div', { class: 'btns' }, [h('button', { class: 'btn brand', disabled: !info || (!w.flags.size && !w.rts.size) || !w.targets.size || w.busy,
-      onclick: () => { w.busy = true; renderMain(); send({ type: 'objWizardPlan', object: w.object, flags: Object.keys(flagsNow()).filter(f => flagsNow()[f]), recordTypes: [...w.rts], defaultRt: w.defaultRt || null, targets: [...w.targets] }); },
-      text: w.busy ? (w.rts.size ? 'Reading record type assignments…' : 'Working out the changes…') : 'Review changes' })]));
+    if (w.object && info && w.currentFor !== w.object) { w.currentFor = w.object; w.current = null; send({ type: 'objWizardCurrent', object: w.object }); }
+    const cols = info ? OBJECT_FLAGS.filter(([f]) => info.columns.includes(f)) : [];
+    const cur = key => Object.assign(Object.fromEntries(cols.map(([f]) => [f, false])), ((w.current && w.current.byKey[key]) || {}).props || {});
+    const after = key => { let p = cur(key); for (const f of w.adds.get(key) || []) if (!p[f]) p = Deps.applyObject(p, f, true).props; return p; };
+    const editable = r => !r.managed && !(r.kind === 'profile' && r.standard);
+    const rows = grantCandidates(w).filter(editable);
+    const included = key => (w.adds.get(key) || new Set()).size > 0 || w.rtRows.has(key);
+    const addedCount = key => { const a = after(key); const c = cur(key); return cols.filter(([f]) => a[f] && !c[f]).length; };
+    const total = rows.reduce((n, r) => n + (included(r.key) ? addedCount(r.key) + (w.rts.size ? 1 : 0) : 0), 0);
+    // Unticking keeps everything still shown as ticked, minus this box and whatever needs it (as in Setup).
+    const setCellQuiet = (key, f, on) => {
+      let s2;
+      if (on) { s2 = new Set(w.adds.get(key) || []); s2.add(f); }
+      else {
+        const a = after(key); const c = cur(key);
+        s2 = new Set(cols.map(([g]) => g).filter(g => a[g] && !c[g] && g !== f && !(Deps.OBJECT_REQUIRED_BY[f] || []).includes(g)));
+      }
+      if (s2.size) w.adds.set(key, s2); else w.adds.delete(key);
+    };
+    const setCell = (key, f, on) => { setCellQuiet(key, f, on); renderMain(); };
+    const column = f => {
+      const all = rows.every(r => after(r.key)[f]);
+      for (const r of rows) { if (cur(r.key)[f]) continue; setCellQuiet(r.key, f, !all); }
+      renderMain();
+    };
+    const out = [steps([{ title: 'What', text: w.object ? 'Object: ' + w.object : 'Pick an object', done: !!w.object },
+      { title: 'Access and who', text: 'set per item', done: total > 0 }, { title: 'Review and save', text: total + (total === 1 ? ' change' : ' changes'), done: false }])];
+    out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', { text: 'Object' }), h('div', { class: 'card-tools' }, [
+      objectPicker(w.object, v => { w.object = v; w.info = null; w.adds = new Map(); w.rtRows = new Set(); w.rts = new Set(); w.defaultRt = ''; w.currentFor = ''; if (v) send({ type: 'objWizardInfo', object: v }); renderMain(); }, 'ow.obj', true)])]),
+      !w.object ? h('div', { class: 'card-body' }, h('p', { class: 'muted flat', text: 'Pick an object to see who has access to it.' })) : null]));
+    if (!w.object) return out;
+    if (!info || !w.current) { out.push(loadingCard(w.object + ' access by item', { state: 'loading' })); return out; }
+    const rts = info.recordTypes || [];
+    if (rts.length) out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', { text: 'Record types to assign' }), h('span', { class: 'muted small', text: 'Applied to every item that gets access below. On profiles, the chosen default replaces the current one.' })]),
+      h('div', { class: 'card-body rt-pick' }, rts.map(t => h('span', { class: 'rt-opt' }, [checkbox({ checked: w.rts.has(t.name), fid: 'owrt.' + t.name, label: t.label, onChange: v => { if (v) w.rts.add(t.name); else { w.rts.delete(t.name); if (w.defaultRt === t.name) w.defaultRt = ''; } renderMain(); } }),
+        h('label', { class: 'radio small' }, [h('input', { type: 'radio', name: 'ow-default', checked: w.defaultRt === t.name, 'aria-label': 'Default ' + t.label, onchange: () => { w.defaultRt = t.name; w.rts.add(t.name); renderMain(); } }), ' default'])])))]));
+    const cell = (r, f) => {
+      const c = cur(r.key)[f];
+      if (c) return h('span', { class: 'gc on', title: 'Already granted', text: '✓' });
+      const a = after(r.key)[f];
+      return h('button', { class: 'gc' + (a ? ' plus' : ''), 'aria-pressed': String(!!a), 'aria-label': (a ? 'Don’t grant ' : 'Grant ') + f + ' to ' + r.label, onclick: () => setCell(r.key, f, !a), text: a ? '+' : '' });
+    };
+    out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', { text: w.object + ' access by item' }),
+      h('span', { class: 'muted small', text: 'Click a column header to set it for everyone shown. Grey ticks are already granted.' }),
+      h('div', { class: 'card-tools' }, [h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Show' }, [['all', 'All'], ['permissionSet', 'Permission sets'], ['profile', 'Profiles']].map(([v, t]) =>
+        h('button', { class: w.types === v ? 'on' : '', role: 'radio', 'aria-checked': String(w.types === v), onclick: () => { w.types = v; renderMain(); }, text: t }))),
+        searchBox(w.targetFilter, 'Search', v => { w.targetFilter = v; renderMain(); }, 'ow.tg', true)])]),
+      h('div', { class: 'card-body flush scroll-y' }, h('table', { class: 'datatable mtx' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Permission set or profile' })]
+        .concat(cols.map(([f, label]) => h('th', { class: 'c' }, h('button', { class: 'col-set', title: 'Set ' + label + ' for everyone shown', onclick: () => column(f), text: label.replace(' Records', '') + ' ▾' }))),
+          rts.length ? [h('th', { text: 'Record types' })] : []))),
+        h('tbody', {}, rows.slice(0, 400).map(r => {
+          const c = (w.current.byKey[r.key] || {});
+          const inc = included(r.key);
+          return h('tr', { class: inc ? 'row-edited' : '' }, [h('td', {}, [h('b', { text: r.label }), h('div', { class: 'cur', text: SRC_TYPE[r.kind] + ' · ' + (c.users || 0) + (c.users === 1 ? ' user' : ' users') })])]
+            .concat(cols.map(([f]) => h('td', { class: 'c' }, cell(r, f))),
+              rts.length ? [h('td', {}, w.rts.size ? h('button', { class: 'link small', onclick: () => { if (w.rtRows.has(r.key)) w.rtRows.delete(r.key); else w.rtRows.add(r.key); renderMain(); } },
+                inc ? [chip('+', [...w.rts].map(n => (rts.find(t => t.name === n) || {}).label || n).join(', ')), r.kind === 'profile' && w.defaultRt ? h('span', { class: 'rv-chip rv-mod', text: 'default' }) : null] : '—') : h('span', { class: 'muted', text: '—' }))] : []));
+        }))])),
+      h('div', { class: 'card-body btns' }, [h('span', { class: 'muted small grow', text: '+ added now · ✓ already granted · ticking Edit also ticks Read, as in Setup. Nothing is taken away.' }),
+        h('button', { class: 'btn brand', disabled: !total || w.busy, onclick: () => {
+          const perTarget = {};
+          for (const r of rows) if (included(r.key)) { const a = after(r.key); perTarget[r.key] = cols.map(([f]) => f).filter(f => a[f]); }
+          w.busy = true; renderMain();
+          send({ type: 'objWizardPlan', object: w.object, perTarget, recordTypes: [...w.rts], defaultRt: w.defaultRt || null });
+        }, text: w.busy ? 'Working out the changes…' : 'Review ' + total + (total === 1 ? ' change' : ' changes') })])]));
     return out;
   }
 
-  function accessText(p) {
-    if (!p) return 'none';
-    const on = Object.keys(p).filter(k => p[k] === true).map(k => SHORT[k] || k);
-    return on.length ? on.join(', ') : 'none';
-  }
   function confirmOk(t) { const v = String(t || '').trim(); return v === ctx.org.alias || v === ctx.org.username; }
 
   function historyPage() {
-    if (!historyData) return [h('div', { class: 'loading-block' }, spinner())];
-    if (!historyData.length) return [h('p', { class: 'empty-line', text: 'No saves yet. Every save from this screen is recorded here.' })];
+    if (historyData === null) { historyData = 'loading'; send({ type: 'history' }); }
+    if (!Array.isArray(historyData)) return [h('div', { class: 'loading-block' }, spinner())];
+    if (hf.setup && historySetupData === null) { historySetupData = 'loading'; send({ type: 'historySetup', days: hf.days === 'all' ? 180 : Number(hf.days) }); }
+    const labelOf = key => { const k = (key || '').split(':')[0]; const r = lists && lists[k] && lists[k].find(x => x.key === key); return r ? r.label : null; };
+    const since = hf.days === 'all' ? 0 : Date.now() - Number(hf.days) * 86400e3;
+    const q = hf.q.trim().toLowerCase();
+    const items = [...new Set(historyData.map(e => e.key).filter(Boolean))].map(k => [k, labelOf(k) || k]).sort((a, b) => a[1].localeCompare(b[1]));
+    const ok = e => /saved|created/.test(e.result || '');
+    const mine = historyData.filter(e => Date.parse(e.at) >= since && (!hf.item || e.key === hf.item) && (!hf.result || (hf.result === 'failed' ? e.result === 'failed' : ok(e))) &&
+      (!q || [e.target, labelOf(e.key), e.ticket, (e.changes || []).map(c => c.key + ' ' + (c.label || '')).join(' ')].join(' ').toLowerCase().includes(q)))
+      .map(e => ({ kind: 'save', at: e.at, e }));
+    const setupRows = hf.setup && Array.isArray(historySetupData) ? historySetupData.filter(x => Date.parse(x.at) >= since && (!hf.item || x.key === hf.item) && !hf.result &&
+      (!q || (x.display + ' ' + x.name + ' ' + x.by).toLowerCase().includes(q))).map(x => ({ kind: 'setup', at: x.at, x })) : [];
+    const all = mine.concat(setupRows).sort((a, b) => String(b.at).localeCompare(String(a.at)));
     const copyable = historyData.filter(e => e.snapshot && e.changes && e.changes.length);
     const picked = copyable.filter(e => historyPicked.has(e.snapshot)).map(e => e.snapshot);
     const copy = (ids, format) => send({ type: 'copySummary', snapshotIds: ids, format });
-    const bar = h('div', { class: 'summary-line' }, [h('span', { class: 'muted', text: picked.length ? picked.length + ' selected' : 'Tick saves to copy them as one summary, for a ticket that spans several saves.' }),
-      h('div', { class: 'btn-group' }, [h('button', { class: 'btn neutral', disabled: !picked.length, onclick: () => copy(picked, 'markdown'), text: 'Copy summary' }),
-        h('button', { class: 'btn neutral', disabled: !picked.length, title: 'Tab-separated, pastes into Excel as cells', onclick: () => copy(picked, 'tsv'), text: 'Copy for Excel' })]),
-      picked.length ? h('button', { class: 'link', onclick: () => { historyPicked.clear(); renderMain(); }, text: 'Clear' }) : null]);
-    return [bar, h('section', { class: 'card' }, h('div', { class: 'card-body flush' }, h('table', { class: 'datatable' }, [
-      h('thead', {}, h('tr', {}, [h('th', { class: 'c narrow', 'aria-label': 'Select' }), h('th', { text: 'When' }), h('th', { text: 'Item' }), h('th', { text: 'What' }), h('th', { text: 'Result' }), h('th', { class: 'narrow' })])),
-      h('tbody', {}, historyData.map(e => h('tr', { class: historyPicked.has(e.snapshot) ? 'row-edited' : '' }, [
-        h('td', { class: 'c narrow' }, e.snapshot && e.changes && e.changes.length ? checkbox({ checked: historyPicked.has(e.snapshot), fid: 'hist.' + e.snapshot, aria: 'Select save of ' + (e.target || ''),
-          onChange: v => { if (v) historyPicked.add(e.snapshot); else historyPicked.delete(e.snapshot); renderMain(); } }) : null),
-        h('td', { class: 'muted', text: fmtDate(e.at) }),
-        h('td', { class: 'strong' }, e.key ? h('button', { class: 'link', onclick: () => { ui.tool = null; renderTop(); guard(() => choose(e.key)); }, text: e.target }) : h('span', { text: e.target || '' })),
-        h('td', { class: 'wrap' }, [h('span', { text: (e.count || 0) + ' change' + (e.count === 1 ? '' : 's') + ' · ' + e.path }),
-          e.changes && e.changes.length ? h('details', {}, [h('summary', { text: 'Details' }), h('ul', { class: 'plain' }, e.changes.slice(0, 200).map(c => h('li', { class: 'muted mono', text: (c.label && !c.key.endsWith(c.label) ? c.label + ' (' + c.key + ')' : c.key) + ': ' + brief(c.from) + ' → ' + brief(c.to) })))]) : null]),
-        h('td', { class: e.result === 'failed' ? 'bad' : '', text: e.result + (e.error ? ': ' + e.error : '') }),
-        h('td', { class: 'narrow' }, h('div', { class: 'row-actions' }, [
-          e.snapshot && e.changes && e.changes.length ? h('button', { class: 'btn neutral small', title: 'Copy this save as a Markdown table', onclick: () => copy([e.snapshot], 'markdown'), text: 'Copy' }) : null,
-          e.snapshot && e.result !== 'failed' && e.key ? h('button', { class: 'btn neutral small', onclick: () => send({ type: 'undoSnapshot', snapshotId: e.snapshot }), text: 'Undo…' }) : null]))])))])))];
+    const out = [h('div', { class: 'filters' }, [
+      searchBox(hf.q, 'Search item, field, permission or ticket', v => { hf.q = v; renderMain(); }, 'hf.q', true),
+      filterChip('Last', hf.days, [['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['all', 'All']], v => { hf.days = v; historySetupData = null; renderMain(); }, '7'),
+      filterChip('Item', hf.item, [['', 'Any']].concat(items), v => { hf.item = v; renderMain(); }, ''),
+      filterChip('Result', hf.result, [['', 'Any'], ['saved', 'Saved'], ['failed', 'Failed']], v => { hf.result = v; renderMain(); }, ''),
+      toggle('Include changes made in Setup', hf.setup, v => { hf.setup = v; if (!v) historySetupData = null; renderMain(); })])];
+    if (picked.length) out.push(h('div', { class: 'selbar' }, [h('span', { class: 'muted small', text: picked.length + ' selected' }),
+      h('button', { class: 'btn neutral', onclick: () => copy(picked, 'markdown'), text: 'Copy summary' }),
+      h('button', { class: 'btn neutral', title: 'Tab-separated, pastes into Excel as cells', onclick: () => copy(picked, 'tsv'), text: 'Copy for Excel' }),
+      h('button', { class: 'btn neutral', onclick: () => { historyPicked.clear(); renderMain(); }, text: 'Clear' })]));
+    if (hf.setup && historySetupData && historySetupData.denied) out.push(alertBox('info', 'Changes made in Setup need the View Setup Audit Trail permission (from Winter ’27; View Setup before that).'));
+    if (!all.length) { out.push(h('p', { class: 'empty-line', text: historyData.length ? 'Nothing matches these filters.' : 'No saves yet. Every save from this screen is recorded here.' })); return out; }
+    const dayOf = at => { const d = new Date(at); const t = new Date(); const y = new Date(Date.now() - 86400e3);
+      return d.toDateString() === t.toDateString() ? 'Today' : d.toDateString() === y.toDateString() ? 'Yesterday' : d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' }); };
+    const timeOf = at => new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    let day = null;
+    for (const row of all) {
+      const d = dayOf(row.at);
+      if (d !== day) { day = d; out.push(h('div', { class: 'day', text: d })); }
+      if (row.kind === 'setup') {
+        const x = row.x;
+        out.push(h('div', { class: 'ev setup' }, [h('div', {}), h('div', {}, [h('div', { class: 't' }, [h('span', { class: 'ico su', text: 'S' }),
+          x.key ? h('button', { class: 'link strong', onclick: () => { ui.tool = null; renderTop(); guard(() => choose(x.key)); }, text: labelOf(x.key) || x.name }) : h('b', { text: x.name }), h('span', { class: 'st und', text: 'In Setup' })]),
+          h('div', { class: 'meta', text: timeOf(x.at) + ' · by ' + x.by + (x.delegate ? ' (as ' + x.delegate + ')' : '') + ' in Setup' + (x.section ? ' · ' + x.section : '') }),
+          h('div', { class: 'cur', text: x.display })]), h('div', {})]));
+        continue;
+      }
+      const e = row.e;
+      const kind = (e.key || '').split(':')[0] || e.kind || 'permissionSet';
+      const canPick = e.snapshot && e.changes && e.changes.length;
+      const changes = e.changes || [];
+      const open = hf.open.has(e.snapshot || e.at);
+      const chips = [];
+      for (const c of changes) {
+        const name = c.key.slice(c.key.indexOf(':') + 1);
+        for (const x of changeChips(c.from, c.to)) chips.push(chip(x.sign, x.text + ' · ' + (c.label && !name.endsWith(c.label) ? c.label : name)));
+      }
+      const status = e.result === 'failed' ? h('span', { class: 'st bad', text: 'Failed' }) : /^undo/.test(e.path || '') ? h('span', { class: 'st und', text: 'Undo' }) : e.result === 'created' ? h('span', { class: 'st ok', text: 'Created' }) : h('span', { class: 'st ok', text: 'Saved' });
+      out.push(h('div', { class: 'ev' + (historyPicked.has(e.snapshot) ? ' sel' : '') }, [
+        h('div', {}, canPick ? checkbox({ checked: historyPicked.has(e.snapshot), fid: 'hist.' + e.snapshot, aria: 'Select save of ' + (e.target || ''), onChange: v => { if (v) historyPicked.add(e.snapshot); else historyPicked.delete(e.snapshot); renderMain(); } }) : null),
+        h('div', {}, [h('div', { class: 't' }, [h('span', { class: 'ico ' + (SRC_CLASS[kind] || 'ps'), text: { permissionSet: 'PS', profile: 'P', group: 'G' }[kind] || 'PS' }),
+            e.key && labelOf(e.key) ? h('button', { class: 'link strong', onclick: () => { ui.tool = null; renderTop(); guard(() => choose(e.key)); }, text: labelOf(e.key) }) : h('b', { text: e.target || '' }),
+            status, e.ticket ? h('span', { class: 'ticket', text: e.ticket }) : null]),
+          h('div', { class: 'meta', text: timeOf(e.at) + ' · ' + (e.count != null ? e.count : changes.length) + ((e.count != null ? e.count : changes.length) === 1 ? ' change' : ' changes') + (e.path ? ' · ' + e.path : '') }),
+          e.result === 'failed' && e.error ? h('div', { class: 'cur err', text: (e.failedStep ? e.failedStep + ': ' : '') + e.error }) : null,
+          chips.length ? h('div', { class: 'ch' }, (open ? chips : chips.slice(0, 6)).concat(chips.length > 6 ? [h('button', { class: 'link small', onclick: () => { if (open) hf.open.delete(e.snapshot || e.at); else hf.open.add(e.snapshot || e.at); renderMain(); }, text: open ? 'Show fewer' : '+' + (chips.length - 6) + ' more' })] : [])) : null]),
+        h('div', { class: 'act' }, [canPick ? h('button', { class: 'btn neutral small', title: 'Copy this save as a Markdown table', onclick: () => copy([e.snapshot], 'markdown'), text: 'Copy' }) : null,
+          e.snapshot && e.result !== 'failed' && e.key ? h('button', { class: 'btn neutral small', onclick: () => send({ type: 'undoSnapshot', snapshotId: e.snapshot }), text: 'Undo…' }) : null])]));
+    }
+    return out;
   }
+
   function brief(v) {
     if (v == null) return 'none';
     if (typeof v !== 'object') return String(v);
@@ -1167,7 +1662,9 @@
   function openPsForm(mode) {
     const hd = detail && detail.data && detail.data.header;
     const f = mode === 'edit' ? { label: hd.label, name: hd.apiName, description: hd.description || '' }
+        : mode === 'copyProfile' ? { label: hd.label.replace(/^Custom:\s*/i, '') + ' Access', name: '', description: 'Access from the ' + hd.label + ' profile.', useLicense: true }
         : { label: 'Copy of ' + hd.label, name: ('Copy_of_' + hd.apiName.replace(/^\w+?__(?!c$)/, '')).slice(0, 80), description: hd.description || '' };
+    if (mode === 'copyProfile') f.name = apiName(f.label);
     f.nameTouched = mode === 'edit';
     openModal({ kind: 'psForm', mode, form: f });
   }
@@ -1179,6 +1676,10 @@
       extra && extra.area ? { rows: '3', text: f[prop] || '' } : { type: 'text' }))]);
     const out = [field('Label', 'label'), field('API Name', 'name'), field('Description', 'description', { area: true })];
     if (modal.mode === 'clone') out.push(alertBox('info', 'Copies object, field, system, class, page, custom permission, flow, app, connected app, custom metadata and custom setting access, record type assignments and tab settings. Assignments are not copied.'));
+    if (modal.mode === 'copyProfile') {
+      out.push(checkbox({ checked: f.useLicense !== false, fid: 'ps.license', label: 'Give it the profile’s user license (recommended: every system permission stays valid)', onChange: v => { f.useLicense = v; } }));
+      out.push(alertBox('info', 'Copies the profile’s object, field, system, class, page, custom permission, flow, app, connected app, custom metadata and custom setting access, tab settings and record type assignments into a new permission set. Page layouts, login hours, IP ranges and record type defaults stay on the profile, and nothing is removed from it.'));
+    }
     if (ctx.production) out.push(h('div', { class: 'confirm' }, [alertBox('warning', 'This is a production org.'), h('label', { text: 'Type ' + (ctx.org.alias || ctx.org.username) + ' to confirm' }),
       h('input', { type: 'text', class: 'text', value: modal.confirm || '', oninput: e => { modal.confirm = e.target.value; updatePsBtn(); } })]));
     if (modal.progress) out.push(h('p', { class: 'muted status' }, [spinner(true), ' ' + modal.progress]));
@@ -1194,14 +1695,36 @@
   function submitPs() {
     const f = modal.form;
     modal.error = null;
-    modal.progress = modal.mode === 'clone' ? 'Starting the copy…' : 'Saving…';
+    modal.progress = modal.mode === 'edit' ? 'Saving…' : 'Starting the copy…';
     renderModal();
-    const type = { edit: 'editPs', clone: 'clonePs' }[modal.mode];
-    send({ type, key: ui.selected, label: f.label.trim(), name: f.name.trim(), description: f.description.trim(), confirm: modal.confirm || '' });
+    const type = { edit: 'editPs', clone: 'clonePs', copyProfile: 'copyProfile' }[modal.mode];
+    send({ type, key: ui.selected, label: f.label.trim(), name: f.name.trim(), description: f.description.trim(), confirm: modal.confirm || '', useLicense: f.useLicense !== false });
   }
 
   // ---------- footer, review, toasts ----------
+  /** Unsaved changes are handed to the extension, so closing the tab or reloading VS Code doesn't lose them. */
+  let lastPersisted = '';
+  function persistPending() {
+    // Leave the kept set alone until it is restored, unless new changes are being made instead.
+    if (restoreSaved && !pending.size) return;
+    if (restoreSaved) restoreSaved = null;
+    const v = pending.size && ui.selected ? { key: ui.selected, entries: [...pending.entries()].map(([k, p]) => [k, Object.assign({}, p, { touched: [...(p.touched || [])] })]) } : null;
+    const j = JSON.stringify(v);
+    if (j === lastPersisted) return;
+    lastPersisted = j;
+    send({ type: 'persist', name: 'pending', value: v });
+  }
+  function restorePending() {
+    if (!restoreSaved || !detail || detail.key !== restoreSaved.key || !detail.data || pending.size) return;
+    for (const [k, p] of restoreSaved.entries) pending.set(k, Object.assign({}, p, { touched: new Set(p.touched || []) }));
+    ui.restored = pending.size;
+    restoreSaved = null;
+    renderMain(); renderFooter();
+  }
   function renderFooter() {
+    persistPending();
+    if (!pending.size) ui.restored = 0;
+    if (ui.ruleNote && !pending.has(ui.ruleNote.key)) { const k = ui.ruleNote.key; ui.ruleNote = null; patchRows([k]); }
     footer.textContent = '';
     footer.hidden = !pending.size;
     if (!pending.size) return;
@@ -1234,6 +1757,75 @@
     });
   }
 
+  // What a high-impact system permission lets every holder do, in plain words.
+  const RISK_TEXT = { ModifyAllData: 'read, edit and delete every record in the org', ViewAllData: 'read every record in the org', ManageUsers: 'create, change and deactivate users',
+    AuthorApex: 'write and run Apex code', CustomizeApplication: 'change the org’s setup', ModifyMetadata: 'change the org’s metadata', ManageProfilesPermissionsets: 'change profiles and permission sets',
+    AssignPermissionSets: 'assign permission sets to anyone', ViewAllUsers: 'see every user', ResetPasswords: 'reset users’ passwords' };
+  /** The review: impact first (counts, risks, removals), then every change on one line. */
+  function reviewView(hd) {
+    const rows = [...pending.entries()].map(([k, p]) => ({ k, p, chips: changeChips(p.before, p.after, p.touched) }));
+    const granted = rows.filter(r => r.chips.some(c => c.sign === '+')).length;
+    const removed = rows.filter(r => r.chips.some(c => c.sign === '-'));
+    const risky = rows.filter(r => r.p.cat === 'user' && r.p.after.enabled && isHighImpact({ name: r.k.slice(5), label: r.p.label }));
+    const users = Number(hd.activeAssignees) || 0;
+    const who = hd.kindId === 'profile' ? 'users with this profile' : 'active users affected';
+    const out = [h('div', { class: 'rv-stats' }, [
+      h('div', { class: 'rv-stat' }, [h('b', { text: String(rows.length) }), h('span', { text: (rows.length === 1 ? 'change' : 'changes') + ' · ' + granted + ' granted, ' + removed.length + ' removed' })]),
+      h('div', { class: 'rv-stat' }, [h('b', { text: String(users) }), h('span', { text: who })]),
+      h('div', { class: 'rv-stat' + (risky.length ? ' risk' : '') }, [h('b', { text: String(risky.length) }), h('span', { text: 'high-impact permissions granted' })]),
+      h('div', { class: 'rv-stat' + (removed.length ? ' warn' : '') }, [h('b', { text: String(removed.length) }), h('span', { text: 'access removed' })])])];
+    if (risky.length) {
+      const first = risky.find(r => !r.chips.every(c => c.auto)) || risky[0];
+      const name = first.k.slice(5);
+      const auto = risky.filter(r => r !== first && r.chips.every(c => c.auto)).map(r => r.p.label);
+      const others = risky.filter(r => r !== first && !auto.includes(r.p.label)).map(r => r.p.label);
+      out.push(h('div', { class: 'rv-call risk', role: 'note' }, [h('span', { class: 'ic', text: '!' }), h('span', {}, [h('b', { text: first.p.label }),
+        ' lets all ' + users + ' ' + (hd.kindId === 'profile' ? 'users with this profile ' : 'users ') + (RISK_TEXT[name] || 'reach far beyond a single object') + '.',
+        others.length ? ' Also granted: ' + others.join(', ') + '.' : '',
+        auto.length ? ' ' + auto.join(' and ') + (auto.length === 1 ? ' is' : ' are') + ' added because Salesforce requires it.' : ''])]));
+    }
+    if (removed.length) {
+      const lost = removed.slice(0, 3).map(r => r.chips.filter(c => c.sign === '-').map(c => c.text).join(', ') + ' on ' + r.p.label);
+      out.push(h('div', { class: 'rv-call warn', role: 'note' }, [h('span', { class: 'ic', text: '−' }), h('span', { text: 'Users lose ' + lost.join('; ') + (removed.length > 3 ? ' and ' + (removed.length - 3) + ' more' : '') +
+        ', unless another permission set, profile or group still gives it to them.' })]));
+    }
+    if (modal.ticket === undefined) modal.ticket = lastTicket || '';
+    out.push(h('div', { class: 'rv-tools' }, [
+      h('input', { type: 'search', class: 'text', placeholder: 'Filter changes', 'aria-label': 'Filter changes', value: modal.filter || '', 'data-fid': 'rv.filter',
+        oninput: e => { modal.filter = e.target.value; renderReviewTable(); } }),
+      h('input', { type: 'text', class: 'text', placeholder: 'Ticket (optional), e.g. ADO US 11581701', 'aria-label': 'Ticket', value: modal.ticket, 'data-fid': 'rv.ticket', maxlength: '80',
+        oninput: e => { modal.ticket = e.target.value; } })]));
+    out.push(h('div', { class: 'rv-scroll', id: 'rvTable' }, reviewTable(rows)));
+    return out;
+  }
+  function reviewTable(rows) {
+    const q = (modal.filter || '').trim().toLowerCase();
+    const body = [];
+    for (const [cat, title] of CATEGORY_TITLES) {
+      const inCat = rows.filter(r => r.p.cat === cat && (!q || (r.p.label + ' ' + r.k + ' ' + r.chips.map(c => c.text).join(' ')).toLowerCase().includes(q)));
+      if (!inCat.length) continue;
+      body.push(h('tr', { class: 'rv-grp' }, h('td', { colspan: '4', text: title + ' (' + inCat.length + ')' })));
+      for (const r of inCat) {
+        const allAuto = r.chips.length && r.chips.every(c => c.auto);
+        const risk = r.p.cat === 'user' && r.p.after.enabled && isHighImpact({ name: r.k.slice(5), label: r.p.label });
+        body.push(h('tr', {}, [
+          h('td', {}, [h('b', { text: r.p.label }), allAuto ? h('span', { class: 'rv-auto', title: 'Added by Salesforce’s permission rules', text: 'auto' }) : null, risk ? h('span', { class: 'rv-risk', text: 'High impact' }) : null]),
+          h('td', { class: 'mono', text: r.k.slice(r.k.indexOf(':') + 1) }),
+          h('td', {}, r.chips.map(c => chip(c.sign, c.text, c.auto ? 'Added by Salesforce’s permission rules' : null))),
+          h('td', { class: 'c narrow' }, h('button', { class: 'rv-x', title: 'Remove this change', 'aria-label': 'Remove the change to ' + r.p.label, disabled: !!saving,
+            onclick: () => { pending.delete(r.k); patchRows([r.k]); renderFooter(); if (!pending.size) closeModal(); else renderModal(); }, text: '×' }))]));
+      }
+    }
+    if (!body.length) return h('p', { class: 'empty-line', text: 'No changes match.' });
+    return h('table', { class: 'rv-table' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Entry' }), h('th', { text: 'API name' }), h('th', { text: 'Change' }), h('th', {})])), h('tbody', {}, body)]);
+  }
+  function renderReviewTable() {
+    const el = document.getElementById('rvTable');
+    if (!el) return;
+    el.textContent = '';
+    el.appendChild(reviewTable([...pending.entries()].map(([k, p]) => ({ k, p, chips: changeChips(p.before, p.after, p.touched) }))));
+  }
+
   function openModal(m) { modal = m; renderModal(); }
   function closeModal() { modal = null; renderModal(); }
   function renderModal() {
@@ -1242,7 +1834,7 @@
     if (!modal) return;
     let title, content, buttons;
     if (modal.kind === 'psForm') {
-      title = { edit: 'Edit permission set', clone: 'Clone ' + (detail && detail.data ? detail.data.header.label : '') }[modal.mode];
+      title = { edit: 'Edit permission set', clone: 'Clone ' + (detail && detail.data ? detail.data.header.label : ''), copyProfile: 'Copy ' + (detail && detail.data ? detail.data.header.label : '') + ' to a permission set' }[modal.mode];
       content = psFormContent();
       buttons = [h('button', { class: 'btn neutral', onclick: closeModal, text: 'Cancel', disabled: !!modal.progress }),
         h('button', { class: 'btn brand', id: 'psBtn', onclick: submitPs, text: modal.mode === 'clone' ? 'Clone' : 'Save' })];
@@ -1253,7 +1845,7 @@
         h('button', { class: 'btn destructive', onclick: () => { const then = modal.then; pending.clear(); closeModal(); renderFooter(); then(); }, text: 'Discard changes' })];
     } else {
       const hd = detail.data.header;
-      title = modal.kind === 'conflict' ? 'Changed in the org since you loaded it' : 'Review changes';
+      title = modal.kind === 'conflict' ? 'Changed in the org since you loaded it' : 'Review changes to ' + hd.label;
       const confirm = ctx.production ? h('div', { class: 'confirm' }, [alertBox('warning', 'This is a production org.'),
         h('label', { for: 'confirm', text: 'Type ' + (ctx.org.alias || ctx.org.username) + ' to confirm' }),
         h('input', { id: 'confirm', type: 'text', autocomplete: 'off', value: modal.confirm || '', oninput: e => { modal.confirm = e.target.value; updateSaveBtn(); } })]) : null;
@@ -1262,11 +1854,12 @@
         content.push(alertBox('warning', 'Someone changed these entries after you loaded them. Saving anyway replaces their values with yours.'));
         content.push(h('ul', { class: 'review' }, modal.conflicts.map(c => h('li', {}, [h('span', { class: 'strong', text: (pending.get(c.key) || {}).label || c.key }),
           h('span', { class: 'muted', text: ' now: ' + brief(c.now) })]))));
-      } else {
-        content.push(h('p', { text: pending.size + (pending.size === 1 ? ' change' : ' changes') + ' to ' + hd.label + ' will be saved to ' + (ctx.org.alias || ctx.org.username) + '. Entries marked auto were added by permission rules.' }));
-        if ([...pending.values()].some(p => ['recordType', 'layoutAssignment', 'loginHours', 'loginIpRanges', 'tab'].includes(p.cat))) content.push(alertBox('info', 'Some of these are saved with a Metadata API deploy, which takes longer. A full copy of this item’s access is taken first and checked afterwards.'));
       }
-      content.push(h('div', { class: 'review-scroll' }, reviewList()));
+      if (modal.kind === 'conflict') content.push(h('div', { class: 'review-scroll' }, reviewList()));
+      else {
+        content.push(...reviewView(hd));
+        if ([...pending.values()].some(p => ['recordType', 'layoutAssignment', 'loginHours', 'loginIpRanges'].includes(p.cat))) content.push(alertBox('info', 'Some of these are saved with a Metadata API deploy, which takes longer. A full copy of this item’s access is taken first and checked afterwards.'));
+      }
       if (modal.error) content.push(alertBox('error', modal.error, modal.restore ? [h('div', { class: 'btns mt' }, h('button', { class: 'btn brand', onclick: () => { send({ type: 'restore', key: ui.selected, snapshotId: modal.restore }); pending.clear(); closeModal(); renderFooter(); }, text: 'Restore removed permissions' }))] : null));
       if (localFile && localFile.key === ui.selected && localFile.path && localFile.mode !== 'never' && modal.kind === 'review') {
         if (modal.writeLocal === undefined) modal.writeLocal = true;
@@ -1274,11 +1867,11 @@
       }
       if (confirm) content.push(confirm);
       if (saving) content.push(h('p', { class: 'muted status' }, [spinner(true), ' ' + (saving.label || 'Saving…') + (saving.total ? ' (' + (saving.done + 1) + ' of ' + saving.total + ')' : '')]));
-      const go = h('button', { class: 'btn brand', id: 'saveBtn', onclick: () => doSave(modal.kind === 'conflict'), text: modal.kind === 'conflict' ? 'Save anyway' : 'Save' });
+      const go = h('button', { class: 'btn brand', id: 'saveBtn', onclick: () => doSave(modal.kind === 'conflict'), text: modal.kind === 'conflict' ? 'Save anyway' : 'Save ' + pending.size + (pending.size === 1 ? ' change' : ' changes') });
       buttons = [h('button', { class: 'btn neutral', onclick: () => { if (modal.kind === 'conflict') { pending.clear(); renderFooter(); closeModal(); reloadCurrent(); } else closeModal(); },
         text: modal.kind === 'conflict' ? 'Discard mine and reload' : 'Cancel', disabled: !!saving }), go];
     }
-    const box = h('section', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'modal-title' }, [
+    const box = h('section', { class: 'modal' + (modal.kind === 'review' ? ' wide' : ''), role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'modal-title' }, [
       h('header', {}, [h('h2', { id: 'modal-title', text: title }), h('button', { class: 'icon-only', 'aria-label': 'Close', onclick: () => { if (!saving) closeModal(); } }, svg(ICONS.close))]),
       h('div', { class: 'modal-body' }, content),
       h('footer', {}, buttons)]);
@@ -1301,7 +1894,9 @@
     renderModal(); renderFooter();
     const changes = [...pending.entries()].map(([key, p]) => ({ key, ref: p.ref || null, before: p.before, after: p.after, label: p.label || null }));
     const writeLocal = !!(localFile && localFile.path && localFile.mode !== 'never' && (localFile.mode === 'always' || modal.writeLocal !== false));
-    send({ type: 'save', key: ui.selected, object: ui.page === 'object' ? ui.object : null, changes, confirm: modal.confirm || '', force: !!force, writeLocal });
+    const ticket = (modal.ticket || '').trim();
+    if (ticket !== lastTicket) { lastTicket = ticket; send({ type: 'persist', name: 'lastTicket', value: ticket || null }); }
+    send({ type: 'save', key: ui.selected, object: ui.page === 'object' ? ui.object : null, changes, confirm: modal.confirm || '', force: !!force, writeLocal, ticket });
   }
 
   function toast(variant, message, opts) {
@@ -1328,7 +1923,8 @@
         break;
       }
       case 'lists': {
-        lists = Object.assign({}, m.lists, { partial: !!m.partial }); listsMeta = { savedAt: m.savedAt, refreshing: m.refreshing };
+        lists = Object.assign({}, m.lists, { partial: !!m.partial, profilesFiltered: !!m.profilesFiltered }); listsMeta = { savedAt: m.savedAt, refreshing: m.refreshing };
+        if (!depsAsked && !m.refreshing) { depsAsked = true; send({ type: 'permDeps' }); }
         if (m.kinds) { KINDS = ALL_KINDS.filter(k => m.kinds.includes(k[0])); if (!m.kinds.includes(ui.kind)) { ui.kind = KINDS[0][0]; save(); } }
         const known = ui.selected && Object.values(lists).some(l => l.some(r => r.key === ui.selected));
         if (!known && ui.selected) { ui.selected = null; detail = null; save(); }
@@ -1353,7 +1949,7 @@
         detail = { key: m.key, data: m.data, savedAt: m.savedAt, refreshing: m.refreshing, state: 'ready' };
         reconcile(m.data.objects.map(o => ['object:' + o.name, o.props]).concat(m.data.system.map(s => ['user:' + s.name, { enabled: s.enabled }])));
         if (stageAfterLoad && stageAfterLoad.key === m.key) { const st = stageAfterLoad; stageAfterLoad = null; applyStaged(st); break; }
-        renderMain(); renderFooter(); break;
+        renderMain(); renderFooter(); restorePending(); break;
       case 'detailError':
         if (m.key !== ui.selected) break;
         detail = { key: m.key, state: 'error', message: m.message }; renderMain(); break;
@@ -1364,7 +1960,7 @@
       case 'objectDetail':
         if (m.key !== ui.selected || m.object !== ui.object) break;
         objectPage = { key: m.key, object: m.object, data: m.data, savedAt: m.savedAt, refreshing: m.refreshing, state: 'ready' };
-        reconcile([['object:' + m.object, m.data.props]].concat(m.data.fields.map(f => ['field:' + f.name, { read: f.read, edit: f.edit }])));
+        reconcile([['object:' + m.object, m.data.props]].concat(m.data.fields.filter(f => !f.fixed).map(f => ['field:' + f.name, { read: f.read, edit: f.edit }])));
         renderMain(); renderFooter(); break;
       case 'objectError':
         if (m.key !== ui.selected || m.object !== ui.object) break;
@@ -1397,6 +1993,12 @@
         break;
       }
       case 'toast': toast(m.variant || 'info', m.message, { title: m.title, sticky: m.sticky }); break;
+      case 'permDeps': permDeps = { system: m.system || {}, custom: m.custom || {} }; break;
+      case 'lookupOptions': lookupOptions = m.message ? { message: m.message } : { ready: true, system: m.system || [], custom: m.custom || [] }; if (ui.tool === 'lookup') renderMain(); break;
+      case 'assigneeChecks': if (m.key === ui.selected) { Object.assign(assigneeBlockers, m.blockers || {}); renderMain(); } break;
+      case 'auditLoading': if (m.key === ui.selected) { if (auditPage && auditPage.data) auditPage.refreshing = true; else auditPage = { key: m.key, state: 'loading' }; renderMain(); } break;
+      case 'audit': if (m.key === ui.selected) { auditPage = { key: m.key, data: m.data, refreshing: m.refreshing, state: 'ready' }; renderMain(); } break;
+      case 'auditError': if (m.key === ui.selected) { auditPage = { key: m.key, state: 'error', message: m.message }; renderMain(); } break;
       case 'listsChecked': listsMeta.savedAt = m.savedAt; renderTop(); break;
       case 'autoRefresh': refreshOpen(); break;
       case 'tabsLoading': if (m.key === ui.selected) { if (tabsPage && tabsPage.data) tabsPage.refreshing = true; else tabsPage = { key: m.key, state: 'loading' }; renderMain(); } break;
@@ -1427,20 +2029,39 @@
       case 'loginError': if (m.key === ui.selected) { loginPage = { key: m.key, state: 'error', message: m.message }; renderMain(); } break;
       case 'users': userResults = { text: m.text, users: m.users || [], message: m.message }; if (m.text === ui.userQuery) renderMain(); break;
       case 'localFile': if (m.key === ui.selected) localFile = { key: m.key, path: m.path, mode: m.mode }; break;
-      case 'lookupResult': lookup.busy = false; lookup.result = m.error ? { error: m.error } : m.result; if (ui.tool === 'lookup') renderMain(); break;
+      case 'lookupResult': lookup.busy = false; lookup.result = m.error ? { error: m.error } : m.result; lookup.f.profile = 'any'; lookup.f.license = 'any'; if (ui.tool === 'lookup') renderMain(); break;
       case 'wizardFields':
-        if (lookup.object === m.object) lookup.fields = m.fields;
+        if (lookup.object === m.object || lookup.fieldsFor === m.object) lookup.fields = m.fields;
         if (wizard.object === m.object) wizard.fields = m.fields;
         if (m.message) toast('error', m.message, { title: 'Could not read ' + m.object });
         if (ui.tool === 'lookup' || ui.tool === 'wizard') renderMain();
         break;
       case 'wizardPlan': wizard.busy = false; wizard.plan = m; if (ui.tool === 'wizard') renderMain(); break;
-      case 'wizardProgress': wizard.progress = { label: m.label, done: m.done, total: m.total }; if (ui.tool === 'wizard') renderMain(); break;
-      case 'wizardResult':
-        wizard.progress = null;
-        if (m.error) wizard.applyError = m.error; else { wizard.results = m.results; wizard.plan = null; if (ui.selected && m.results.some(r => r.key === ui.selected)) detail = null; }
-        if (ui.tool === 'wizard') renderMain();
+      case 'wizardProgress': { const w = applyTarget === 'revoke' && lookup.revoke ? lookup.revoke : wizard; w.progress = { label: m.label, done: m.done, total: m.total }; renderMain(); break; }
+      case 'wizardResult': {
+        const w = applyTarget === 'revoke' && lookup.revoke ? lookup.revoke : wizard;
+        w.progress = null;
+        if (m.error) w.applyError = m.error; else { w.results = m.results; w.plan = null; if (ui.selected && m.results.some(r => r.key === ui.selected)) detail = null; }
+        applyTarget = 'wizard';
+        renderMain();
         break;
+      }
+      case 'wizardCurrent': if (wizard.object === m.object && [...wizard.chosen].sort().join(',') === [...(m.fields || [])].sort().join(',')) { wizard.current = { byKey: m.byKey || {} }; if (m.message) toast('error', m.message, { title: 'Could not read current access' }); if (ui.tool === 'wizard') renderMain(); } break;
+      case 'objWizardCurrent': if (objWizard.object === m.object) { objWizard.current = { byKey: m.byKey || {} }; if (m.message) toast('error', m.message, { title: 'Could not read current access' }); if (ui.tool === 'objwizard') renderMain(); } break;
+      case 'revokePlan': lookup.revoke = { plan: m.error ? { error: m.error } : { plan: m.plan, skipped: m.skipped }, confirm: '', progress: null, results: null }; if (ui.tool === 'lookup') renderMain(); break;
+      case 'historySetup': historySetupData = Object.assign(m.entries || [], { denied: !!m.denied }); if (ui.tool === 'history') renderMain(); break;
+      case 'persisted': {
+        const v = m.values || {};
+        recentLookups = v.recentLookups || []; grantTemplates = v.grantTemplates || []; lastTicket = v.lastTicket || '';
+        if (v.pending && v.pending.entries && v.pending.entries.length && !pending.size) {
+          const kind = v.pending.key.split(':')[0];
+          if (!lists || !(lists[kind] || []).some(r => r.key === v.pending.key)) { send({ type: 'persist', name: 'pending', value: null }); break; } // that item is gone
+          restoreSaved = v.pending;
+          if (ui.selected !== v.pending.key) { ui.kind = kind; save(); renderSide(); choose(v.pending.key); } else restorePending();
+        }
+        break;
+      }
+      case 'shortcut': if (m.name === 'save' && Date.now() - lastKeyShortcut > 600) shortcutSave(); break;
       case 'history': historyData = m.entries || []; if (ui.tool === 'history') renderMain(); break;
       case 'objWizardInfo': if (objWizard.object === m.object) { objWizard.info = { recordTypes: m.recordTypes, columns: m.columns }; if (m.message) toast('error', m.message, { title: 'Could not read ' + m.object }); if (ui.tool === 'objwizard') renderMain(); } break;
       case 'objWizardPlan': objWizard.busy = false; objWizard.plan = m; if (ui.tool === 'objwizard') renderMain(); break;
@@ -1458,7 +2079,11 @@
       case 'psSaved':
         if (m.error) { if (modal && modal.kind === 'psForm') { modal.progress = null; modal.error = m.error; renderModal(); } else toast('error', m.error, { sticky: true }); break; }
         closeModal();
-        toast('success', { edit: 'Saved ', clone: 'Cloned into ' }[m.mode] + m.label + '.', { title: 'Done' });
+        if (m.mode === 'copyProfile' && m.counts) {
+          const c = m.counts;
+          toast('success', 'Copied ' + m.from + ' into ' + m.label + ': ' + [c.objects + ' object', c.fields + ' field', c.system + ' system', c.entities + ' class, page and other', c.tabs + ' tab', c.recordTypes + ' record type'].join(', ') +
+            ' permissions. Assign the new permission set, then remove what it duplicates from the profile when you’re ready.', { title: 'Done', sticky: true });
+        } else toast('success', { edit: 'Saved ', clone: 'Cloned into ' }[m.mode] + m.label + '.', { title: 'Done' });
         break;
       case 'selectKey': guard(() => {
         const kind = m.key.split(':')[0];
@@ -1518,7 +2143,34 @@
     else toast('info', 'Nothing to undo: the org already has the values from before that save.');
   }
 
-  document.addEventListener('keydown', e => { if (e.key === 'Escape' && modal && !saving) closeModal(); });
+  // Keyboard: Ctrl/Cmd+S reviews, then saves; Esc closes a dialog or leaves a tool page; / jumps to search.
+  function shortcutSave() {
+    if (saving) return;
+    if (modal && modal.kind === 'review') { const b = document.getElementById('saveBtn'); if (b && !b.disabled) doSave(false); return; }
+    if (!modal && pending.size && detail && detail.data) openModal({ kind: 'review' });
+  }
+  document.addEventListener('keydown', e => {
+    const tag = (e.target && e.target.tagName) || '';
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(tag);
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 's' || e.key === 'S')) { e.preventDefault(); lastKeyShortcut = Date.now(); shortcutSave(); return; }
+    if (e.key === 'Escape') {
+      if (modal && !saving) { e.preventDefault(); closeModal(); return; }
+      if (!modal && ui.tool && !typing) { e.preventDefault(); closeTool(); return; }
+    }
+    if (e.key === '/' && !typing && !modal && !e.ctrlKey && !e.metaKey) {
+      const inp = document.querySelector('main .search input') || document.querySelector('.split .search input');
+      if (inp) { e.preventDefault(); inp.focus(); inp.select(); }
+    }
+  });
+  // Copy an API name: a small button appears on hover over any API name cell.
+  document.addEventListener('mouseover', e => {
+    const td = e.target && e.target.closest ? e.target.closest('td.mono') : null;
+    if (!td || td.querySelector('.copy-btn') || !td.textContent.trim()) return;
+    const tr = td.closest('tr');
+    const dr = tr && tr.getAttribute('data-row');
+    const text = dr && dr.includes(':') && !/^(assignment|groupComponent):/.test(dr) ? dr.slice(dr.indexOf(':') + 1) : td.textContent.trim();
+    td.appendChild(h('button', { class: 'copy-btn', title: 'Copy ' + text, 'aria-label': 'Copy ' + text, onclick: ev => { ev.stopPropagation(); send({ type: 'copy', text }); } }, copyIcon()));
+  });
   setInterval(() => { if (!listsMeta.refreshing && lists) renderTop(); }, 60000);
 
   renderTop(); renderMain();

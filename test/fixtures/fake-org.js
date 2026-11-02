@@ -18,7 +18,8 @@ function createOrg(options) {
     layouts: { '0PS0000000000PRAAA': { 'Lead.': 'Lead-Lead Layout', 'Lead.Partner': 'Lead-Partner Layout' } },
     loginHours: { '0PS0000000000PRAAA': { mondayStart: '480', mondayEnd: '1080' } },
     ipRanges: { '0PS0000000000PRAAA': [{ startAddress: '10.0.0.0', endAddress: '10.0.0.255', description: 'Office' }] },
-    ipRangesAdditive: false, gzip: false, composites: 0, noFieldsStandard: false, groupPolls: 0
+    ipRangesAdditive: false, gzip: false, composites: 0, noFieldsStandard: false, groupPolls: 0, noObjectPicklist: false,
+    lockDuringRecalc: false, noActivationField: false, noAuditAccess: false, recalcPolls: 2, refusedWhileUpdating: 0, compositeLocks: false, noCompositeWrites: false, compositeNoRollback: false, compositeWrites: 0, inComposite: false, pendingRecalc: null
   };
   const sysNames = ['ModifyAllData', 'ViewAllData', 'ApiEnabled'];
   for (let i = 0; i < S.systemCount; i++) sysNames.push('Feature' + String(i).padStart(3, '0') + 'WithAFairlyLongName');
@@ -37,7 +38,7 @@ function createOrg(options) {
       ps('0PS00000000000GAAA', { Name: 'X00ex', PermissionSetGroupId: '0PG000000000001AAA', PermissionSetGroup: { MasterLabel: 'Sales Bundle' } }),
       ps('0PS0000000000PRAAA', { IsOwnedByProfile: true, ProfileId: '00e000000000002AAA', IsCustom: true, Profile: { Name: 'Custom: Sales', UserLicense: { Name: 'Salesforce' } } })
     ],
-    Profile: [{ Id: '00e000000000001AAA', FullName: 'Admin' }, { Id: '00e000000000002AAA', FullName: 'Custom%3A Sales' }],
+    Profile: [{ Id: '00e000000000001AAA', FullName: 'Admin', UserLicenseId: '100000000000001AAA' }, { Id: '00e000000000002AAA', FullName: 'Custom%3A Sales', UserLicenseId: '100000000000001AAA' }],
     ApexPage: [{ Id: '066000000000001AAA', Name: 'LeadWizard', MasterLabel: 'Lead Wizard', NamespacePrefix: null }],
     FlowDefinitionView: [{ DurableId: '300000000000001AAA', ApiName: 'Lead_Intake', Label: 'Lead Intake', NamespacePrefix: null }],
     AppMenuItem: [{ ApplicationId: '02u000000000001AAA', Name: 'Sales', Label: 'Sales', NamespacePrefix: null, Type: 'TabSet' }, { ApplicationId: '02u000000000002AAA', Name: 'Service', Label: 'Service', NamespacePrefix: null, Type: 'TabSet' }],
@@ -45,14 +46,28 @@ function createOrg(options) {
     EntityDefinition: [{ DurableId: '01I000000000001AAA', QualifiedApiName: 'Region__mdt', Label: 'Region', NamespacePrefix: null }, { DurableId: '01I000000000002AAA', QualifiedApiName: 'Config__c', Label: 'Config', NamespacePrefix: null },
       { DurableId: '01I000000000003AAA', QualifiedApiName: 'Custom_Thing__c', Label: 'Custom Thing', NamespacePrefix: null }],
     TabDefinition: [{ Name: 'standard-Lead', Label: 'Leads', SobjectName: 'Lead', IsCustom: false }, { Name: 'standard-Account', Label: 'Accounts', SobjectName: 'Account', IsCustom: false }, { Name: 'Custom_Thing__c', Label: 'Custom Things', SobjectName: 'Custom_Thing__c', IsCustom: true }],
-    PermissionSetTabSetting: [{ ParentId: '0PS000000000001AAA', Name: 'standard-Lead', Visibility: 'DefaultOn' }],
+    PermissionSetTabSetting: [{ Id: '01P000000000001AAA', ParentId: '0PS000000000001AAA', Name: 'standard-Lead', Visibility: 'DefaultOn' }],
+    // Salesforce's dependency rules, in the forms the org may report names (API name, Permissions… prefix).
+    PermissionDependency: [
+      { Permission: 'ModifyAllData', PermissionType: 'User Permission', RequiredPermission: 'ViewAllData', RequiredPermissionType: 'User Permission' },
+      { Permission: 'PermissionsViewAllData', PermissionType: 'User Permission', RequiredPermission: 'PermissionsApiEnabled', RequiredPermissionType: 'User Permission' },
+      { Permission: 'ModifyAllData', PermissionType: 'User Permission', RequiredPermission: 'Lead', RequiredPermissionType: 'Object Permission' }
+    ],
+    CustomPermissionDependency: [{ Id: '0CD000000000001AAA', CustomPermissionId: '0CP000000000002AAA', RequiredCustomPermissionId: '0CP000000000001AAA' }],
+    PermissionSetLicense: [{ Id: '0PL000000000001AAA', MasterLabel: 'Sales Cloud Einstein', DeveloperName: 'SalesCloudEinstein' }],
+    PermissionSetLicenseAssign: [],
+    SetupAuditTrail: [
+      { CreatedDate: new Date(Date.now() - 3600e3).toISOString(), CreatedBy: { Name: 'Jordan Lee' }, Action: 'PermSetEnableUserPerm', Section: 'Manage Users', Display: 'Permission set Sales Ops: system permission Export Reports was changed from disabled to enabled', DelegateUser: null },
+      { CreatedDate: new Date(Date.now() - 86400e3).toISOString(), CreatedBy: { Name: 'Admin User' }, Action: 'profileFlsChanged', Section: 'Manage Users', Display: 'Changed profile Custom: Sales: field-level security for Lead: Rating was changed', DelegateUser: null },
+      { CreatedDate: new Date(Date.now() - 2 * 86400e3).toISOString(), CreatedBy: { Name: 'Admin User' }, Action: 'PermSetAssign', Section: 'Manage Users', Display: 'Permission set Reader: assigned to user Ana Lima', DelegateUser: 'Support Agent' }
+    ],
     Layout: [{ Name: 'Lead Layout', NamespacePrefix: null, TableEnumOrId: 'Lead' }, { Name: 'Partner Layout', NamespacePrefix: null, TableEnumOrId: 'Lead' }, { Name: 'Thing Layout', NamespacePrefix: null, TableEnumOrId: '01I000000000003AAA' }],
     UserLicense: [{ Id: '100000000000001AAA', Name: 'Salesforce', Status: 'Active' }, { Id: '100000000000002AAA', Name: 'Salesforce Platform', Status: 'Active' }],
     User: [
-      { Id: '005000000000001AAA', Name: 'Ana Lima', Username: 'ana@example.com', IsActive: true, ProfileId: '00e000000000002AAA', Profile: { Name: 'Custom: Sales' } },
-      { Id: '005000000000002AAA', Name: 'Ben Okafor', Username: 'ben@example.com', IsActive: true, ProfileId: '00e000000000001AAA', Profile: { Name: 'System Administrator' } },
-      { Id: '005000000000003AAA', Name: 'Cara Diaz', Username: 'cara@example.com', IsActive: true, ProfileId: '00e000000000002AAA', Profile: { Name: 'Custom: Sales' } },
-      { Id: '005000000000004AAA', Name: 'Old Account', Username: 'old@example.com', IsActive: false, ProfileId: '00e000000000002AAA', Profile: { Name: 'Custom: Sales' } }
+      { Id: '005000000000001AAA', Name: 'Ana Lima', Username: 'ana@example.com', IsActive: true, ProfileId: '00e000000000002AAA', Profile: { Name: 'Custom: Sales', UserLicenseId: '100000000000001AAA', UserLicense: { Name: 'Salesforce' } } },
+      { Id: '005000000000002AAA', Name: 'Ben Okafor', Username: 'ben@example.com', IsActive: true, ProfileId: '00e000000000001AAA', Profile: { Name: 'System Administrator', UserLicenseId: '100000000000001AAA', UserLicense: { Name: 'Salesforce' } } },
+      { Id: '005000000000003AAA', Name: 'Cara Diaz', Username: 'cara@example.com', IsActive: true, ProfileId: '00e000000000002AAA', Profile: { Name: 'Custom: Sales', UserLicenseId: '100000000000001AAA', UserLicense: { Name: 'Salesforce' } } },
+      { Id: '005000000000004AAA', Name: 'Old Account', Username: 'old@example.com', IsActive: false, ProfileId: '00e000000000002AAA', Profile: { Name: 'Custom: Sales', UserLicenseId: '100000000000001AAA', UserLicense: { Name: 'Salesforce' } } }
     ],
     PermissionSetAssignment: [],
     PermissionSetGroupComponent: [
@@ -77,7 +92,7 @@ function createOrg(options) {
       { Id: '012000000000001AAA', DeveloperName: 'Direct', Name: 'Direct Lead', SobjectType: 'Lead', NamespacePrefix: null, IsActive: true },
       { Id: '012000000000002AAA', DeveloperName: 'Partner', Name: 'Partner Lead', SobjectType: 'Lead', NamespacePrefix: null, IsActive: true }
     ],
-    PermissionSetGroup: [{ Id: '0PG000000000001AAA', DeveloperName: 'Sales_Bundle', MasterLabel: 'Sales Bundle', Description: null, NamespacePrefix: null, Status: 'Updating', LastModifiedDate: '2026-09-01T10:00:00.000+0000', LastModifiedBy: { Name: 'Admin User' } }],
+    PermissionSetGroup: [{ Id: '0PG000000000001AAA', DeveloperName: 'Sales_Bundle', MasterLabel: 'Sales Bundle', Description: null, NamespacePrefix: null, Status: 'Updated', LastModifiedDate: '2026-09-01T10:00:00.000+0000', LastModifiedBy: { Name: 'Admin User' } }],
     ObjectPermissions: [
       { Id: '110000000000001AAA', ParentId: '0PS000000000001AAA', SobjectType: 'Account', PermissionsRead: true, PermissionsCreate: true, PermissionsEdit: true, PermissionsDelete: false, PermissionsViewAllRecords: false, PermissionsModifyAllRecords: false, PermissionsViewAllFields: false },
       { Id: '110000000000002AAA', ParentId: '0PS000000000001AAA', SobjectType: 'Custom_Thing__c', PermissionsRead: true, PermissionsCreate: false, PermissionsEdit: false, PermissionsDelete: false, PermissionsViewAllRecords: false, PermissionsModifyAllRecords: false, PermissionsViewAllFields: false },
@@ -97,6 +112,11 @@ function createOrg(options) {
   const DESCRIBE = {
     Lead: { name: 'Lead', label: 'Lead', fields: [
       { name: 'Id', label: 'Lead ID', type: 'id', permissionable: false, updateable: false, createable: false },
+      { name: 'IsDeleted', label: 'Deleted', type: 'boolean', permissionable: false, updateable: false, createable: false },
+      { name: 'SystemModstamp', label: 'System Modstamp', type: 'datetime', permissionable: false, updateable: false, createable: false },
+      { name: 'LastName', label: 'Last Name', type: 'string', permissionable: false, updateable: true, createable: true },
+      { name: 'CreatedDate', label: 'Created Date', type: 'datetime', permissionable: false, updateable: false, createable: false },
+      { name: 'LastModifiedDate', label: 'Last Modified Date', type: 'datetime', permissionable: false, updateable: false, createable: false },
       { name: 'Company', label: 'Company', type: 'string', permissionable: false, updateable: true, createable: true },
       { name: 'Rating', label: 'Rating', type: 'picklist', permissionable: true, updateable: true, createable: true },
       { name: 'Industry', label: 'Industry', type: 'picklist', permissionable: true, updateable: true, createable: true },
@@ -104,9 +124,17 @@ function createOrg(options) {
       { name: 'Description', label: 'Description', type: 'textarea', permissionable: true, updateable: true, createable: true }
     ] },
     Account: { name: 'Account', label: 'Account', fields: [{ name: 'Industry', label: 'Industry', type: 'picklist', permissionable: true, updateable: true, createable: true }] },
+    Event: { name: 'Event', label: 'Event', fields: [
+      { name: 'Id', label: 'Activity ID', type: 'id', permissionable: false, updateable: false, createable: false },
+      { name: 'Subject', label: 'Subject', type: 'combobox', permissionable: false, updateable: true, createable: true },
+      { name: 'Region__c', label: 'Region', type: 'picklist', permissionable: true, updateable: true, createable: true, custom: true }] },
+    FieldPermissions: { name: 'FieldPermissions', fields: [{ name: 'SobjectType', type: 'picklist', picklistValues: ['Account', 'Contact', 'Custom_Thing__c', 'Event', 'Lead', 'Opportunity', 'Task'].map(v => ({ value: v, label: v, active: true })) }] },
     PermissionSetAssignment: { name: 'PermissionSetAssignment', fields: ['Id', 'AssigneeId', 'PermissionSetId', 'PermissionSetGroupId'].map(name => ({ name, type: 'reference' })).concat([{ name: 'ExpirationDate', type: 'datetime' }]) }
   };
+  const OBJECT_PERM_OBJECTS = ['Account', 'Contact', 'Custom_Thing__c', 'Lead', 'Opportunity'];
   const GLOBAL = { sobjects: [
+    { name: 'Event', label: 'Event', queryable: true, layoutable: true, custom: false },
+    { name: 'Task', label: 'Task', queryable: true, layoutable: true, custom: false },
     { name: 'Region__mdt', label: 'Region', queryable: true, custom: true },
     { name: 'Config__c', label: 'Config', queryable: true, custom: true, customSetting: true },
     { name: 'Account', label: 'Account', queryable: true, layoutable: true, custom: false },
@@ -129,10 +157,30 @@ function createOrg(options) {
   }
   function listValues(s) { return (s.match(/'(?:[^'\\]|\\.)*'/g) || []).map(literal); }
   function query(q) {
+    if (S.noActivationField && /HasActivationRequired/.test(q)) throw bad('No such column \'HasActivationRequired\' on entity \'PermissionSet\'');
+    const audit = /FROM SetupAuditTrail WHERE CreatedDate = LAST_N_DAYS:(\d+) ORDER BY CreatedDate DESC LIMIT (\d+)$/.exec(q);
+    if (audit) {
+      if (S.noAuditAccess) throw Object.assign(new Error("sObject type 'SetupAuditTrail' is not supported."), { code: 'INVALID_TYPE' });
+      const since = Date.now() - Number(audit[1]) * 86400e3;
+      const rows = T.SetupAuditTrail.filter(x => Date.parse(x.CreatedDate) >= since).sort((a, b) => b.CreatedDate.localeCompare(a.CreatedDate)).slice(0, Number(audit[2]));
+      return { totalSize: rows.length, done: true, records: rows };
+    }
     // A group being recalculated reports Updating for a couple of status checks, then Updated.
     if (/FROM PermissionSetGroup WHERE Id/.test(q) && S.groupPolls > 0 && --S.groupPolls === 0) T.PermissionSetGroup[0].Status = 'Updated';
     const count = /^SELECT COUNT\(\) FROM (\w+) WHERE (.+)$/.exec(q);
     if (count) return { totalSize: /ProfileId/.test(q) ? 7 : /PermissionSetGroupId/.test(q) ? 3 : 12, done: true, records: [] };
+    const perPs = /^SELECT PermissionSetId, COUNT\(Id\) (\w+) FROM PermissionSetAssignment WHERE Assignee\.IsActive = true GROUP BY PermissionSetId$/.exec(q);
+    if (perPs) {
+      const counts = new Map();
+      for (const a of T.PermissionSetAssignment) { const u = T.User.find(x => x.Id === a.AssigneeId); if (u && u.IsActive) counts.set(a.PermissionSetId, (counts.get(a.PermissionSetId) || 0) + 1); }
+      return { totalSize: counts.size, done: true, records: [...counts].map(([id, n]) => ({ attributes: { type: 'AggregateResult' }, PermissionSetId: id, [perPs[1]]: n })) };
+    }
+    const grouped = /^SELECT SobjectType, COUNT\(Id\) (\w+) FROM FieldPermissions WHERE ParentId = '(\w+)' GROUP BY SobjectType$/.exec(q);
+    if (grouped) {
+      const counts = new Map();
+      for (const r of T.FieldPermissions.filter(x => x.ParentId === grouped[2])) counts.set(r.SobjectType, (counts.get(r.SobjectType) || 0) + 1);
+      return { totalSize: counts.size, done: true, records: [...counts].map(([t, n]) => ({ attributes: { type: 'AggregateResult' }, SobjectType: t, [grouped[1]]: n })) };
+    }
     const countAll = /^SELECT COUNT\(\) FROM (\w+)$/.exec(q);
     if (countAll) return { totalSize: T[countAll[1]].length, done: true, records: [] };
     const max = /^SELECT MAX\((\w+)\) (\w+) FROM (\w+)$/.exec(q);
@@ -185,12 +233,12 @@ function createOrg(options) {
   function bad(msg) { const e = new Error(msg); e.code = 'MALFORMED_QUERY'; return e; }
 
   // ---------- writes ----------
-  const ID_PREFIX = { ObjectPermissions: '110', FieldPermissions: '01k', SetupEntityAccess: '0J0', PermissionSet: '0PS', PermissionSetAssignment: '0Pa', PermissionSetGroupComponent: '0PU' };
+  const ID_PREFIX = { ObjectPermissions: '110', FieldPermissions: '01k', SetupEntityAccess: '0J0', PermissionSet: '0PS', PermissionSetAssignment: '0Pa', PermissionSetGroupComponent: '0PU', PermissionSetTabSetting: '01P' };
   const ENTITY_OF = id => [['ApexClass', 'Id', 'ApexClass'], ['CustomPermission', 'Id', 'CustomPermission'], ['ApexPage', 'Id', 'ApexPage'], ['FlowDefinitionView', 'DurableId', 'FlowDefinition'],
     ['AppMenuItem', 'ApplicationId', 'TabSet'], ['ConnectedApplication', 'Id', 'ConnectedApplication'], ['EntityDefinition', 'DurableId', 'CustomEntityDefinition']]
     .map(([t, f, type]) => (T[t].some(x => x[f] === id) ? type : null)).find(Boolean) || null;
   function findById(id) {
-    for (const t of ['ObjectPermissions', 'FieldPermissions', 'PermissionSet', 'SetupEntityAccess', 'PermissionSetAssignment', 'PermissionSetGroupComponent']) { const r = T[t].find(x => x.Id === id); if (r) return [t, r]; }
+    for (const t of ['ObjectPermissions', 'FieldPermissions', 'PermissionSet', 'SetupEntityAccess', 'PermissionSetAssignment', 'PermissionSetGroupComponent', 'PermissionSetTabSetting']) { const r = T[t].find(x => x.Id === id); if (r) return [t, r]; }
     return [null, null];
   }
   function check(type, rec) {
@@ -204,9 +252,50 @@ function createOrg(options) {
     if (type === 'PermissionSet' && rec.IsOwnedByProfile && rec.Profile && rec.IsCustom === false) return 'INSUFFICIENT_ACCESS: cannot modify a standard profile';
     return null;
   }
+  /**
+   * As in Salesforce: a permission set in a group can't be changed while the group
+   * recalculates, and every change to it starts a recalculation (S.lockDuringRecalc).
+   */
+  function touchedPermissionSets(method, body, ids) {
+    const out = new Set();
+    const parentOf = id => { const [t, r] = findById(id); return r ? (t === 'PermissionSet' ? r.Id : r.ParentId) : null; };
+    if (method === 'DELETE') for (const id of ids) out.add(parentOf(id));
+    else for (const rec of body.records) {
+      if (rec.attributes.type === 'PermissionSet') out.add(rec.Id);
+      else if (['ObjectPermissions', 'FieldPermissions', 'SetupEntityAccess', 'PermissionSetTabSetting'].includes(rec.attributes.type)) out.add(rec.ParentId || parentOf(rec.Id));
+    }
+    out.delete(null); out.delete(undefined);
+    return out;
+  }
+  function groupsOf(psIds) {
+    return T.PermissionSetGroup.filter(g => T.PermissionSetGroupComponent.some(c => c.PermissionSetGroupId === g.Id && psIds.has(c.PermissionSetId)));
+  }
+
+  function collectionUnlocked(method, body, ids) {
+    const keep = S.lockDuringRecalc;
+    S.lockDuringRecalc = false;
+    try { return collection(method, body, ids); } finally { S.lockDuringRecalc = keep; }
+  }
+
   function collection(method, body, ids) {
     const results = [];
     const apply = [];
+    if (S.lockDuringRecalc) {
+      const touched = touchedPermissionSets(method, body, ids);
+      // Inside one Composite transaction the recalculation starts at commit, unless S.compositeLocks.
+      if (S.inComposite && !S.compositeLocks) {
+        S.pendingRecalc = (S.pendingRecalc || []).concat(groupsOf(touched));
+        return collectionUnlocked(method, body, ids);
+      }
+      const busy = groupsOf(touched).find(g => g.Status === 'Updating');
+      if (busy) {
+        S.refusedWhileUpdating++;
+        const code = { POST: 'INSERT_FAILED', PATCH: 'UPDATE_FAILED', DELETE: 'DELETE_FAILED' }[method];
+        const message = 'The ' + busy.DeveloperName + ' permission set group is updating. You can make edits to this permission set when the group update completes.';
+        return (method === 'DELETE' ? ids : body.records).map(r => ({ id: typeof r === 'string' ? r : r.Id || null, success: false, errors: [{ statusCode: code, message }] }));
+      }
+      if (touched.size) for (const g of groupsOf(touched)) { g.Status = 'Updating'; S.groupPolls = S.recalcPolls || 2; }
+    }
     if (method === 'DELETE') {
       for (const id of ids) { const [t, r] = findById(id); results.push(r ? { id, success: true, errors: [] } : { id, success: false, errors: [{ statusCode: 'ENTITY_IS_DELETED', message: 'entity is deleted' }] }); if (r) apply.push(() => { T[t] = T[t].filter(x => x !== r); }); }
     } else {
@@ -216,6 +305,7 @@ function createOrg(options) {
         let err = null; let id = fields.Id;
         if (method === 'POST') {
           if (type === 'ObjectPermissions' && T.ObjectPermissions.some(x => x.ParentId === fields.ParentId && x.SobjectType === fields.SobjectType)) err = 'DUPLICATE_VALUE: duplicate value found: duplicates value on record';
+          if (type === 'ObjectPermissions' && !OBJECT_PERM_OBJECTS.includes(fields.SobjectType)) err = 'INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST: SObject Type Name: bad value for restricted picklist field: ' + fields.SobjectType;
           if (type === 'FieldPermissions' && T.FieldPermissions.some(x => x.ParentId === fields.ParentId && x.Field === fields.Field)) err = 'DUPLICATE_VALUE: duplicate value found';
           if (type === 'SetupEntityAccess') {
             if (T.SetupEntityAccess.some(x => x.ParentId === fields.ParentId && x.SetupEntityId === fields.SetupEntityId)) err = 'DUPLICATE_VALUE: duplicate value found';
@@ -226,6 +316,11 @@ function createOrg(options) {
           if (type === 'PermissionSet') {
             if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(fields.Name || '') || /__/.test(fields.Name)) err = 'INVALID_FIELD: The API name can only contain underscores and alphanumeric characters';
             if (T.PermissionSet.some(x => !x.IsOwnedByProfile && x.Name === fields.Name && !x.NamespacePrefix)) err = 'DUPLICATE_DEVELOPER_NAME: The API name is already in use';
+          }
+          if (type === 'PermissionSetTabSetting') {
+            if (!['DefaultOn', 'DefaultOff'].includes(fields.Visibility)) err = 'INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST: Visibility: bad value for restricted picklist field: ' + fields.Visibility;
+            else if (T.PermissionSetTabSetting.some(x => x.ParentId === fields.ParentId && x.Name === fields.Name)) err = 'DUPLICATE_VALUE: duplicate value found: Name';
+            else if (!T.TabDefinition.some(t => t.Name === fields.Name)) err = 'INVALID_FIELD: no tab named ' + fields.Name;
           }
           if (type === 'PermissionSetGroupComponent') {
             const p = T.PermissionSet.find(x => x.Id === fields.PermissionSetId && !x.IsOwnedByProfile && !x.PermissionSetGroupId);
@@ -349,13 +444,38 @@ function createOrg(options) {
     }
     res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(text);
   }
+  /**
+   * Composite: queries, and sObject Collections writes run as one transaction
+   * (allOrNone): if any part fails, everything is rolled back and the rest is
+   * reported as halted. S.compositeLocks: whether a group recalculation started
+   * by one part also blocks the later parts of the same request.
+   * S.noCompositeWrites: refuse writes inside Composite altogether.
+   */
   function composite(body) {
     S.composites++;
-    return { compositeResponse: body.compositeRequest.map(sub => {
+    const writes = body.compositeRequest.some(sub => /\/composite\/sobjects/.test(sub.url));
+    if (writes) S.compositeWrites++;
+    const saved = writes ? JSON.stringify(T) : null;
+    let failed = false;
+    const out = body.compositeRequest.map(sub => {
       const u = new URL(sub.url, 'http://x');
+      if (failed) return { body: [{ errorCode: 'PROCESSING_HALTED', message: 'The transaction was rolled back since another operation in the same transaction failed.' }], httpStatusCode: 400, referenceId: sub.referenceId };
+      if (/\/composite\/sobjects/.test(u.pathname)) {
+        if (S.noCompositeWrites) { failed = true; return { body: [{ errorCode: 'INVALID_API_INPUT', message: 'This resource is not supported in a composite request' }], httpStatusCode: 400, referenceId: sub.referenceId }; }
+        const ids = (u.searchParams.get('ids') || '').split(',').filter(Boolean);
+        S.inComposite = true;
+        const results = collection(sub.method, sub.body, ids);
+        S.inComposite = false;
+        if (results.some(x => !x.success)) { failed = true; return { body: results, httpStatusCode: 400, referenceId: sub.referenceId }; }
+        return { body: results, httpStatusCode: 200, referenceId: sub.referenceId };
+      }
       try { return { body: query(u.searchParams.get('q')), httpStatusCode: 200, referenceId: sub.referenceId }; }
-      catch (e) { return { body: [{ errorCode: e.code || 'ERROR', message: e.message }], httpStatusCode: 400, referenceId: sub.referenceId }; }
-    }) };
+      catch (e) { failed = !!body.allOrNone && writes; return { body: [{ errorCode: e.code || 'ERROR', message: e.message }], httpStatusCode: 400, referenceId: sub.referenceId }; }
+    });
+    if (failed && body.allOrNone && saved && !S.compositeNoRollback) { const back = JSON.parse(saved); for (const k of Object.keys(back)) T[k] = back[k]; }
+    else if (writes && S.pendingRecalc) { for (const g of S.pendingRecalc) g.Status = 'Updating'; S.groupPolls = S.recalcPolls || 2; }
+    S.pendingRecalc = null;
+    return { compositeResponse: out };
   }
   const server = http.createServer((req, res) => {
     let raw = '';
@@ -382,7 +502,9 @@ function createOrg(options) {
           if (d[1] === 'ObjectPermissions') {
             const f = ['Id', 'SobjectType', 'ParentId', 'PermissionsRead', 'PermissionsCreate', 'PermissionsEdit', 'PermissionsDelete', 'PermissionsViewAllRecords', 'PermissionsModifyAllRecords'];
             if (S.viewAllFields) f.push('PermissionsViewAllFields');
-            return send(res, 200, { name: 'ObjectPermissions', fields: f.map(name => ({ name })) });
+            // As in Salesforce, SobjectType is a restricted picklist of the objects that take object permissions.
+            return send(res, 200, { name: 'ObjectPermissions', fields: f.map(name => name === 'SobjectType' && !S.noObjectPicklist
+              ? { name, type: 'picklist', picklistValues: OBJECT_PERM_OBJECTS.map(v => ({ value: v, label: v === 'Custom_Thing__c' ? 'Custom Thing' : v, active: true })) } : { name }) });
           }
           if (d[1] === 'PermissionSet') {
             const fields = [{ name: 'Id', type: 'id', label: 'Id' }, { name: 'Name', type: 'string', label: 'Name' }, { name: 'IsOwnedByProfile', type: 'boolean', label: 'Is Owned By Profile' }];

@@ -14,21 +14,25 @@ Permission Studio puts all of it on one screen in VS Code, next to your code. Ev
 
 ## What it does
 
-**Edit like Setup, then review before anything is saved.** Object, field, record type and system permissions, Apex class, Visualforce page, flow and app access, custom permissions, tab settings and more are checkboxes, grouped the way Setup groups a permission set. Permission rules apply as you click: granting Edit also grants Read, and Modify All brings everything below it. Changes are highlighted and counted until you save.
+**Edit like Setup, then review before anything is saved.** Object, field, record type and system permissions, Apex class, Visualforce page, flow and app access, custom permissions, tab settings and more are checkboxes, grouped the way Setup groups a permission set. Permission rules apply as you click: granting Edit also grants Read, and Modify All brings everything below it. System and custom permissions follow Salesforce's own dependency rules, read from the org: turning on Modify All Data also turns on what it needs. Changes are highlighted and counted until you save.
 
 ![An object's page with object permissions, record type assignments and field permissions, three changes waiting to be saved](media/readme/editing.png)
 
-**Every save is checked first.** Save opens a review of every change. On a production org you type the org's name to confirm.
+**Every save is checked first.** Save opens a review that starts with the impact: how many users are affected, which high-impact permissions are granted and what access is removed. Then every change on one line, where you can drop any single change. Add a ticket such as an ADO story and it follows the save into History and copied summaries. On a production org you type the org's name to confirm. Ctrl/Cmd+S opens the review and saves from it.
 
-![The review dialog listing each change, with the production org name typed to confirm](media/readme/review.png)
+![The review: changes, users affected, high-impact permissions and removals first, then each change on one line with granted chips and a button to remove it](media/readme/review.png)
 
-**Find out who has access.** Pick an object or a field and an access level. You get every active user who has it, and where each part comes from: object access and field access can come from different permission sets, profiles or groups. View All Data, Modify All Data and View All Fields are counted too.
+**Find out who has access.** Type an object or a field (`Lead.Rating`), filter by profile, license, source or user status, and use **Why?** to see exactly how each user gets the access, even through a group's member permission sets. Remove the access from selected sources, or grant it to more, straight from the results.
 
-![Find access results: users who can edit Lead.Rating, with the permission sets, profiles and groups that grant it](media/readme/find-access.png)
+It works for system and custom permissions too, such as Modify All Data or Use Any API Client. View All Data, Modify All Data and View All Fields are counted.
+
+![Find access for Lead.Rating: filters, users with the permission sets, profiles and groups that grant it, how one user gets it through a group, and the sources](media/readme/find-access.png)
 
 **Grant access in bulk.** **Grant field access** gives fields Read or Read and Edit across many permission sets and profiles at once. **Grant object access** does the same for object permissions and record types, including profile defaults. The review shows what changes on each item; access is only ever added.
 
-![Grant field access: two new custom fields selected, Read and Edit chosen, four permission sets and profiles picked](media/readme/grant-field-access.png)
+![Grant field access: two fields chosen, each permission set's and profile's current access next to what will change, and a running summary](media/readme/grant-field-access.png)
+
+![Grant object access: a grid of permission sets and profiles by object permission, with what's already granted and what will be added](media/readme/grant-object-access.png)
 
 **Manage permission set groups.** Add or remove a group's member permission sets. Salesforce recalculates the group in the background; the status shows while it runs, and the group's access refreshes when it finishes.
 
@@ -36,17 +40,19 @@ Permission Studio puts all of it on one screen in VS Code, next to your code. Ev
 
 **Every save in History.** Undo any save, or copy saves as a table for an ADO or Jira ticket, a design document or an Excel workbook.
 
-![Save history with two saves selected for copying as a summary](media/readme/history.png)
+![History grouped by day: saves with their changes and tickets, a failed save, and a change made in Setup](media/readme/history.png)
 
 **And more:**
 
 - **Assignments:** see who has a permission set or group, add or remove users, and set expiry dates.
 - **Profile-only settings:** page layout assignments, login hours and login IP ranges.
-- **Rename and clone** permission sets.
+- **Rename and clone** permission sets, or **copy a profile to a new permission set** (Salesforce's recommended permission-set-led model): its access, tab settings and record types, with the profile's user license. Nothing is removed from the profile.
+- **License checks:** users who can't hold a permission set's license are flagged before you save. Session-based permission sets are tagged.
+- **Changes in Setup:** who changed the open item in Setup recently, from Setup Audit Trail.
 - **Favorites:** star the items and objects you use most; they load first and open instantly.
 - **Open from a file:** right-click a permission set, profile or group file and choose **Open in Permission Studio**, or use **Permission Studio: Open Item…** in the Command Palette.
 - **Keep your source in step:** optionally update the project's `.permissionset-meta.xml` or `.profile-meta.xml` after a save, ready to commit.
-- **Easy to read:** colour-coded permissions, **High impact** tags on org-wide system permissions, and warnings on assignments that expire soon.
+- **Easy to read:** colour-coded permissions, **High impact** tags on org-wide system permissions (including Use Any API Client and Approve Uninstalled Connected Apps), and warnings on assignments that expire soon.
 - **Light or dark:** the screen follows your VS Code theme.
 
 ![The same permission set in a light theme](media/readme/light-theme.png)
@@ -57,7 +63,7 @@ Permission Studio puts all of it on one screen in VS Code, next to your code. Ev
 
 **Reading.** Permission Studio loads the Salesforce CLI's own connection library and runs it inside VS Code. It uses the CLI's sign-in, token renewal, proxy settings and network route, without starting an `sf` process for each call. Screens open at once from what you saw last time and refresh from the org in the background; lists are only re-read when something in the org changed.
 
-**Saving.** Only the records that change are written. Before writing, every changed entry is read again, so an edit someone made in Setup since you loaded the screen is never silently overwritten. The values from just before the save are kept as a snapshot for undo. Afterwards everything is read back, and anything the org did not take is reported. Record types, page layouts, login settings and tabs go through the Metadata API; each deploy is preceded by a full copy of the item's access, and anything a deploy removed can be restored in one click.
+**Saving.** Only the records that change are written. Before writing, every changed entry is read again, so an edit someone made in Setup since you loaded the screen is never silently overwritten. The values from just before the save are kept as a snapshot for undo. Afterwards everything is read back, and anything the org did not take is reported. Tab settings are records too. Record types, page layouts and login settings go through the Metadata API; each deploy is preceded by a full copy of the item's access, and anything a deploy removed can be restored in one click.
 
 ## Getting started
 
@@ -84,7 +90,7 @@ The org is always the project's default org. Change it the usual way (`sf config
 | Object Settings: object and field permissions | Yes | Yes | records |
 | Object Settings: record type assignments | Yes | Yes | Metadata API deploy |
 | Object Settings: page layout assignments | — | Yes | Metadata API deploy |
-| Tab Settings | Yes | — | Metadata API deploy |
+| Tab Settings | Yes | Yes | records |
 | System Permissions | Yes | Yes | records |
 | Login Hours and Login IP Ranges | — | Yes | Metadata API deploy |
 | Assignments, with expiry dates | Yes, and groups | Read-only list of users | records |

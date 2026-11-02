@@ -2,7 +2,7 @@
   "name": "permission-studio",
   "displayName": "Permission Studio",
   "description": "View and edit Salesforce permission sets, permission set groups and profiles for your project's default org, right inside VS Code.",
-  "version": "2.0.7",
+  "version": "2.2.1",
   "publisher": "nikeshvarma",
   "author": {
     "name": "Nikesh Varma"
@@ -59,7 +59,7 @@
       },
       {
         "command": "permStudio.openItem",
-        "title": "Open Item\u2026",
+        "title": "Open Item…",
         "category": "Permission Studio",
         "icon": "$(search)"
       },
@@ -68,6 +68,11 @@
         "title": "Open in Permission Studio",
         "category": "Permission Studio",
         "icon": "$(shield)"
+      },
+      {
+        "command": "permStudio.saveShortcut",
+        "title": "Review and Save",
+        "category": "Permission Studio"
       }
     ],
     "configuration": {
@@ -209,9 +214,21 @@
         {
           "command": "permStudio.openFile",
           "when": "resourceFilename =~ /\\.(permissionset|profile|permissionsetgroup)-meta\\.xml$/"
+        },
+        {
+          "command": "permStudio.saveShortcut",
+          "when": "false"
         }
       ]
-    }
+    },
+    "keybindings": [
+      {
+        "command": "permStudio.saveShortcut",
+        "key": "ctrl+s",
+        "mac": "cmd+s",
+        "when": "activeWebviewPanelId == 'permStudio.main'"
+      }
+    ]
   },
   "scripts": {
     "test": "node test/smoke.js",

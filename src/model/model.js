@@ -16,46 +16,6 @@ const flatXml = require('../xml/flatXml');
  * those all land on the same category here.
  */
 
-const B = 'boolean';
-const S = 'string';
-
-const SPEC = {
-  objectPermissions: { cat: 'object', key: 'object', props: {
-    allowRead: ['read', B], allowCreate: ['create', B], allowEdit: ['edit', B], allowDelete: ['delete', B],
-    viewAllRecords: ['viewAll', B], modifyAllRecords: ['modifyAll', B], viewAllFields: ['viewAllFields', B] } },
-  fieldPermissions: { cat: 'field', key: 'field', props: { readable: ['read', B], editable: ['edit', B] } },
-  fieldLevelSecurities: { cat: 'field', key: 'field', props: { readable: ['read', B], editable: ['edit', B] } },
-  userPermissions: { cat: 'user', key: 'name', props: { enabled: ['enabled', B] } },
-  classAccesses: { cat: 'apexClass', key: 'apexClass', props: { enabled: ['enabled', B] } },
-  pageAccesses: { cat: 'apexPage', key: 'apexPage', props: { enabled: ['enabled', B] } },
-  customPermissions: { cat: 'customPermission', key: 'name', props: { enabled: ['enabled', B] } },
-  flowAccesses: { cat: 'flow', key: 'flow', props: { enabled: ['enabled', B] } },
-  customMetadataTypeAccesses: { cat: 'customMetadata', key: 'name', props: { enabled: ['enabled', B] } },
-  customSettingAccesses: { cat: 'customSetting', key: 'name', props: { enabled: ['enabled', B] } },
-  externalDataSourceAccesses: { cat: 'externalDataSource', key: 'externalDataSource', props: { enabled: ['enabled', B] } },
-  agentAccesses: { cat: 'agent', key: 'agentName', props: { enabled: ['enabled', B] } },
-  tabSettings: { cat: 'tab', key: 'tab', props: { visibility: ['visibility', S] } },
-  tabVisibilities: { cat: 'tab', key: 'tab', props: { visibility: ['visibility', S] } },
-  applicationVisibilities: { cat: 'app', key: 'application', props: { visible: ['visible', B], default: ['default', B] } },
-  recordTypeVisibilities: { cat: 'recordType', key: 'recordType', props: {
-    visible: ['visible', B], default: ['default', B], personAccountDefault: ['personAccountDefault', B] } },
-  layoutAssignments: { cat: 'layout', key: v => (v.layout || '') + '|' + (v.recordType || ''), props: {
-    layout: ['layout', S], recordType: ['recordType', S] } },
-  loginIpRanges: { cat: 'loginIpRange', key: v => (v.startAddress || '') + '-' + (v.endAddress || ''), props: {
-    startAddress: ['startAddress', S], endAddress: ['endAddress', S], description: ['description', S] } },
-  loginHours: { cat: 'loginHours', key: () => 'all', props: null }
-};
-
-/** Display order and labels for categories. */
-const CATEGORIES = [
-  ['object', 'Object permissions'], ['field', 'Field permissions'], ['user', 'System permissions'],
-  ['apexClass', 'Apex class access'], ['apexPage', 'Visualforce page access'], ['customPermission', 'Custom permissions'],
-  ['flow', 'Flow access'], ['customMetadata', 'Custom metadata type access'], ['customSetting', 'Custom setting access'],
-  ['tab', 'Tab settings'], ['app', 'App visibility'], ['recordType', 'Record type visibility'],
-  ['layout', 'Page layout assignments'], ['connectedApp', 'Connected app access'],
-  ['externalDataSource', 'External data source access'], ['agent', 'Agent access'],
-  ['loginHours', 'Login hours'], ['loginIpRange', 'Login IP ranges']
-];
 
 function key(cat, name) { return cat + ':' + name; }
 
@@ -66,38 +26,7 @@ function splitKey(k) {
 
 function emptyModel(kind, name) { return { kind, name, scalars: {}, entries: new Map() }; }
 
-function convert(raw, type) {
-  if (type === B) return raw === 'true';
-  return raw;
-}
-
-/** XML text (permission set or profile) -> canonical model. Unknown entry tags are kept in `unknown`. */
-function fromXml(text, name) {
-  const doc = flatXml.parse(text);
-  const kind = doc.root === 'Profile' ? 'profile' : doc.root === 'PermissionSetGroup' ? 'group' : 'permissionSet';
-  const model = emptyModel(kind, name || doc.scalars.fullName || '');
-  model.scalars = doc.scalars;
-  model.unknown = [];
-  for (const e of doc.entries) {
-    const spec = SPEC[e.tag];
-    if (!spec) { model.unknown.push(e.tag); continue; }
-    const id = typeof spec.key === 'function' ? spec.key(e.values) : e.values[spec.key];
-    if (id === undefined || id === '') continue;
-    const props = {};
-    if (spec.props) {
-      for (const [xmlName, [prop, type]] of Object.entries(spec.props)) {
-        if (e.values[xmlName] !== undefined) props[prop] = convert(e.values[xmlName], type);
-      }
-    } else {
-      Object.assign(props, e.values);
-    }
-    model.entries.set(key(spec.cat, id), props);
-  }
-  model.unknown = [...new Set(model.unknown)];
-  return model;
-}
-
-/** Does this entry grant anything? Used for "show only granted" and for diffing absent vs false. */
+/** Does this entry grant anything? ("absent" and "all false" both mean no.) */
 function grants(cat, props) {
   if (!props) return false;
   if (cat === 'tab') return props.visibility && props.visibility !== 'None';
@@ -128,6 +57,8 @@ const XML_OUT = {
   tab: { tag: kind => (kind === 'profile' ? 'tabVisibilities' : 'tabSettings'), key: 'tab', props: { visibility: 'visibility' } },
   recordType: { tag: 'recordTypeVisibilities', key: 'recordType', props: { visible: 'visible', default: 'default' }, profileOnly: ['default'] }
 };
+
+const PROFILE_TAB_OUT = { Visible: 'DefaultOn', Available: 'DefaultOff', None: 'Hidden' };
 
 function escXml(v) { return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
@@ -169,7 +100,8 @@ function entryXml(kind, entryKey, props, indent) {
   for (const [prop, xmlName] of Object.entries(o.props)) {
     if (o.profileOnly && o.profileOnly.includes(prop) && kind !== 'profile') continue;
     if (cat === 'object' && p[prop] === undefined) continue;
-    const v = p[prop];
+    let v = p[prop];
+    if (cat === 'tab' && kind === 'profile') v = PROFILE_TAB_OUT[v] || v;
     children.push([xmlName, typeof v === 'boolean' || v === undefined ? String(v === true) : v]);
   }
   // Profiles require <default> on app visibility.
@@ -177,4 +109,4 @@ function entryXml(kind, entryKey, props, indent) {
   return block(xmlTag(kind, cat), children, ind);
 }
 
-module.exports = { SPEC, CATEGORIES, XML_OUT, key, splitKey, emptyModel, fromXml, grants, entryXml, xmlTag };
+module.exports = { XML_OUT, key, splitKey, emptyModel, grants, entryXml, xmlTag };

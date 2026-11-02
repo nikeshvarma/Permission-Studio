@@ -5,12 +5,6 @@ function str(value) {
   return "'" + String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
 }
 
-/** IN (...) list. Callers chunk large lists with `chunk` first. */
-function inList(values) {
-  if (!values.length) throw new Error('inList needs at least one value');
-  return '(' + values.map(str).join(', ') + ')';
-}
-
 function chunk(items, size) {
   const out = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
@@ -23,4 +17,4 @@ function assertId(id) {
   return id;
 }
 
-module.exports = { str, inList, chunk, assertId };
+module.exports = { str, chunk, assertId };

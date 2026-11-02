@@ -147,22 +147,56 @@ async function loadFieldPermissions(conn, permissionSetIds, sobject) {
   return byParent;
 }
 
-// Objects that never carry object permissions of their own.
+// Objects that never carry object permissions of their own (used only when the org can't tell us).
 const NOT_PERMISSIONABLE = /(__Share|__History|__Feed|__ChangeEvent|__mdt|__e|__x|__b|__hd|__Tag|Share|History|Feed|ChangeEvent|Tag)$/;
 
 /**
- * Objects a permission set can grant access to, for "Show all objects".
- * Uses describe flags when available; the CLI transport only has names,
- * so there the name pattern alone filters.
+ * Which objects can carry object permissions, and which field permissions,
+ * straight from the org: SobjectType on ObjectPermissions and on
+ * FieldPermissions is a restricted picklist listing exactly those objects.
+ * Task and Event, for example, have field permissions but no object
+ * permissions (activity access comes from Edit Tasks / Edit Events).
+ * Returns { object: Map<name,label>|null, field: Map<name,label>|null }; null when the org doesn't say.
+ */
+async function permissionableObjects(conn) {
+  const [op, fp] = await Promise.all([conn.describe('ObjectPermissions'), conn.describe('FieldPermissions').catch(() => null)]);
+  const values = d => {
+    const f = d && (d.fields || []).find(x => x.name === 'SobjectType');
+    const v = f && Array.isArray(f.picklistValues) && f.picklistValues.length ? f.picklistValues : null;
+    return v ? new Map(v.filter(x => x.active !== false).map(x => [x.value, x.label || x.value])) : null;
+  };
+  return { object: values(op), field: values(fp) };
+}
+
+/** Set of objects that can carry object permissions, or null when the org doesn't say. */
+async function objectPermissionNames(conn) {
+  const p = await permissionableObjects(conn);
+  return p.object ? new Set(p.object.keys()) : null;
+}
+
+/**
+ * Objects a permission set can grant access to, for "Show all objects":
+ * every object that takes object or field permissions in this org, marked
+ * with which of the two it takes.
  */
 async function objectCatalog(conn) {
-  const g = await conn.globalDescribe();
+  const [g, perm] = await Promise.all([conn.globalDescribe(), permissionableObjects(conn)]);
+  const labels = new Map(g.sobjects.map(s => [s.name, s.label || s.name]));
+  if (perm.object) {
+    const names = new Set([...perm.object.keys(), ...(perm.field ? perm.field.keys() : [])]);
+    return [...names].map(n => ({ name: n, label: labels.get(n) || perm.object.get(n) || (perm.field && perm.field.get(n)) || n, custom: /__c$/.test(n),
+      objectPerms: perm.object.has(n), fieldPerms: !perm.field || perm.field.has(n) }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
   return g.sobjects
     .filter(s => !NOT_PERMISSIONABLE.test(s.name))
     .filter(s => s.queryable === undefined || (s.queryable && !s.deprecatedAndHidden && !s.customSetting && (s.custom || s.layoutable)))
-    .map(s => ({ name: s.name, label: s.label || s.name, custom: !!s.custom }))
+    .map(s => ({ name: s.name, label: s.label || s.name, custom: !!s.custom, objectPerms: true, fieldPerms: true }))
     .sort((a, b) => a.label.localeCompare(b.label));
 }
+
+// Fields Setup never lists on a field permissions page.
+const HIDDEN_FIELDS = new Set(['Id', 'IsDeleted', 'SystemModstamp', 'LastViewedDate', 'LastReferencedDate', 'MasterRecordId']);
 
 async function objectLabels(conn) {
   const g = await conn.globalDescribe();
@@ -175,24 +209,27 @@ function assigneeCountQuery(item) {
   return 'SELECT COUNT() FROM PermissionSetAssignment WHERE Assignee.IsActive = true AND PermissionSetId = ' + str(assertId(item.permissionSetId));
 }
 
-async function countActiveAssignees(conn, item) { return conn.count(assigneeCountQuery(item)); }
 
 /**
  * Object and system permissions, labels and assignee count. The describes
  * come from cache; the data is one batch of queries (one round trip over REST).
  */
 async function loadDetail(conn, item) {
-  const [cols, sysFields, objLabels] = await Promise.all([objectColumns(conn), systemPermissionFields(conn), objectLabels(conn)]);
+  const [cols, sysFields, objLabels, allowed] = await Promise.all([objectColumns(conn), systemPermissionFields(conn), objectLabels(conn), objectPermissionNames(conn).catch(() => null)]);
   const objQ = 'SELECT Id, SobjectType, ' + cols.map(c => c[0]).join(', ') + ' FROM ObjectPermissions WHERE ParentId = ' + str(assertId(item.permissionSetId));
   return withFieldsFallback(conn, async () => {
     const sys = systemQueries(conn, item.permissionSetId, sysFields, true);
-    const results = await conn.queryMany([objQ, assigneeCountQuery(item)].concat(sys.queries));
+    const fieldQ = 'SELECT SobjectType, COUNT(Id) n FROM FieldPermissions WHERE ParentId = ' + str(assertId(item.permissionSetId)) + ' GROUP BY SobjectType';
+    const results = await conn.queryMany([objQ, assigneeCountQuery(item), fieldQ].concat(sys.queries));
     const model = emptyModel(item.kind, item.apiName);
     const labels = new Map();
     for (const rec of results[0].records) model.entries.set(key('object', rec.SobjectType), objectProps(rec, cols));
-    readSystem(results.slice(2), sysFields, model, labels);
+    readSystem(results.slice(3), sysFields, model, labels);
     for (const k of model.entries.keys()) if (k.startsWith('object:')) labels.set(k, objLabels.get(k.slice(7)) || k.slice(7));
-    return { model, labels, activeAssignees: results[1].totalSize, objectColumns: cols.map(c => c[1]) };
+    const fieldObjects = results[2].records.map(r => ({ name: r.SobjectType, label: objLabels.get(r.SobjectType) || r.SobjectType, fields: r.n || r.expr0 || 0,
+      objectPermissions: !allowed || allowed.has(r.SobjectType) }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    return { model, labels, activeAssignees: results[1].totalSize, objectColumns: cols.map(c => c[1]), fieldObjects };
   });
 }
 
@@ -203,7 +240,7 @@ async function loadDetail(conn, item) {
  */
 async function loadObjectDetail(conn, item, sobject) {
   const model = emptyModel(item.kind, item.apiName);
-  const [describe, cols] = await Promise.all([conn.describe(sobject), objectColumns(conn)]);
+  const [describe, cols, allowed] = await Promise.all([conn.describe(sobject), objectColumns(conn), objectPermissionNames(conn)]);
   const id = str(assertId(item.permissionSetId));
   const [objRows, fieldPage] = await conn.queryMany([
     'SELECT Id, SobjectType, ' + cols.map(c => c[0]).join(', ') + ' FROM ObjectPermissions WHERE ParentId = ' + id + ' AND SobjectType = ' + str(sobject),
@@ -211,12 +248,16 @@ async function loadObjectDetail(conn, item, sobject) {
   for (const rec of objRows.records) model.entries.set(key('object', rec.SobjectType), objectProps(rec, cols));
   const rows = fieldPage.records;
   const granted = new Map(rows.map(r => [r.Field, { read: r.PermissionsRead === true, edit: r.PermissionsEdit === true }]));
+  // As in Setup, required and system fields are listed too. Their access can't be set
+  // ("fixed"): everyone with access to the object can see them, and edit the required ones.
   const fields = describe.fields
-    .filter(f => f.permissionable === true)
+    .filter(f => !HIDDEN_FIELDS.has(f.name) && !f.deprecatedAndHidden)
     .map(f => {
       const name = sobject + '.' + f.name;
+      const writable = !f.calculated && (f.updateable === true || f.createable === true);
+      if (f.permissionable !== true) return { name, apiName: f.name, label: f.label, type: f.type, canEdit: false, read: true, edit: writable, fixed: true };
       const p = granted.get(name) || { read: false, edit: false };
-      return { name, apiName: f.name, label: f.label, type: f.type, canEdit: !f.calculated && (f.updateable === true || f.createable === true), read: p.read, edit: p.edit };
+      return { name, apiName: f.name, label: f.label, type: f.type, canEdit: writable, read: p.read, edit: p.edit };
     })
     .sort((a, b) => a.label.localeCompare(b.label));
   const blank = {};
@@ -224,7 +265,8 @@ async function loadObjectDetail(conn, item, sobject) {
   return {
     object: sobject, label: describe.label || sobject,
     props: model.entries.get(key('object', sobject)) || blank,
-    columns: cols.map(c => c[1]), fields
+    columns: cols.map(c => c[1]), fields,
+    objectPermissions: !allowed || allowed.has(sobject)
   };
 }
 
@@ -365,13 +407,6 @@ async function loadObjectAccessFor(conn, permissionSetIds, sobject) {
 }
 
 /** Every field permission row of one permission set (for exports). */
-async function loadAllFieldRows(conn, permissionSetId) {
-  const r = await conn.query('SELECT SobjectType, Field, PermissionsRead, PermissionsEdit FROM FieldPermissions WHERE ParentId = ' + str(assertId(permissionSetId)) + ' ORDER BY Field');
-  return r.records;
-}
-
-// ---------- permission set groups ----------
-
 /**
  * A group's members: its permission sets and any muting permission set,
  * with the group's recalculation status. Component rows point at either a
@@ -418,18 +453,222 @@ const LOOKUP_OBJECT_FLAG = { read: 'PermissionsRead', create: 'PermissionsCreate
  *   field half   FieldPermissions with Read/Edit, or View All Fields on the object (read only)
  * Users come from PermissionSetAssignment, which also covers profiles and groups.
  */
+/**
+ * The permission sets behind some grants (profile-owned and group-calculated
+ * ones included) and the active users they reach. `objectVia` and `fieldVia`
+ * map permission set Id to the reasons it grants. Every user has an
+ * assignment to their profile's permission set, so assignments cover profiles too.
+ */
+async function sourcesAndUsers(conn, objectVia, fieldVia) {
+  const ids = [...new Set([...objectVia.keys(), ...fieldVia.keys()])];
+  const sources = new Map();
+  const users = new Map();
+  if (!ids.length) return { sources, users };
+  const renderPs = g => 'SELECT Id, Name, Label, NamespacePrefix, IsOwnedByProfile, ProfileId, Profile.Name, PermissionSetGroupId, PermissionSetGroup.MasterLabel FROM PermissionSet WHERE Id IN (' + g.map(str).join(', ') + ')';
+  const renderPsa = g => 'SELECT AssigneeId, Assignee.Name, Assignee.Username, Assignee.IsActive, Assignee.Profile.Name, Assignee.Profile.UserLicense.Name, PermissionSetId FROM PermissionSetAssignment WHERE PermissionSetId IN (' + g.map(str).join(', ') + ')';
+  const limit = conn.maxQueryLength || 5000;
+  const [psPages, psaPages] = await Promise.all([
+    Promise.all(sliceByLength(ids, renderPs, limit).map(g => conn.query(renderPs(g)))),
+    Promise.all(sliceByLength(ids, renderPsa, limit).map(g => conn.query(renderPsa(g))))
+  ]);
+  for (const p of psPages) for (const r of p.records) {
+    const kind = r.IsOwnedByProfile ? 'profile' : r.PermissionSetGroupId ? 'group' : 'permissionSet';
+    const label = kind === 'profile' ? (r.Profile && r.Profile.Name) : kind === 'group' ? ((r.PermissionSetGroup && r.PermissionSetGroup.MasterLabel) || r.Label) : r.Label;
+    sources.set(r.Id, { permissionSetId: r.Id, kind, groupId: r.PermissionSetGroupId || null, profileId: (r.IsOwnedByProfile && r.ProfileId) || null,
+      label: label || r.Name, apiName: (r.NamespacePrefix ? r.NamespacePrefix + '__' : '') + r.Name,
+      objectVia: [...(objectVia.get(r.Id) || [])], fieldVia: [...(fieldVia.get(r.Id) || [])], users: 0 });
+  }
+  const inactive = new Map();
+  for (const p of psaPages) for (const a of p.records) {
+    const active = !a.Assignee || a.Assignee.IsActive !== false;
+    const into = active ? users : inactive;
+    const prof = a.Assignee && a.Assignee.Profile;
+    const u = into.get(a.AssigneeId) || { userId: a.AssigneeId, name: (a.Assignee && a.Assignee.Name) || a.AssigneeId, username: (a.Assignee && a.Assignee.Username) || '',
+      profile: (prof && prof.Name) || '', license: (prof && prof.UserLicense && prof.UserLicense.Name) || '', active, objectFrom: [], fieldFrom: [] };
+    const src = sources.get(a.PermissionSetId);
+    if (src && active) src.users++;
+    if (objectVia.has(a.PermissionSetId)) u.objectFrom.push(a.PermissionSetId);
+    if (fieldVia.has(a.PermissionSetId)) u.fieldFrom.push(a.PermissionSetId);
+    into.set(a.AssigneeId, u);
+  }
+  // For a group, which of its member permission sets give the access (for "Why?").
+  const groups = [...sources.values()].filter(x => x.kind === 'group' && x.groupId);
+  if (groups.length) {
+    const comps = await conn.query('SELECT PermissionSetGroupId, PermissionSetId FROM PermissionSetGroupComponent WHERE PermissionSetGroupId IN (' + groups.map(g => str(g.groupId)).join(', ') + ')').catch(() => ({ records: [] }));
+    for (const g of groups) g.includes = comps.records.filter(c => c.PermissionSetGroupId === g.groupId && sources.has(c.PermissionSetId)).map(c => sources.get(c.PermissionSetId).label);
+  }
+  return { sources, users, inactive };
+}
+
+/** Active users per permission set (profiles' own included): Map<permissionSetId, count>. */
+async function assigneeCounts(conn) {
+  const r = await conn.query('SELECT PermissionSetId, COUNT(Id) n FROM PermissionSetAssignment WHERE Assignee.IsActive = true GROUP BY PermissionSetId');
+  return new Map(r.records.map(x => [x.PermissionSetId, x.n || x.expr0 || 0]));
+}
+
+/** Every permission set's (and profile's) access to some fields: Map<parentId, { field: { read, edit } }>. */
+async function fieldAccessAll(conn, fields) {
+  const out = new Map();
+  if (!fields.length) return out;
+  const render = g => 'SELECT ParentId, Field, PermissionsRead, PermissionsEdit FROM FieldPermissions WHERE Field IN (' + g.map(str).join(', ') + ')';
+  for (const g of sliceByLength(fields, render, conn.maxQueryLength || 5000)) {
+    for (const r of (await conn.query(render(g))).records) {
+      const m = out.get(r.ParentId) || {};
+      m[r.Field] = { read: r.PermissionsRead === true, edit: r.PermissionsEdit === true };
+      out.set(r.ParentId, m);
+    }
+  }
+  return out;
+}
+
+/** Every permission set's (and profile's) access to one object: Map<parentId, props>. */
+async function objectAccessAll(conn, sobject) {
+  const cols = await objectColumns(conn);
+  const r = await conn.query('SELECT ParentId, ' + cols.map(c => c[0]).join(', ') + ' FROM ObjectPermissions WHERE SobjectType = ' + str(sobject));
+  return { byParent: new Map(r.records.map(x => [x.ParentId, objectProps(x, cols)])), columns: cols.map(c => c[1]) };
+}
+
+/** Profiles' own permission sets: Map<permissionSetId, profileId>. */
+async function profilePermissionSets(conn) {
+  const r = await conn.query('SELECT Id, ProfileId FROM PermissionSet WHERE IsOwnedByProfile = true');
+  return new Map(r.records.map(x => [x.Id, x.ProfileId]));
+}
+
+/**
+ * Setup Audit Trail entries mentioning any of these names, newest first.
+ * Names match as whole words ("Sales" doesn't match "Sales Ops" or
+ * "Salesforce"); the longest matching name wins.
+ */
+async function setupChangesFor(conn, names, days) {
+  const r = await conn.query('SELECT CreatedDate, CreatedBy.Name, Action, Section, Display, DelegateUser FROM SetupAuditTrail WHERE CreatedDate = LAST_N_DAYS:' +
+    Math.max(1, Math.min(180, days || 30)) + ' ORDER BY CreatedDate DESC LIMIT 2000');
+  const esc = t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const matchers = [...new Set(names.filter(n => n && n.length > 2))].sort((a, b) => b.length - a.length)
+    .map(n => [n, new RegExp('(^|[^\\w])' + esc(n) + '(?![\\w])', 'i')]);
+  const out = [];
+  for (const x of r.records) {
+    const hit = matchers.find(([, re]) => re.test(String(x.Display || '')));
+    if (hit) out.push({ at: x.CreatedDate, by: (x.CreatedBy && x.CreatedBy.Name) || '', action: x.Action || '', section: x.Section || '', display: x.Display || '', delegate: x.DelegateUser || '', name: hit[0] });
+    if (out.length >= 300) break;
+  }
+  return out;
+}
+
+/**
+ * Who has a system permission (q.name, e.g. "ModifyAllData") or a custom
+ * permission (q.id), and through which permission sets, profiles and groups.
+ */
+async function whoHasPermission(conn, q) {
+  const via = new Map();
+  if (q.kind === 'system') {
+    if (!/^\w+$/.test(q.name || '')) throw new Error('Unknown system permission');
+    const r = await conn.query('SELECT Id FROM PermissionSet WHERE Permissions' + q.name + ' = true');
+    for (const x of r.records) via.set(x.Id, new Set(['system']));
+  } else if (q.kind === 'custom') {
+    const r = await conn.query('SELECT ParentId FROM SetupEntityAccess WHERE SetupEntityId = ' + str(assertId(q.id)));
+    for (const x of r.records) via.set(x.ParentId, new Set(['custom']));
+  } else throw new Error('Unknown permission kind');
+  const { sources, users, inactive } = await sourcesAndUsers(conn, via, new Map());
+  const byLabel = (a, b) => a.label.localeCompare(b.label);
+  return { permission: { kind: q.kind, name: q.name || q.id, label: q.label || q.name || q.id }, sources: [...sources.values()].sort(byLabel),
+    users: [...users.values()].filter(u => u.objectFrom.length).sort((a, b) => a.name.localeCompare(b.name)), partial: [],
+    inactive: [...inactive.values()].filter(u => u.objectFrom.length).sort((a, b) => a.name.localeCompare(b.name)) };
+}
+
+/** System and custom permissions for Find access, with Salesforce's own labels. */
+async function permissionOptions(conn) {
+  const [sys, custom] = await Promise.all([systemPermissionFields(conn), listEntities(conn, 'customPermission').catch(() => [])]);
+  return { system: sys.map(f => ({ name: f.name, label: f.label })), custom: custom.map(c => ({ id: c.entityId, name: c.name, label: c.label })) };
+}
+
+/**
+ * Salesforce's rules for which permissions need which: user permissions from
+ * PermissionDependency (Tooling API) and custom permissions from
+ * CustomPermissionDependency. { system: { Name: [Required…] }, custom: { id: [requiredId…] } }.
+ * Names are as the org reports them; the screen matches them to API names or labels.
+ */
+async function permissionDependencies(conn) {
+  const out = { system: {}, custom: {}, problems: [] };
+  const add = (m, a, b) => { (m[a] = m[a] || []).includes(b) || m[a].push(b); };
+  await Promise.all([
+    conn.query('SELECT Permission, PermissionType, RequiredPermission, RequiredPermissionType FROM PermissionDependency', { tooling: true }).then(r => {
+      for (const d of r.records) {
+        if (!/user/i.test(String(d.PermissionType || 'user')) || !/user/i.test(String(d.RequiredPermissionType || 'user'))) continue;
+        if (d.Permission && d.RequiredPermission) add(out.system, String(d.Permission), String(d.RequiredPermission));
+      }
+    }).catch(e => out.problems.push('PermissionDependency: ' + e.message)),
+    conn.query('SELECT CustomPermissionId, RequiredCustomPermissionId FROM CustomPermissionDependency').then(r => {
+      for (const d of r.records) if (d.CustomPermissionId && d.RequiredCustomPermissionId) add(out.custom, d.CustomPermissionId, d.RequiredCustomPermissionId);
+    }).catch(e => out.problems.push('CustomPermissionDependency: ' + e.message))
+  ]);
+  return out;
+}
+
+/**
+ * Before assigning: which users can't hold this permission set. A permission
+ * set with a user license only goes to users of that license; one with a
+ * permission set license only to users who hold that license.
+ * Returns Map<userId, reason>.
+ */
+async function assignmentBlockers(conn, item, userIds) {
+  const out = new Map();
+  if (!userIds.length || item.kind !== 'permissionSet') return out;
+  const ps = await conn.query('SELECT LicenseId, License.Name FROM PermissionSet WHERE Id = ' + str(assertId(item.permissionSetId)));
+  const lic = ps.records[0] && ps.records[0].LicenseId;
+  if (!lic) return out;
+  const licName = (ps.records[0].License && ps.records[0].License.Name) || 'its license';
+  const ids = userIds.map(id => str(assertId(id))).join(', ');
+  if (lic.startsWith('100')) {
+    const r = await conn.query('SELECT Id, Name, Profile.UserLicenseId, Profile.UserLicense.Name FROM User WHERE Id IN (' + ids + ')');
+    for (const u of r.records) {
+      const has = u.Profile && u.Profile.UserLicenseId;
+      if (has && has !== lic) out.set(u.Id, 'has the ' + ((u.Profile.UserLicense && u.Profile.UserLicense.Name) || 'another') + ' user license; this permission set needs ' + licName + '.');
+    }
+  } else {
+    const r = await conn.query('SELECT AssigneeId FROM PermissionSetLicenseAssign WHERE PermissionSetLicenseId = ' + str(assertId(lic)) + ' AND AssigneeId IN (' + ids + ')').catch(() => null);
+    if (r) {
+      const holders = new Set(r.records.map(x => x.AssigneeId));
+      for (const id of userIds) if (!holders.has(id)) out.set(id, 'needs the ' + licName + ' permission set license assigned first.');
+    }
+  }
+  return out;
+}
+
+/**
+ * Recent Setup Audit Trail entries about one item (by its label or API name),
+ * newest first. Needs View Setup Audit Trail (Winter '27) or View Setup.
+ */
+async function setupChanges(conn, item, days) {
+  const rows = await setupChangesFor(conn, [item.label, item.apiName], days);
+  return rows.slice(0, 200);
+}
+
+/**
+ * Profile filtering (enforced in Winter '27): without View All Profiles a user
+ * sees only their own profile. True when the list looks cut down that way.
+ */
+async function profilesFiltered(conn, profiles, username) {
+  if (profiles.length > 1) return false;
+  const r = await conn.query('SELECT ProfileId FROM User WHERE Username = ' + str(username) + ' LIMIT 1');
+  const own = r.records[0] && r.records[0].ProfileId;
+  return !profiles.length || (!!own && profiles.every(p => p.recordId === own));
+}
+
 async function whoHasAccess(conn, q) {
   const sobject = q.object;
   const level = q.level || 'read';
   const field = q.field ? (q.field.includes('.') ? q.field : sobject + '.' + q.field) : null;
   const objFlag = field ? (level === 'edit' ? 'PermissionsEdit' : 'PermissionsRead') : LOOKUP_OBJECT_FLAG[level];
   if (!objFlag) throw new Error('Unknown access level: ' + level);
+  const allowed = await objectPermissionNames(conn);
+  const fieldOnly = !!allowed && !allowed.has(sobject);
+  if (fieldOnly && !field) throw new Error(sobject + ' has no object permissions in Salesforce' + (/^(Task|Event)$/.test(sobject) ? ': activity access comes from the Edit Tasks and Edit Events system permissions.' : '.') + ' Pick a field to see who can read or edit it.');
   const system = objFlag === 'PermissionsRead' ? ['PermissionsViewAllData', 'PermissionsModifyAllData'] : ['PermissionsModifyAllData'];
   const [objRows, sysRows, fieldRows, vafRows] = await Promise.all([
-    conn.query('SELECT ParentId FROM ObjectPermissions WHERE SobjectType = ' + str(sobject) + ' AND ' + objFlag + ' = true'),
-    Promise.all(system.map(f => conn.query('SELECT Id FROM PermissionSet WHERE ' + f + ' = true').then(r => r.records.map(x => [x.Id, f.replace('Permissions', '')])))),
+    fieldOnly ? { records: [] } : conn.query('SELECT ParentId FROM ObjectPermissions WHERE SobjectType = ' + str(sobject) + ' AND ' + objFlag + ' = true'),
+    fieldOnly ? [] : Promise.all(system.map(f => conn.query('SELECT Id FROM PermissionSet WHERE ' + f + ' = true').then(r => r.records.map(x => [x.Id, f.replace('Permissions', '')])))),
     field ? conn.query('SELECT ParentId FROM FieldPermissions WHERE Field = ' + str(field) + ' AND ' + (level === 'edit' ? 'PermissionsEdit' : 'PermissionsRead') + ' = true') : { records: [] },
-    field && level !== 'edit' ? conn.query('SELECT ParentId FROM ObjectPermissions WHERE SobjectType = ' + str(sobject) + ' AND PermissionsViewAllFields = true').catch(() => ({ records: [] })) : { records: [] }
+    field && level !== 'edit' && !fieldOnly ? conn.query('SELECT ParentId FROM ObjectPermissions WHERE SobjectType = ' + str(sobject) + ' AND PermissionsViewAllFields = true').catch(() => ({ records: [] })) : { records: [] }
   ]);
   const objectVia = new Map();
   const add = (m, id, why) => { if (!m.has(id)) m.set(id, new Set()); m.get(id).add(why); };
@@ -438,44 +677,19 @@ async function whoHasAccess(conn, q) {
   const fieldVia = new Map();
   for (const r of fieldRows.records) add(fieldVia, r.ParentId, 'field');
   for (const r of vafRows.records) add(fieldVia, r.ParentId, 'ViewAllFields');
-  const ids = [...new Set([...objectVia.keys(), ...fieldVia.keys()])];
-  if (!ids.length) return { object: sobject, field, level, sources: [], users: [] };
-
-  const renderPs = g => 'SELECT Id, Name, Label, NamespacePrefix, IsOwnedByProfile, ProfileId, Profile.Name, PermissionSetGroupId, PermissionSetGroup.MasterLabel FROM PermissionSet WHERE Id IN (' + g.map(str).join(', ') + ')';
-  const renderPsa = g => 'SELECT AssigneeId, Assignee.Name, Assignee.Username, Assignee.Profile.Name, PermissionSetId FROM PermissionSetAssignment WHERE Assignee.IsActive = true AND PermissionSetId IN (' + g.map(str).join(', ') + ')';
-  const limit = conn.maxQueryLength || 5000;
-  const [psPages, psaPages] = await Promise.all([
-    Promise.all(sliceByLength(ids, renderPs, limit).map(g => conn.query(renderPs(g)))),
-    Promise.all(sliceByLength(ids, renderPsa, limit).map(g => conn.query(renderPsa(g))))
-  ]);
-  const sources = new Map();
-  for (const p of psPages) for (const r of p.records) {
-    const kind = r.IsOwnedByProfile ? 'profile' : r.PermissionSetGroupId ? 'group' : 'permissionSet';
-    const label = kind === 'profile' ? (r.Profile && r.Profile.Name) : kind === 'group' ? ((r.PermissionSetGroup && r.PermissionSetGroup.MasterLabel) || r.Label) : r.Label;
-    sources.set(r.Id, { permissionSetId: r.Id, kind, groupId: r.PermissionSetGroupId || null, profileId: (r.IsOwnedByProfile && r.ProfileId) || null,
-      label: label || r.Name, apiName: (r.NamespacePrefix ? r.NamespacePrefix + '__' : '') + r.Name,
-      objectVia: [...(objectVia.get(r.Id) || [])], fieldVia: [...(fieldVia.get(r.Id) || [])], users: 0 });
-  }
-  const users = new Map();
-  for (const p of psaPages) for (const a of p.records) {
-    const u = users.get(a.AssigneeId) || { userId: a.AssigneeId, name: (a.Assignee && a.Assignee.Name) || a.AssigneeId, username: (a.Assignee && a.Assignee.Username) || '',
-      profile: (a.Assignee && a.Assignee.Profile && a.Assignee.Profile.Name) || '', objectFrom: [], fieldFrom: [] };
-    const src = sources.get(a.PermissionSetId);
-    if (src) src.users++;
-    if (objectVia.has(a.PermissionSetId)) u.objectFrom.push(a.PermissionSetId);
-    if (fieldVia.has(a.PermissionSetId)) u.fieldFrom.push(a.PermissionSetId);
-    users.set(a.AssigneeId, u);
-  }
-  const granted = [...users.values()].filter(u => u.objectFrom.length && (!field || u.fieldFrom.length));
-  const partial = field ? [...users.values()].filter(u => !(u.objectFrom.length && u.fieldFrom.length)) : [];
+  const { sources, users, inactive } = await sourcesAndUsers(conn, objectVia, fieldVia);
+  if (!sources.size && !users.size) return { object: sobject, field, level, sources: [], users: [], partial: [], inactive: [], fieldOnly };
+  const granted = [...users.values()].filter(u => fieldOnly ? u.fieldFrom.length : u.objectFrom.length && (!field || u.fieldFrom.length));
+  const partial = field && !fieldOnly ? [...users.values()].filter(u => !(u.objectFrom.length && u.fieldFrom.length)) : [];
   const byLabel = (a, b) => a.label.localeCompare(b.label);
-  return { object: sobject, field, level, sources: [...sources.values()].sort(byLabel), users: granted.sort((a, b) => a.name.localeCompare(b.name)), partial: partial.sort((a, b) => a.name.localeCompare(b.name)) };
+  const inactiveGranted = [...inactive.values()].filter(u => fieldOnly ? u.fieldFrom.length : u.objectFrom.length && (!field || u.fieldFrom.length));
+  return { object: sobject, field, level, fieldOnly, sources: [...sources.values()].sort(byLabel), users: granted.sort((a, b) => a.name.localeCompare(b.name)),
+    partial: partial.sort((a, b) => a.name.localeCompare(b.name)), inactive: inactiveGranted.sort((a, b) => a.name.localeCompare(b.name)) };
 }
 
-module.exports = {
-  loadDetail, loadObjectDetail, loadObjectPermissions, loadSystemPermissions, loadFieldRows, loadFieldPermissions,
-  systemPermissionFields, countActiveAssignees, objectCatalog, objectLabels, objectColumns, sliceByLength, OBJECT_FIELDS,
-  ENTITY, listEntities, loadAccessRows, loadEntityAccess, listRecordTypes,
-  loadGroupComponents, groupStatus,
-  listTabs, loadTabSettings, loadTabsPage, loadAssignments, expirationField, searchUsers, loadObjectAccessFor, loadAllFieldRows, whoHasAccess, TAB_FROM_API
-};
+module.exports = { loadDetail, loadObjectDetail, loadObjectPermissions, loadSystemPermissions, loadFieldRows, loadFieldPermissions,
+  systemPermissionFields, objectCatalog, objectPermissionNames, objectColumns, sliceByLength, OBJECT_FIELDS, ENTITY,
+  listEntities, loadAccessRows, loadEntityAccess, listRecordTypes, loadGroupComponents, groupStatus, listTabs, loadTabSettings,
+  loadTabsPage, loadAssignments, expirationField, searchUsers, loadObjectAccessFor, whoHasAccess, TAB_FROM_API, whoHasPermission,
+  permissionOptions, permissionDependencies, assignmentBlockers, setupChanges, profilesFiltered, assigneeCounts, fieldAccessAll,
+  objectAccessAll, profilePermissionSets, setupChangesFor };

@@ -15,9 +15,13 @@ const { str, assertId } = require('./soql');
  */
 async function listPermissionSets(conn, names) {
   const only = names ? ' AND Name IN (' + names.map(n => str(n.replace(/^\w+?__(?!c$)/, ''))).join(', ') + ')' : '';
-  const r = await conn.query(
-    'SELECT Id, Name, Label, Description, NamespacePrefix, IsCustom, License.Name, LastModifiedDate, LastModifiedBy.Name ' +
-    'FROM PermissionSet WHERE IsOwnedByProfile = false AND PermissionSetGroupId = null' + only + ' ORDER BY Label');
+  // HasActivationRequired marks session-based permission sets, which users switch on per session.
+  const q = cols => 'SELECT Id, Name, Label, Description, NamespacePrefix, IsCustom, License.Name, LastModifiedDate, LastModifiedBy.Name' + cols +
+    ' FROM PermissionSet WHERE IsOwnedByProfile = false AND PermissionSetGroupId = null' + only + ' ORDER BY Label';
+  const r = await conn.query(q(', HasActivationRequired')).catch(e => {
+    if (/HasActivationRequired|INVALID_FIELD/i.test(e.message)) return conn.query(q(''));
+    throw e;
+  });
   return r.records.map(p => ({
     kind: 'permissionSet',
     permissionSetId: p.Id,
@@ -27,6 +31,7 @@ async function listPermissionSets(conn, names) {
     description: p.Description || '',
     license: (p.License && p.License.Name) || '',
     managed: !!p.NamespacePrefix,
+    sessionBased: p.HasActivationRequired === true,
     modified: modified(p)
   })).filter(p => !names || names.includes(p.apiName));
 }

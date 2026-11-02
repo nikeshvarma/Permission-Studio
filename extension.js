@@ -128,7 +128,7 @@ function activate(context) {
   const panel = new MainPanel(context, {
     resolveContext, openConnection, cacheFor, catalog, loader, detectProduction, history, metadata, favorites, toggleFavorite, log,
     localFile, localFileMode: () => settings().localFileMode, kinds: () => settings().kinds, gate,
-    summary, clipboard: text => vscode.env.clipboard.writeText(text),
+    summary, clipboard: text => vscode.env.clipboard.writeText(text), memento: context.workspaceState,
     applyChanges: apply, showLog: () => out.show(true)
   });
 
@@ -161,6 +161,8 @@ function activate(context) {
   cmd('permStudio.open', () => { panel.show(); });
   cmd('permStudio.refresh', async () => { panel.show(); await panel.load({ force: true }); });
   cmd('permStudio.showLog', () => out.show(true));
+  // Ctrl/Cmd+S while Permission Studio has focus: review, then save (no hint shown on screen).
+  cmd('permStudio.saveShortcut', () => panel.shortcut('save'));
 
   // Open an item by name from the Command Palette: favourites first, type to filter.
   cmd('permStudio.openItem', async () => {

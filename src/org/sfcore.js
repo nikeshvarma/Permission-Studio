@@ -142,4 +142,4 @@ async function connect(core, username, apiVersion) {
 /** For tests: forget what was loaded. */
 function reset() { loaded = null; }
 
-module.exports = { load, connect, cliRoot, resolveCore, candidateRoots, findOnDisk, reset, CACHE_KEY };
+module.exports = { load, connect, cliRoot, findOnDisk, reset, CACHE_KEY };

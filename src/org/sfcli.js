@@ -85,4 +85,4 @@ async function runResult(sfPath, args, options) {
   throw e;
 }
 
-module.exports = { run, runResult, parseJson, spawnSpec, escapeArgument, escapeCommand };
+module.exports = { run, runResult, parseJson, spawnSpec, escapeArgument };
