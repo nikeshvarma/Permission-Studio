@@ -22,6 +22,8 @@ jobs:
         run: npm test
       - name: Build the .vsix
         run: npm run package
+      - name: Check the README images will show in VS Code
+        run: node tools/check-readme.js dist/*.vsix
       - name: Release notes from CHANGELOG.md
         run: node tools/release-notes.js "$GITHUB_REF_NAME" > release-notes.md
       - name: Publish the GitHub Release
