@@ -2,11 +2,19 @@
   "name": "permission-studio",
   "displayName": "Permission Studio",
   "description": "View and edit Salesforce permission sets, permission set groups and profiles for your project's default org, right inside VS Code.",
-  "version": "2.2.6",
+  "version": "2.2.7",
   "publisher": "nikeshvarma",
   "author": {
     "name": "Nikesh Varma"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nikeshvarma/Permission-Studio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nikeshvarma/Permission-Studio/issues"
+  },
+  "homepage": "https://github.com/nikeshvarma/Permission-Studio#readme",
   "license": "MIT",
   "engines": {
     "vscode": "^1.85.0"
@@ -59,7 +67,7 @@
       },
       {
         "command": "permStudio.openItem",
-        "title": "Open Item…",
+        "title": "Open Item\u2026",
         "category": "Permission Studio",
         "icon": "$(search)"
       },

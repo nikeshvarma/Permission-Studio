@@ -30,7 +30,8 @@ function readmeForPackage(text, repo) {
   if (!repo) return text;
   const relative = u => !/^(?:[a-z][\w+.-]*:|#|\/\/)/i.test(u);
   const clean = u => u.replace(/^\.\//, '');
-  const raw = u => 'https://raw.githubusercontent.com/' + repo + '/HEAD/' + clean(u);
+  // The same addresses Microsoft's packager (vsce) writes: github.com/<repo>/raw/HEAD/<path>.
+  const raw = u => 'https://github.com/' + repo + '/raw/HEAD/' + clean(u);
   const blob = u => 'https://github.com/' + repo + '/blob/HEAD/' + clean(u);
   return text
     .replace(/(!\[[^\]]*\]\()(<?)([^)\s>]+)(>?)((?:\s+"[^"]*")?\))/g, (m, a, lt, u, gt, z) => relative(u) ? a + lt + raw(u) + gt + z : m)

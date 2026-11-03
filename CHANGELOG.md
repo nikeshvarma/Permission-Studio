@@ -2,6 +2,11 @@
 
 All notable changes to Permission Studio. Versions follow `major.minor.patch`; every delivered change raises the patch number.
 
+## 2.2.7
+
+- README image addresses now use the same form as Microsoft's packager (`https://github.com/<owner>/<repo>/raw/HEAD/<path>`).
+- New `tools/check-readme.js`: run it on a `.vsix` to see which repository the README points at and whether GitHub serves each image to an anonymous visitor, with the reason when it doesn't (no repository in package.json, private repository, file not on the default branch). The Release workflow runs it, so every release's log shows the result.
+
 ## 2.2.6
 
 - Fixed: README images were broken on the extension's page in VS Code, which only shows images from https addresses. Packaging now points the README's images at the repository's files on GitHub (and its links to other files at their GitHub pages), as Microsoft's own packager does. The README in the repository is unchanged and still works on GitHub. The screenshots are no longer packed into the extension, which shrinks from about 1 MB to about 230 KB.

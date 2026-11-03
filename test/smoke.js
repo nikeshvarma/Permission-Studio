@@ -2463,7 +2463,7 @@ test('README images show in VS Code: the packaged README points them at GitHub o
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
   const out = pk.readmeForPackage(readme, 'o/Permission-Studio');
   const imgs = [...out.matchAll(/!\[[^\]]*\]\(([^)\s]+)/g)].map(m => m[1]);
-  assert.ok(imgs.length >= 8 && imgs.every(u => u.startsWith('https://raw.githubusercontent.com/o/Permission-Studio/HEAD/media/readme/')), imgs.join('\n'));
+  assert.ok(imgs.length >= 8 && imgs.every(u => u.startsWith('https://github.com/o/Permission-Studio/raw/HEAD/media/readme/')), imgs.join('\n'));
   assert.ok(/\]\(https:\/\/github\.com\/o\/Permission-Studio\/blob\/HEAD\/RELEASING\.md\)/.test(out), 'links to other files go to GitHub');
   assert.strictEqual(pk.readmeForPackage(readme, null), readme, 'without a GitHub repository nothing is rewritten');
   assert.strictEqual(pk.readmeForPackage('[a](https://x.dev) [b](#why) ![c](https://x.dev/c.png) <img src="data:image/png;base64,AA">', 'o/r'),
@@ -2471,6 +2471,24 @@ test('README images show in VS Code: the packaged README points them at GitHub o
   const files = ['README.md', 'media/readme/a.png', 'media/icon.png'];
   assert.deepStrictEqual(pk.packagedFiles(files, 'o/r'), ['README.md', 'media/icon.png'], 'screenshots served from GitHub stay out of the package');
   assert.deepStrictEqual(pk.packagedFiles(files, null), files);
+});
+
+test('the README checker reads a real .vsix and tells exactly why an image won\u2019t show', async () => {
+  const chk = require('../tools/check-readme.js');
+  // Builds the package itself when there isn't one yet (a fresh checkout, or CI before its build step).
+  const findBuilt = () => (fs.existsSync(path.join(ROOT, 'dist')) ? fs.readdirSync(path.join(ROOT, 'dist')) : []).filter(f => f === 'permission-studio-' + require('../package.json').version + '.vsix').pop();
+  if (!findBuilt()) require('child_process').execFileSync(process.execPath, [path.join(ROOT, 'tools', 'package.js')], { cwd: ROOT, stdio: 'ignore' });
+  const built = findBuilt();
+  assert.ok(built, 'packaging produced a .vsix');
+  const zip = chk.readZip(fs.readFileSync(path.join(ROOT, 'dist', built)));
+  assert.ok(zip.get('extension/README.md') && zip.get('extension/package.json'), 'opens a .vsix');
+  const md = '![a](https://github.com/o/r/raw/HEAD/media/readme/a.png) ![b](https://github.com/o/r/raw/HEAD/media/readme/b.png) ![c](media/readme/c.png) <img src="https://x.dev/d.png">';
+  const answers = { a: { status: 200, type: 'image/png' }, b: { status: 404, type: 'text/plain' }, d: { status: 0, error: 'ENOTFOUND' } };
+  const r = await chk.check(md, async u => answers[u.match(/(\w)\.png$/)[1]]);
+  assert.deepStrictEqual(r.map(x => [x.src.split('/').pop(), x.ok]), [['a.png', true], ['b.png', false], ['c.png', false], ['d.png', false]]);
+  assert.match(r[1].why, /repository is private, or this file isn’t on its default branch/);
+  assert.match(r[2].why, /not an https address.*Add a GitHub "repository"/);
+  assert.match(r[3].why, /could not reach GitHub \(ENOTFOUND\)/);
 });
 
 // ---------- extension wiring ----------
@@ -2483,7 +2501,7 @@ test('activation: commands and settings match package.json; status bar; version 
   assert.deepStrictEqual([...code.matchAll(/c\.get\('([\w.]+)'/g)].map(m => 'permStudio.' + m[1]).sort(), Object.keys(pkg.contributes.configuration.properties).sort());
   assert.ok(vscode.__statusItems[0].shown && vscode.__statusItems[0].command === 'permStudio.open');
   for (const f of ['media/app.js', 'media/app.css', 'media/tab-light.svg', 'media/tab-dark.svg', 'src/model/dependencies.js', pkg.icon]) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
-  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.2.6', 'nikeshvarma', 'Nikesh Varma']);
+  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.2.7', 'nikeshvarma', 'Nikesh Varma']);
   const png = fs.readFileSync(path.join(ROOT, pkg.icon));
   assert.deepStrictEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [256, 256], 'Marketplace icon is 256 px');
   for (const t of ['light', 'dark']) assert.match(fs.readFileSync(path.join(ROOT, 'media', 'tab-' + t + '.svg'), 'utf8'), /fill="#[0-9A-F]{6}"/i, 'tab icon has an explicit colour');
