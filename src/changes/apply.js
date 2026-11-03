@@ -166,12 +166,16 @@ async function currentValues(conn, item, keys, refs, metadata) {
 
 const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 
+const realDate = d => { const t = new Date(d + 'T00:00:00Z'); return !isNaN(t) && t.toISOString().slice(0, 10) === d; };
+const localToday = () => { const n = new Date(); return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0'); };
+const ipNumber = ip => ip.split('.').reduce((n, x) => n * 256 + Number(x), 0);
+
 function validate(changes, columns) {
   const problems = [];
   for (const c of changes) {
     const { cat, name } = splitKey(c.key);
     const a = c.after || {};
-    if (cat === 'object') {
+    if (cat === 'object' && columns) {
       for (const [flag, needs] of Object.entries(OBJECT_REQUIRES)) {
         if (a[flag] && columns.includes(flag)) for (const n of needs) if (!a[n]) problems.push(name + ': ' + flag + ' needs ' + n);
       }
@@ -179,23 +183,34 @@ function validate(changes, columns) {
     if (cat === 'field' && a.edit && !a.read) problems.push(name + ': Edit needs Read');
     if ((cat === 'user' || ENTITY_CATS.includes(cat)) && typeof a.enabled !== 'boolean') problems.push(name + ': no value');
     if (cat === 'recordType' && a.default && !a.visible) problems.push(name + ': a default record type must be assigned');
-    if (cat === 'assignment' && a.expires && !/^\d{4}-\d{2}-\d{2}$/.test(a.expires)) problems.push(name + ': expiry must be a date');
+    if (cat === 'assignment' && a.expires && (!/^\d{4}-\d{2}-\d{2}$/.test(a.expires) || !realDate(a.expires))) problems.push((c.label || name) + ': expiry must be a date');
+    else if (cat === 'assignment' && a.expires && a.expires !== (c.before || {}).expires && a.expires < localToday()) problems.push((c.label || name) + ': the expiry date ' + a.expires + ' is in the past; Salesforce needs a future date');
     if (cat === 'tab' && !['Visible', 'Available', 'None'].includes(a.visibility)) problems.push(name + ': unknown tab visibility');
     if (cat === 'groupComponent' && typeof a.included !== 'boolean') problems.push(name + ': no value');
     if (cat === 'loginIpRanges') for (const r of a.ranges || []) {
       if (!IPV4.test(r.startAddress) || !IPV4.test(r.endAddress)) problems.push('IP range ' + r.startAddress + ' – ' + r.endAddress + ': not an IPv4 address');
+      else if (ipNumber(r.startAddress) > ipNumber(r.endAddress)) problems.push('IP range ' + r.startAddress + ' – ' + r.endAddress + ': the start address is after the end address');
     }
     if (cat === 'loginHours') for (const [k, v] of Object.entries(a)) if (v !== '' && v != null && !(Number(v) >= 0 && Number(v) <= 1440)) problems.push('Login hours ' + k + ': out of range');
   }
   return problems;
 }
 
+/** Changes the screen can send: every category this module knows how to save. */
+const KNOWN_CATS = ['object', 'field', 'user', 'assignment', 'groupComponent', 'tab'].concat(ENTITY_CATS, META_CATS);
+
 async function apply(conn, item, changes, options) {
   const o = options || {};
+  if (!Array.isArray(changes)) throw new Error('These changes are not valid: expected a list of changes.');
+  const malformed = changes.filter(c => !c || typeof c.key !== 'string' || !/^\w+:.+/.test(c.key) || !KNOWN_CATS.includes(splitKey(c.key).cat) || !c.after || typeof c.after !== 'object');
+  if (malformed.length) throw new Error('These changes are not valid:\n' + malformed.slice(0, 5).map(c => (c && c.key ? c.key : 'an entry') + ': ' + (c && c.key && !KNOWN_CATS.includes(splitKey(String(c.key)).cat) ? 'unknown kind of change' : 'no new value')).join('\n'));
   for (const c of changes) {
     const blocked = editBlocker(item, splitKey(c.key).cat);
     if (blocked) throw new Error(blocked);
   }
+  // Everything that can be checked without the org is checked before anything is read from it.
+  const early = validate(changes, null);
+  if (early.length) throw new Error('These changes are not valid:\n' + early.join('\n'));
   if (!changes.length) return { status: 'saved', count: 0, mismatches: [], snapshot: [] };
   const psId = item.permissionSetId;
   const metaChanges = changes.filter(c => META_CATS.includes(splitKey(c.key).cat));

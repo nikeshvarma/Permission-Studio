@@ -1,6 +1,6 @@
 'use strict';
 
-const { str, assertId } = require('./soql');
+const { str, assertId, likeAnywhere } = require('./soql');
 const { key, emptyModel } = require('../model/model');
 
 /**
@@ -389,9 +389,10 @@ async function loadAssignments(conn, item) {
 
 /** Active users whose name or username contains `text`, for adding assignments. */
 async function searchUsers(conn, text) {
-  const t = String(text || '').trim().replace(/[%_\\']/g, '');
+  const t = String(text || '').trim().slice(0, 80);
   if (t.length < 2) return [];
-  const like = str('%' + t + '%');
+  // Searched for as typed: an apostrophe (O'Brien) or underscore is a character, not syntax.
+  const like = likeAnywhere(t);
   const r = await conn.query('SELECT Id, Name, Username, Profile.Name FROM User WHERE IsActive = true AND (Name LIKE ' + like + ' OR Username LIKE ' + like + ') ORDER BY Name LIMIT 25');
   return r.records.map(u => ({ userId: u.Id, name: u.Name, username: u.Username, profile: (u.Profile && u.Profile.Name) || '' }));
 }

@@ -1154,13 +1154,19 @@
   }
 
   // ---------- tool pages ----------
+  /**
+   * Find access and History only read, so they open straight away and unsaved
+   * changes wait for you to come back. The grant screens save to many items,
+   * possibly the one being edited, so they ask first.
+   */
   function openTool(t) {
-    guard(() => {
+    const go = () => {
       ui.tool = t;
       if (t === 'history') { historyData = null; send({ type: 'history' }); }
       if ((t === 'lookup' || t === 'wizard' || t === 'objwizard') && catalog === null) { catalog = 'loading'; send({ type: 'objectCatalog' }); }
       renderMain(); renderTop(); main.scrollTop = 0;
-    });
+    };
+    if (t === 'lookup' || t === 'history') go(); else guard(go);
   }
   function closeTool() { ui.tool = null; renderMain(); renderTop(); }
   function toolPage() {
@@ -1172,13 +1178,118 @@
     return h('div', { class: 'tool' }, [h('div', { class: 'page-header' }, [back, h('div', { class: 'ph-title tool-title' }, [h('h1', { text: titles[ui.tool][0] })]), h('p', { class: 'muted flat', text: titles[ui.tool][1] })]),
       h('div', { class: 'tab-body' }, body)]);
   }
+  /**
+   * Best matches first: exact, then the API name starting with the text, then a
+   * word of the label starting with it, then anything containing it.
+   */
+  function rankMatches(items, q) {
+    if (!q) return items.slice();
+    const score = it => {
+      const v = it.value.toLowerCase(); const l = (it.label || '').toLowerCase();
+      if (v === q || l === q) return 0;
+      if (v.startsWith(q)) return 1;
+      if (l.startsWith(q)) return 2;
+      if ((' ' + l).includes(' ' + q) || v.includes('.' + q) || v.includes('__' + q)) return 3;
+      if (v.includes(q) || l.includes(q)) return 4;
+      return -1;
+    };
+    return items.map(it => [score(it), it]).filter(([sc]) => sc >= 0).sort((a, b) => a[0] - b[0] || a[1].value.length - b[1].value.length || a[1].value.localeCompare(b[1].value)).map(x => x[1]);
+  }
+  const COMBO_LIMIT = 50;
+  /**
+   * A themed search-and-pick box, used instead of the browser's own suggestion
+   * dropdown (which ignores the theme, tries to show every one of a thousand
+   * objects, and can stay open in a VS Code panel). At most 50 matches, best
+   * first; ↑/↓ and Enter to pick, Esc, Tab or a click elsewhere to close.
+   * Typing never redraws the page: only the list under the box changes.
+   *   o: { fid, value, placeholder, aria, items() → [{ value, label }], loading(), onInput(text), onPick(value), onEnter(text) }
+   * The element gets .refresh(), to redraw an open list when its items arrive.
+   */
+  function combobox(o) {
+    const listId = 'cb-' + o.fid.replace(/[^\w-]/g, '-');
+    const input = h('input', { type: 'text', class: 'text', value: o.value || '', placeholder: o.placeholder || '', 'data-fid': o.fid, 'aria-label': o.aria, role: 'combobox',
+      'aria-autocomplete': 'list', 'aria-expanded': 'false', 'aria-controls': listId, autocomplete: 'off', spellcheck: 'false' });
+    const list = h('ul', { class: 'combo-list', id: listId, role: 'listbox', 'aria-label': o.aria, hidden: true });
+    const wrap = h('div', { class: 'combo' }, [input, list]);
+    let shown = [];
+    let active = -1;
+    const isOpen = () => !list.hidden;
+    const close = () => { list.hidden = true; input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); active = -1; };
+    const mark = () => {
+      [...list.children].forEach((li, i) => { li.classList.toggle('on', i === active); if (li.getAttribute('role') === 'option') li.setAttribute('aria-selected', String(i === active)); });
+      const li = active >= 0 ? list.children[active] : null;
+      if (li) { input.setAttribute('aria-activedescendant', li.id); li.scrollIntoView({ block: 'nearest' }); } else input.removeAttribute('aria-activedescendant');
+    };
+    const draw = () => {
+      const q = input.value.trim().toLowerCase();
+      const all = o.items();
+      const ranked = rankMatches(all, q);
+      shown = ranked.slice(0, COMBO_LIMIT);
+      if (active >= shown.length) active = shown.length - 1;
+      const rows = shown.map((it, i) => h('li', { id: listId + '-' + i, role: 'option', 'aria-selected': 'false', onmousedown: e => { e.preventDefault(); pick(it); } }, [
+        h('span', { class: 'cv', text: it.value }), it.label && it.label !== it.value ? h('span', { class: 'cl', text: it.label }) : null]));
+      if (!shown.length) rows.push(h('li', { class: 'combo-note', text: o.loading && o.loading() ? 'Loading…' : all.length ? 'No matches' : 'Nothing to pick from' }));
+      else if (ranked.length > shown.length) rows.push(h('li', { class: 'combo-note', text: 'Showing ' + shown.length + ' of ' + ranked.length + ': keep typing to narrow it down' }));
+      list.replaceChildren(...rows);
+      place();
+      list.hidden = false; input.setAttribute('aria-expanded', 'true');
+      mark();
+    };
+    // Placed against the window, so cards (which clip their content) can't cut it off.
+    // Below the box, or above it when there's more room there.
+    const place = () => {
+      const r = input.getBoundingClientRect();
+      const below = window.innerHeight - r.bottom - 8;
+      const above = r.top - 8;
+      const up = below < 200 && above > below;
+      const w = Math.min(Math.max(r.width, 440), window.innerWidth - 8);
+      list.style.left = Math.max(4, Math.min(r.left, window.innerWidth - w - 4)) + 'px';
+      list.style.width = w + 'px';
+      list.style.maxHeight = Math.min(320, Math.max(120, up ? above : below)) + 'px';
+      list.style.top = up ? '' : (r.bottom + 2) + 'px';
+      list.style.bottom = up ? (window.innerHeight - r.top + 2) + 'px' : '';
+    };
+    const pick = it => { input.value = it.value; close(); if (o.onInput) o.onInput(it.value); o.onPick(it.value); };
+    /** The typed text, if it names an item exactly (any case), as that item's value. */
+    const exact = () => { const t = input.value.trim().toLowerCase(); const it = t && o.items().find(x => x.value.toLowerCase() === t); return it ? it.value : null; };
+    input.addEventListener('input', () => { active = -1; if (o.onInput) o.onInput(input.value); draw(); });
+    input.addEventListener('mousedown', () => { if (!isOpen()) setTimeout(draw, 0); });
+    input.addEventListener('keydown', e => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); if (!isOpen()) draw(); active = Math.min(active + 1, shown.length - 1); mark(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); if (isOpen()) { active = Math.max(active - 1, 0); mark(); } }
+      else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (isOpen() && active >= 0 && shown[active]) { pick(shown[active]); return; }
+        close();
+        const v = exact();
+        if (v) { input.value = v; if (o.onInput) o.onInput(v); o.onPick(v); }
+        if (o.onEnter) o.onEnter(input.value);
+      }
+      else if (e.key === 'Escape') { if (isOpen()) { e.preventDefault(); e.stopPropagation(); close(); } }
+      else if (e.key === 'Tab') close();
+    });
+    // Leaving the box: close the list; an exactly typed name still counts as picked.
+    input.addEventListener('change', () => { const v = exact(); if (v && v !== o.value) { input.value = v; o.onPick(v); } });
+    input.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== input) close(); }, 0));
+    wrap.refresh = () => { if (isOpen()) draw(); };
+    return wrap;
+  }
+  // An open list closes when anything scrolls (other than the list itself) or the window resizes.
+  const closeCombos = e => { for (const l of document.querySelectorAll('.combo-list:not([hidden])')) if (!e || !l.contains(e.target)) { l.hidden = true; const i = l.parentElement.querySelector('input'); if (i) i.setAttribute('aria-expanded', 'false'); } };
+  document.addEventListener('scroll', closeCombos, true);
+  window.addEventListener('resize', () => closeCombos());
+  /** Picks an object for the grant screens. */
   function objectPicker(value, onPick, fid, objectPermsOnly) {
-    const list = (Array.isArray(catalog) ? catalog : []).filter(o => !objectPermsOnly || o.objectPerms !== false);
-    const id = 'objects-' + fid;
-    return h('div', { class: 'picker' }, [
-      h('input', { type: 'text', class: 'text', list: id, value, placeholder: catalog === 'loading' ? 'Loading objects…' : 'Object API name, e.g. Lead', 'data-fid': fid, 'aria-label': 'Object',
-        onchange: e => { lastFocus = fid; onPick(e.target.value.trim()); } }),
-      h('datalist', { id }, list.map(o => h('option', { value: o.name, text: o.label })))]);
+    return combobox({ fid, value, aria: 'Object', placeholder: catalog === 'loading' ? 'Loading objects…' : 'Type an object, e.g. Lead',
+      loading: () => !Array.isArray(catalog),
+      items: () => (Array.isArray(catalog) ? catalog : []).filter(x => !objectPermsOnly || x.objectPerms !== false).map(x => ({ value: x.name, label: x.label })),
+      onPick: v => { lastFocus = fid; onPick(v); } });
+  }
+  /** Redraws any open picker in place (for example when the object list arrives). True if one was open. */
+  function refreshCombos() {
+    let open = false;
+    for (const el of main.querySelectorAll('.combo')) { if (el.refresh && !el.querySelector('.combo-list').hidden) { el.refresh(); open = true; } }
+    return open;
   }
 
   function lookupPage() {
@@ -1211,14 +1322,44 @@
     const fld = (lookup.fieldsFor === obj.name && lookup.fields || []).find(f => f.apiName.toLowerCase() === fp || f.label.toLowerCase() === fp);
     return { object: obj.name, field: fld ? fld.apiName : '', pendingField: !fld && fp ? fp : '' };
   }
+  const OBJECT_LEVELS = [['read', 'Read'], ['create', 'Create'], ['edit', 'Edit'], ['delete', 'Delete'], ['viewAll', 'View All'], ['modifyAll', 'Modify All']];
+  const FIELD_LEVELS = [['read', 'Read'], ['edit', 'Edit']];
+  /** What the Find access box offers: objects, or once "Object." is typed, that object's fields. */
+  function targetItems() {
+    const text = lookup.target || '';
+    const t = parseTarget(text);
+    if (text.includes('.') && t.object) return lookup.fieldsFor === t.object ? (lookup.fields || []).map(f => ({ value: t.object + '.' + f.apiName, label: f.label })) : [];
+    return (Array.isArray(catalog) ? catalog : []).map(x => ({ value: x.name, label: x.label }));
+  }
+  /** If the box names an object whose fields haven't been asked for yet, ask once. */
+  function fetchFieldsFor(t) {
+    if (t.object && lookup.fieldsFor !== t.object) { lookup.fieldsFor = t.object; lookup.fields = null; lookup.object = t.object; send({ type: 'wizardFields', object: t.object }); }
+  }
+  /**
+   * While typing, nothing is redrawn: the open list under the box and the
+   * Access choices are updated in place. Returns false when the box isn't on screen.
+   */
+  function refreshLookupInputs() {
+    const box = main.querySelector('.combo [data-fid="lk.target"]');
+    if (!box) return false;
+    const combo = box.closest('.combo');
+    if (combo && combo.refresh) combo.refresh();
+    const t = parseTarget(lookup.target);
+    const sel = main.querySelector('select[data-fid="lk.level"]');
+    const levels = t.field ? FIELD_LEVELS : OBJECT_LEVELS;
+    if (sel && sel.options.length !== levels.length) {
+      if (!levels.some(l => l[0] === lookup.level)) lookup.level = 'read';
+      sel.replaceChildren(...levels.map(([v, label]) => h('option', { value: v, selected: v === lookup.level ? true : null, text: label })));
+      sel.value = lookup.level;
+    }
+    return true;
+  }
   function accessInputs() {
     if (catalog === null) { catalog = 'loading'; send({ type: 'objectCatalog' }); }
     const t = parseTarget(lookup.target);
-    if (t.object && lookup.fieldsFor !== t.object && t.pendingField !== undefined) { lookup.fieldsFor = t.object; lookup.fields = null; lookup.object = t.object; send({ type: 'wizardFields', object: t.object }); }
-    const levels = t.field ? [['read', 'Read'], ['edit', 'Edit']] : [['read', 'Read'], ['create', 'Create'], ['edit', 'Edit'], ['delete', 'Delete'], ['viewAll', 'View All'], ['modifyAll', 'Modify All']];
+    if (t.pendingField !== undefined) fetchFieldsFor(t);
+    const levels = t.field ? FIELD_LEVELS : OBJECT_LEVELS;
     if (!levels.some(l => l[0] === lookup.level)) lookup.level = 'read';
-    const options = (Array.isArray(catalog) ? catalog : []).map(o => h('option', { value: o.name, label: o.label }))
-      .concat(t.object && lookup.fieldsFor === t.object ? (lookup.fields || []).map(f => h('option', { value: t.object + '.' + f.apiName, label: f.label })) : []);
     const find = () => {
       const x = parseTarget(lookup.target);
       if (!x.object) { toast('warning', 'Type an object, such as Lead, or a field, such as Lead.Rating, then pick it from the list.', { title: 'Nothing to look up' }); return; }
@@ -1227,10 +1368,13 @@
       send({ type: 'lookup', object: x.object, field: x.field || null, level: lookup.level });
       addRecent({ mode: 'access', object: x.object, field: x.field, level: lookup.level, label: x.object + (x.field ? '.' + x.field : '') + (lookup.level !== 'read' ? ' (' + (SHORT[lookup.level] || lookup.level) + ')' : '') });
     };
-    return [h('label', { class: 'fld grow' }, [h('span', { text: 'Object or field' }), h('input', { type: 'text', class: 'text', list: 'lk-targets', value: lookup.target || '', 'data-fid': 'lk.target',
-        placeholder: 'Lead, or Lead.Rating', autocomplete: 'off', oninput: e => { lookup.target = e.target.value; const y = parseTarget(lookup.target); if (y.object && lookup.fieldsFor !== y.object) { lookup.fieldsFor = y.object; lookup.fields = null; send({ type: 'wizardFields', object: y.object }); } debounce(renderMain); },
-        onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); find(); } } }), h('datalist', { id: 'lk-targets' }, options)]),
-      h('label', { class: 'fld' }, [h('span', { text: 'Access' }), select(levels, lookup.level, v => { lookup.level = v; renderMain(); }, false, 'lk.level', 'Access')]),
+    return [h('div', { class: 'fld grow' }, [h('span', { text: 'Object or field' }), combobox({ fid: 'lk.target', value: lookup.target || '', aria: 'Object or field', placeholder: 'Lead, or Lead.Rating',
+        loading: () => !Array.isArray(catalog) || ((lookup.target || '').includes('.') && parseTarget(lookup.target).object && !lookup.fields),
+        items: targetItems,
+        onInput: v => { lookup.target = v; fetchFieldsFor(parseTarget(v)); refreshLookupInputs(); },
+        onPick: v => { lookup.target = v; refreshLookupInputs(); },
+        onEnter: () => find() })]),
+      h('label', { class: 'fld' }, [h('span', { text: 'Access' }), select(levels, lookup.level, v => { lookup.level = v; }, false, 'lk.level', 'Access')]),
       h('button', { class: 'btn brand', disabled: lookup.busy, onclick: find, text: lookup.busy ? 'Looking…' : 'Find' })];
   }
   function permissionInputs(sys) {
@@ -1577,7 +1721,8 @@
     return out;
   }
 
-  function confirmOk(t) { const v = String(t || '').trim(); return v === ctx.org.alias || v === ctx.org.username; }
+  /** The same rule as the extension's own check: the org's alias or username, any case, spaces ignored. */
+  function confirmOk(t) { const v = String(t || '').trim().toLowerCase(); return !!v && [ctx.org.alias, ctx.org.username].some(n => n && String(n).toLowerCase() === v); }
 
   function historyPage() {
     if (historyData === null) { historyData = 'loading'; send({ type: 'history' }); }
@@ -1884,9 +2029,7 @@
   function updateSaveBtn() {
     const b = document.getElementById('saveBtn');
     if (!b) return;
-    const need = ctx.production ? (ctx.org.alias || ctx.org.username) : null;
-    const typed = (modal && modal.confirm || '').trim();
-    b.disabled = !!saving || (need && typed !== ctx.org.alias && typed !== ctx.org.username);
+    b.disabled = !!saving || (ctx.production && !confirmOk(modal && modal.confirm));
   }
   function doSave(force) {
     saving = { label: 'Checking the org for changes…', done: 0, total: 0 };
@@ -1926,7 +2069,8 @@
         lists = Object.assign({}, m.lists, { partial: !!m.partial, profilesFiltered: !!m.profilesFiltered }); listsMeta = { savedAt: m.savedAt, refreshing: m.refreshing };
         if (!depsAsked && !m.refreshing) { depsAsked = true; send({ type: 'permDeps' }); }
         if (m.kinds) { KINDS = ALL_KINDS.filter(k => m.kinds.includes(k[0])); if (!m.kinds.includes(ui.kind)) { ui.kind = KINDS[0][0]; save(); } }
-        const known = ui.selected && Object.values(lists).some(l => l.some(r => r.key === ui.selected));
+        // Only the three lists: the lists object also carries flags (partial, profilesFiltered).
+        const known = ui.selected && ['permissionSet', 'group', 'profile'].some(k => Array.isArray(lists[k]) && lists[k].some(r => r.key === ui.selected));
         if (!known && ui.selected) { ui.selected = null; detail = null; save(); }
         renderTop(); renderSide();
         if (known && (!detail || detail.key !== ui.selected)) {
@@ -1967,6 +2111,8 @@
         objectPage = { key: m.key, object: m.object, state: 'error', message: m.message }; renderMain(); break;
       case 'objectCatalog':
         catalog = Array.isArray(m.objects) ? m.objects : [];
+        if (ui.tool === 'lookup' && (lookup.mode || 'access') === 'access' && refreshLookupInputs()) break;
+        if (ui.tool && refreshCombos()) break;
         if (ui.tool) { renderMain(); break; }
         if (!Array.isArray(m.objects) && m.message) toast('error', m.message, { title: 'Could not list objects' });
         renderMain(); break;
@@ -1974,6 +2120,8 @@
         if (saving) { saving = { label: m.label, done: m.done, total: m.total }; renderModal(); }
         break;
       case 'saveResult': {
+        // Another save is still running: leave its progress on screen.
+        if (m.status === 'busy') { toast('info', m.message, { title: 'Saving' }); break; }
         saving = null;
         if (m.status === 'conflict') { openModal({ kind: 'conflict', conflicts: m.conflicts, confirm: modal && modal.confirm }); renderFooter(); break; }
         if (m.status === 'saved') {
@@ -2034,6 +2182,8 @@
         if (lookup.object === m.object || lookup.fieldsFor === m.object) lookup.fields = m.fields;
         if (wizard.object === m.object) wizard.fields = m.fields;
         if (m.message) toast('error', m.message, { title: 'Could not read ' + m.object });
+        // In Find access, update the suggestions in place so the box keeps its open dropdown.
+        if (ui.tool === 'lookup' && (lookup.mode || 'access') === 'access' && refreshLookupInputs()) break;
         if (ui.tool === 'lookup' || ui.tool === 'wizard') renderMain();
         break;
       case 'wizardPlan': wizard.busy = false; wizard.plan = m; if (ui.tool === 'wizard') renderMain(); break;

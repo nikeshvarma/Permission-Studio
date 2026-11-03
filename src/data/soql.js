@@ -5,6 +5,14 @@ function str(value) {
   return "'" + String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
 }
 
+/**
+ * A LIKE pattern that matches `text` anywhere, with the text taken literally:
+ * quotes and backslashes are escaped for the string, % and _ so they aren't wildcards.
+ */
+function likeAnywhere(text) {
+  return "'%" + String(text).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/%/g, '\\%').replace(/_/g, '\\_') + "%'";
+}
+
 function chunk(items, size) {
   const out = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
@@ -17,4 +25,4 @@ function assertId(id) {
   return id;
 }
 
-module.exports = { str, chunk, assertId };
+module.exports = { str, likeAnywhere, chunk, assertId };

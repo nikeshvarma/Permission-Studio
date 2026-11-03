@@ -2,6 +2,27 @@
 
 All notable changes to Permission Studio. Versions follow `major.minor.patch`; every delivered change raises the patch number.
 
+## 2.2.4
+
+QA round: what users can get wrong, and what the org can throw at the extension. See docs/QA.md.
+
+- Fixed: when the open item disappeared from refreshed lists (deleted in Setup, another org, a list type switched off), the list update stopped halfway with an error and the screen kept a stale item.
+- Fixed: a second save while one was running (double-click, Ctrl+S during a save) also wrote and took a second snapshot. One save runs at a time; the other is told to wait. The same applies to the bulk screens.
+- Fixed: user search dropped apostrophes and underscores, so "O'Brien" couldn't be found. Text is now searched for as typed.
+- Fixed: the production confirmation was case-sensitive, and the review dialog, the bulk screens and the save itself each had their own copy of the check. One rule everywhere: the alias or username, any case, spaces ignored.
+- Fixed: Find access and History asked to discard unsaved changes before opening; they only read, so they open straight away and the changes wait. The grant screens still ask.
+- Saving to a permission set deleted in Setup now says so plainly and refreshes the lists.
+- Checked before anything is written or read: malformed changes, API names (start with a letter, no double or trailing underscore, at most 80 characters), labels, descriptions (at most 255 characters), impossible or past expiry dates, IP ranges whose start is after their end.
+- Tickets: line breaks and runs of spaces become single spaces before the 80-character limit.
+
+## 2.2.3
+
+- Fixed: the object boxes in Grant object access, Grant field access and Find access used the browser's own suggestion dropdown, which ignored the theme (white), tried to show every object in the org at once and could stay stuck open in VS Code. They now use Permission Studio's own picker: themed, at most 50 matches with the best first (exact name, then names starting with what you typed, then label words), ↑/↓ and Enter to pick, Esc, Tab or a click elsewhere to close. Typing an exact API name and pressing Enter still works. In Find access, typing "Lead." switches the list to Lead's fields.
+
+## 2.2.2
+
+- Fixed: in Find access, the suggestion list under "Object or field" closed after every key, so a suggestion couldn't be picked. Typing no longer redraws the page; the suggestions (objects, then the object's fields) and the Access choices are updated in place.
+
 ## 2.2.1
 
 Code review: bugs fixed, dead code removed, nothing new to learn.

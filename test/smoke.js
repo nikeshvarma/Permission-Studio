@@ -250,7 +250,7 @@ test('record writes go through sObject Collections, all or none', async () => {
   assert.ok(!F.T.FieldPermissions.some(r => r.Field === 'Lead.Description'), 'nothing from the failed call was written');
   await c.destroy('FieldPermissions', [id]);
   assert.ok(!F.T.FieldPermissions.some(r => r.Id === id));
-  const many = Array.from({ length: 450 }, (_, i) => ({ ParentId: '0PS0000000000' + String(10 + i).padStart(2, '0') + 'AAA', SobjectType: 'Lead', Field: 'Lead.Rating', PermissionsRead: true }));
+  const many = Array.from({ length: 450 }, (_, i) => ({ ParentId: PS1, SobjectType: 'Lead', Field: 'Lead.Batch' + i + '__c', PermissionsRead: true }));
   S.requests = [];
   assert.strictEqual((await c.create('FieldPermissions', many)).length, 450);
   assert.strictEqual(S.requests.filter(r => r.method === 'POST').length, 3, '200 per call');
@@ -1278,7 +1278,7 @@ test('rename and clone permission sets; clones carry every kind of access', asyn
     await mp.editPs({ key: cl.key, label: 'Sales Ops Clone', name: 'Sales_Ops_Clone', description: 'Renamed' });
     assert.ok(F.T.PermissionSet.some(x => x.Id === id && x.Name === 'Sales_Ops_Clone' && x.Label === 'Sales Ops Clone'));
     await mp.editPs({ key: cl.key, label: 'Bad', name: 'Bad__Name' });
-    assert.match(posts(p, 'psSaved').pop().error, /only contain underscores/);
+    assert.match(posts(p, 'psSaved').pop().error, /can’t contain two underscores in a row/, 'checked before anything is sent');
   });
 });
 
@@ -2229,6 +2229,216 @@ test('a save that finds a conflict doesn\u2019t leave background refresh switche
   assert.strictEqual(await mp.autoRefresh(), true, 'auto-refresh still runs');
 });
 
+// ---------- QA: what users can get wrong, and what the org can throw at us ----------
+async function qaPanel(over) {
+  const vscode = require('vscode');
+  const svc = panelServices(over);
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, svc);
+  const p = mp.show();
+  await mp.load();
+  return { mp, p, svc };
+}
+
+test('QA Q1-Q2: saving nothing, or changes the extension doesn\u2019t know, is refused politely', async () => {
+  resetOrg();
+  const { mp, p } = await qaPanel();
+  const key = 'permissionSet:' + PS1;
+  await mp.select(key);
+  await mp.save({ key, changes: [] });
+  let r = posts(p, 'saveResult').pop();
+  assert.ok(r && r.status !== 'saved' || (r && r.count === 0), 'no-op save: ' + JSON.stringify(r));
+  await mp.save({ key, changes: [{ key: 'bogus:Thing', before: null, after: { x: true } }] });
+  r = posts(p, 'saveResult').pop();
+  assert.strictEqual(r.status, 'error', JSON.stringify(r));
+  assert.ok(r.message && r.message.length < 400, 'a readable reason');
+  await mp.save({ key, changes: [{ key: 'field:Lead.Rating', before: null }] });
+  r = posts(p, 'saveResult').pop();
+  assert.deepStrictEqual([r.status, /field:Lead\.Rating: no new value/.test(r.message)], ['error', true], 'a change without a value: ' + r.message);
+  await mp.save({ key, changes: [null, 'x'] });
+  assert.strictEqual(posts(p, 'saveResult').pop().status, 'error', 'junk entries');
+  assert.strictEqual(mp._saving, false);
+});
+
+test('QA Q3: the permission set was deleted in Setup while you edited it', async () => {
+  resetOrg();
+  const { mp, p } = await qaPanel();
+  const key = 'permissionSet:' + PS1;
+  await mp.select(key);
+  F.T.PermissionSet = F.T.PermissionSet.filter(x => x.Id !== PS1);
+  for (const t of ['ObjectPermissions', 'FieldPermissions', 'SetupEntityAccess', 'PermissionSetAssignment', 'PermissionSetTabSetting']) F.T[t] = F.T[t].filter(x => x.ParentId !== PS1 && x.PermissionSetId !== PS1);
+  await mp.save({ key, changes: [{ key: 'field:Lead.Industry', label: 'Industry', before: null, after: { read: true, edit: false } }] });
+  const r = posts(p, 'saveResult').pop();
+  assert.strictEqual(r.status, 'error', JSON.stringify(r));
+  assert.match(r.message, /^Sales Ops no longer exists in .*deleted in Setup/, r.message);
+  assert.strictEqual(mp._saving, false);
+  assert.ok(!F.T.FieldPermissions.some(x => x.ParentId === PS1), 'nothing written for a permission set that no longer exists');
+});
+
+test('QA Q4: the network drops in the middle of a save', async () => {
+  resetOrg();
+  const { mp, p } = await qaPanel();
+  const key = 'permissionSet:' + PS1;
+  await mp.select(key);
+  mp.conn.instanceUrl = 'http://127.0.0.1:9';
+  mp.conn.forcedMode = 'rest';
+  await mp.save({ key, changes: [{ key: 'field:Lead.Industry', label: 'Industry', before: null, after: { read: true, edit: false } }] });
+  const r = posts(p, 'saveResult').pop();
+  assert.strictEqual(r.status, 'error', JSON.stringify(r));
+  assert.ok(/ECONNREFUSED|reach|network|connect/i.test(r.message), 'says it could not reach Salesforce: ' + r.message);
+  assert.strictEqual(mp._saving, false, 'background refresh is not left off');
+});
+
+test('QA Q5: double-clicking Save does not write twice', async () => {
+  resetOrg();
+  const { mp, p } = await qaPanel();
+  const key = 'permissionSet:' + PS1;
+  await mp.select(key);
+  const ch = [{ key: 'field:Lead.Description', label: 'Description', before: null, after: { read: true, edit: true } }];
+  await Promise.all([mp.save({ key, changes: ch }), mp.save({ key, changes: ch })]);
+  assert.strictEqual(F.T.FieldPermissions.filter(x => x.ParentId === PS1 && x.Field === 'Lead.Description').length, 1, 'one row, not two');
+  const replies = posts(p, 'saveResult');
+  assert.deepStrictEqual(replies.map(r => r.status).sort(), ['busy', 'saved'], 'one save; the other is told one is running');
+  assert.match(replies.find(r => r.status === 'busy').message, /already running/);
+  assert.strictEqual(mp._saving, false);
+});
+
+test('QA Q6: production confirmation forgives case and spaces, not a wrong name', async () => {
+  resetOrg();
+  const { mp, p } = await qaPanel({ detectProduction: async () => true });
+  const key = 'permissionSet:' + PS1;
+  await mp.select(key);
+  const ch = [{ key: 'field:Lead.Description', label: 'Description', before: null, after: { read: true, edit: false } }];
+  await mp.save({ key, changes: ch, confirm: 'not-the-org' });
+  assert.strictEqual(posts(p, 'saveResult').pop().status, 'error');
+  await mp.save({ key, changes: ch, confirm: '  ' + mp.ctx.org.alias.toUpperCase() + ' ' });
+  assert.strictEqual(posts(p, 'saveResult').pop().status, 'saved', 'case and spaces do not matter');
+});
+
+test('QA Q7: user search with apostrophes, quotes, SOQL and wildcards', async () => {
+  resetOrg();
+  F.T.User.push({ Id: '005000000000099AAA', Name: "Sean O'Brien", Username: 'sean@example.com', IsActive: true, ProfileId: '00e000000000002AAA', Profile: { Name: 'Custom: Sales' } });
+  F.T.User.push({ Id: '005000000000098AAA', Name: 'Under_Score', Username: 'us@example.com', IsActive: true, ProfileId: '00e000000000002AAA', Profile: { Name: 'Custom: Sales' } });
+  const c = conn();
+  assert.deepStrictEqual((await loader.searchUsers(c, "O'Bri")).map(u => u.name), ["Sean O'Brien"], 'apostrophes are searched for, not dropped');
+  assert.deepStrictEqual((await loader.searchUsers(c, 'r_S')).map(u => u.name), ['Under_Score'], 'an underscore is a character, not a wildcard');
+  for (const t of ["' OR Name LIKE '%", '%%', "\\'", '"; DROP', '😀😀']) await loader.searchUsers(c, t); // must not throw
+});
+
+test('QA Q8: a very large save (5,100 field changes) still goes through', async () => {
+  resetOrg();
+  const c = conn();
+  const changes = [];
+  for (let i = 0; i < 5100; i++) changes.push({ key: 'field:Lead.Q' + i + '__c', before: null, after: { read: true, edit: false } });
+  const r = await applyMod.apply(c, item(), changes, saveOpts());
+  assert.strictEqual(r.status, 'saved', JSON.stringify(r).slice(0, 300));
+  assert.strictEqual(F.T.FieldPermissions.filter(x => x.ParentId === PS1 && /^Lead\.Q\d+__c$/.test(x.Field)).length, 5100);
+});
+
+test('QA Q9-Q10: cloning with a taken or an invalid API name', async () => {
+  resetOrg();
+  const { mp, p } = await qaPanel();
+  const key = 'permissionSet:' + PS1;
+  await mp.select(key);
+  const before = F.T.PermissionSet.length;
+  for (const name of ['Sales_Ops', '9_Starts_With_A_Digit', 'Has Space', 'Double__Underscore', 'Ends_', 'x'.repeat(81), '']) {
+    await mp.clonePs({ key, label: 'Copy', name });
+    const r = posts(p, 'psSaved').pop();
+    assert.ok(r && r.error, name + ': ' + JSON.stringify(r));
+  }
+  assert.strictEqual(F.T.PermissionSet.length, before, 'nothing half-created');
+});
+
+test('QA Q11: odd tickets: table characters, line breaks, far too long', async () => {
+  resetOrg();
+  const { mp, p, svc } = await qaPanel();
+  const key = 'permissionSet:' + PS1;
+  await mp.select(key);
+  await mp.save({ key, ticket: 'US | 1\nsecond line ' + 'x'.repeat(200), changes: [{ key: 'field:Lead.Industry', label: 'Industry', before: null, after: { read: true, edit: false } }] });
+  const e = (await history.readLog(svc.projectDir, {}))[0];
+  assert.ok(e.ticket.length <= 80 && !e.ticket.includes('\n'), JSON.stringify(e.ticket));
+  const md = summaryMod.toMarkdown([e], {});
+  assert.ok(md.split('\n')[0].startsWith('### ') && !md.split('\n')[0].includes('\n'));
+});
+
+test('QA Q12-Q14: looking up things that don\u2019t exist; grants and removals with nothing chosen', async () => {
+  resetOrg();
+  const { mp, p } = await qaPanel();
+  await mp.lookup({ object: 'Nope__c', field: null, level: 'read' });
+  let r = posts(p, 'lookupResult').pop();
+  assert.ok(r.error || (r.result && (r.result.error || r.result.users.length === 0)), JSON.stringify(r).slice(0, 200));
+  await mp.lookup({ object: 'Lead', field: 'NotAField__c', level: 'edit' });
+  r = posts(p, 'lookupResult').pop();
+  assert.ok(r.error || (r.result && (r.result.error || r.result.users.length === 0)));
+  await mp.lookupPermission({ kind: 'system', name: 'NoSuchPermission', label: 'X' });
+  assert.ok(posts(p, 'lookupResult').pop().result.error, 'unknown system permission: an error, not a crash');
+  await mp.revokePlan({ object: 'Lead', field: 'Lead.Rating', level: 'read', sourceKeys: [] });
+  assert.deepStrictEqual(posts(p, 'revokePlan').pop().plan, []);
+  await mp.wizardPlan({ object: 'Lead', fields: [], targets: [], level: 'read', grantObject: true });
+  const w = posts(p, 'wizardPlan').pop();
+  assert.ok(w.error || (w.plan && w.plan.length === 0), JSON.stringify(w));
+  await mp.objWizardPlan({ object: 'Lead', perTarget: {}, recordTypes: [], defaultRt: null });
+  const o = posts(p, 'objWizardPlan').pop();
+  assert.ok(o.error || (o.plan && o.plan.length === 0), JSON.stringify(o));
+});
+
+test('QA Q15-Q16: a damaged change log or cache file', async () => {
+  resetOrg();
+  const { mp, p, svc } = await qaPanel();
+  const dir = path.join(svc.projectDir, '.permstudio', 'log');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.appendFileSync(path.join(dir, 'changes.jsonl'), '{"at":"2026-11-01T00:00:00Z","target":"A","changes":[]}\n{not json\n\n' + Buffer.from([0xff, 0xfe, 0x00]).toString('latin1') + '\n');
+  p._send({ type: 'history' });
+  await settle(60);
+  assert.ok(Array.isArray(posts(p, 'history').pop().entries), 'damaged lines are skipped');
+  const cdir = svc.cacheDir || null;
+  if (cdir && fs.existsSync(cdir)) for (const f of fs.readdirSync(cdir)) fs.writeFileSync(path.join(cdir, f), '{truncated');
+  await mp.load({ force: false });
+  assert.ok(posts(p, 'lists').length > 0, 'a damaged cache is ignored');
+});
+
+test('QA Q17: assigning a user someone assigned in Setup a moment ago', async () => {
+  resetOrg();
+  const { mp, p } = await qaPanel();
+  const key = 'permissionSet:' + PS1;
+  await mp.select(key);
+  const cara = F.T.User.find(u => u.Name === 'Cara Diaz');
+  F.T.PermissionSetAssignment.push({ Id: '0Pa000000000077AAA', AssigneeId: cara.Id, PermissionSetId: PS1 });
+  await mp.save({ key, changes: [{ key: 'assignment:' + cara.Id, ref: cara.Id, label: 'Cara Diaz', before: { assigned: false, expires: null }, after: { assigned: true, expires: null } }] });
+  const r = posts(p, 'saveResult').pop();
+  assert.ok(['conflict', 'saved'].includes(r.status), JSON.stringify(r));
+  assert.strictEqual(F.T.PermissionSetAssignment.filter(a => a.AssigneeId === cara.Id && a.PermissionSetId === PS1).length, 1, 'no duplicate assignment');
+});
+
+test('QA Q20: malformed or unexpected messages from the screen are ignored safely', async () => {
+  resetOrg();
+  const { mp, p } = await qaPanel();
+  const before = posts(p, 'toast').length;
+  for (const m of [{}, { type: 'nonsense' }, { type: 'select' }, { type: 'select', key: 'permissionSet:000000000000000AAA' }, { type: 'openObject', key: 'nope', object: 'X' },
+    { type: 'save' }, { type: 'save', key: 'nope', changes: 'not a list' }, { type: 'lookup' }, { type: 'loadAccess', key: 'nope' }, { type: 'persist', name: 'pending', value: { key: 1 } },
+    { type: 'copySummary', snapshotIds: 'x' }, { type: 'wizardPlan' }, { type: 'objWizardPlan' }, { type: 'revokePlan' }, { type: 'checkAssignees' }]) p._send(m);
+  await settle(200);
+  assert.ok(mp.panel, 'still running');
+  await mp.select('permissionSet:' + PS1);
+  assert.ok(posts(p, 'detail').length, 'still works afterwards');
+  void before;
+});
+
+test('QA Q21: impossible or past expiry dates, back-to-front IP ranges, over-long descriptions', async () => {
+  resetOrg();
+  const c = conn();
+  const cara = F.T.User.find(u => u.Name === 'Cara Diaz');
+  const assign = expires => ({ key: 'assignment:' + cara.Id, ref: cara.Id, label: 'Cara Diaz', before: { assigned: false, expires: null }, after: { assigned: true, expires } });
+  await assert.rejects(applyMod.apply(c, item(), [assign('2027-02-30')], saveOpts()), /Cara Diaz: expiry must be a date/);
+  await assert.rejects(applyMod.apply(c, item(), [assign('2020-01-01')], saveOpts()), /2020-01-01 is in the past/);
+  const prof = { kind: 'profile', recordId: '00e000000000002AAA', permissionSetId: '0PS0000000000PRAAA', apiName: 'Custom: Sales', label: 'Custom: Sales' };
+  await assert.rejects(applyMod.apply(c, prof, [{ key: 'loginIpRanges:all', before: { ranges: [] }, after: { ranges: [{ startAddress: '10.0.0.9', endAddress: '10.0.0.1' }] } }], saveOpts({ metadata })),
+    /start address is after the end address/);
+  const { mp, p } = await qaPanel();
+  await mp.select('permissionSet:' + PS1);
+  await mp.clonePs({ key: 'permissionSet:' + PS1, label: 'Copy', name: 'Copy_Ok', description: 'd'.repeat(256) });
+  assert.match(posts(p, 'psSaved').pop().error, /at most 255 characters \(it has 256\)/);
+});
+
 // ---------- extension wiring ----------
 test('activation: commands and settings match package.json; status bar; version and author', async () => {
   const vscode = require('vscode');
@@ -2239,7 +2449,7 @@ test('activation: commands and settings match package.json; status bar; version 
   assert.deepStrictEqual([...code.matchAll(/c\.get\('([\w.]+)'/g)].map(m => 'permStudio.' + m[1]).sort(), Object.keys(pkg.contributes.configuration.properties).sort());
   assert.ok(vscode.__statusItems[0].shown && vscode.__statusItems[0].command === 'permStudio.open');
   for (const f of ['media/app.js', 'media/app.css', 'media/tab-light.svg', 'media/tab-dark.svg', 'src/model/dependencies.js', pkg.icon]) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
-  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.2.1', 'nikeshvarma', 'Nikesh Varma']);
+  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.2.4', 'nikeshvarma', 'Nikesh Varma']);
   const png = fs.readFileSync(path.join(ROOT, pkg.icon));
   assert.deepStrictEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [256, 256], 'Marketplace icon is 256 px');
   for (const t of ['light', 'dark']) assert.match(fs.readFileSync(path.join(ROOT, 'media', 'tab-' + t + '.svg'), 'utf8'), /fill="#[0-9A-F]{6}"/i, 'tab icon has an explicit colour');
