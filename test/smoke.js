@@ -2439,6 +2439,20 @@ test('QA Q21: impossible or past expiry dates, back-to-front IP ranges, over-lon
   assert.match(posts(p, 'psSaved').pop().error, /at most 255 characters \(it has 256\)/);
 });
 
+test('the stylesheet matches the screen: every class the screen uses has a style (catches a stale media/app.css)', () => {
+  const js = fs.readFileSync(path.join(ROOT, 'media', 'app.js'), 'utf8');
+  const css = fs.readFileSync(path.join(ROOT, 'media', 'app.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const styled = new Set([...css.matchAll(/\.([a-zA-Z][\w-]*)/g)].map(m => m[1]));
+  const used = new Set();
+  for (const m of js.matchAll(/class: '([^']*)'/g)) for (const c of m[1].split(/\s+/)) if (c) used.add(c);
+  for (const m of js.matchAll(/setAttribute\('class', '([^']*)'\)/g)) for (const c of m[1].split(/\s+/)) if (c) used.add(c);
+  for (const m of js.matchAll(/classList\.(?:add|toggle|remove)\('([\w-]+)'/g)) used.add(m[1]);
+  // Markers that deliberately have no style of their own; nav-g- is the start of names built in code.
+  const plain = new Set(['neutral', 'icon-btn', 'org-text', 'si-note', 'nav-g-']);
+  const missing = [...used].filter(c => !styled.has(c) && !plain.has(c)).sort();
+  assert.deepStrictEqual(missing, [], 'media/app.css is missing styles for: ' + missing.join(', ') + '. Is media/app.css from an older version than media/app.js?');
+});
+
 // ---------- extension wiring ----------
 test('activation: commands and settings match package.json; status bar; version and author', async () => {
   const vscode = require('vscode');
@@ -2449,7 +2463,7 @@ test('activation: commands and settings match package.json; status bar; version 
   assert.deepStrictEqual([...code.matchAll(/c\.get\('([\w.]+)'/g)].map(m => 'permStudio.' + m[1]).sort(), Object.keys(pkg.contributes.configuration.properties).sort());
   assert.ok(vscode.__statusItems[0].shown && vscode.__statusItems[0].command === 'permStudio.open');
   for (const f of ['media/app.js', 'media/app.css', 'media/tab-light.svg', 'media/tab-dark.svg', 'src/model/dependencies.js', pkg.icon]) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
-  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.2.4', 'nikeshvarma', 'Nikesh Varma']);
+  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.2.5', 'nikeshvarma', 'Nikesh Varma']);
   const png = fs.readFileSync(path.join(ROOT, pkg.icon));
   assert.deepStrictEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [256, 256], 'Marketplace icon is 256 px');
   for (const t of ['light', 'dark']) assert.match(fs.readFileSync(path.join(ROOT, 'media', 'tab-' + t + '.svg'), 'utf8'), /fill="#[0-9A-F]{6}"/i, 'tab icon has an explicit colour');

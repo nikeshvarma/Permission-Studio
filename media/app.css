@@ -482,3 +482,19 @@ tr.why > td { background: color-mix(in srgb, var(--vscode-focusBorder) 7%, trans
 .ico.gr { background: color-mix(in srgb, var(--p-viewall) 22%, transparent); color: var(--p-viewall); }
 .ico.su { background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent); color: var(--muted); }
 .selbar { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin: -4px 0 8px; }
+
+/* Search-and-pick boxes (objects, fields): a themed list under the box. */
+.combo { position: relative; min-width: 220px; }
+.combo > input { width: 100%; }
+.combo-list { position: fixed; z-index: 40; max-height: 320px; overflow-y: auto; margin: 0; padding: 4px 0; list-style: none; box-sizing: border-box;
+  background: var(--vscode-dropdown-background, var(--surface)); color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+  border: 1px solid var(--vscode-dropdown-border, var(--line)); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+.combo-list[hidden] { display: none; }
+.combo-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 5px 12px; cursor: pointer; }
+.combo-list li:hover { background: var(--vscode-list-hoverBackground); }
+.combo-list li.on { background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-inactiveSelectionBackground)); color: var(--vscode-list-activeSelectionForeground, inherit); }
+.combo-list .cv { font-family: var(--vscode-editor-font-family); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.combo-list .cl { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+.combo-list li.on .cl { color: inherit; opacity: .8; }
+.combo-list .combo-note { cursor: default; color: var(--muted); font-size: 12px; }
+.combo-list .combo-note:hover { background: transparent; }
