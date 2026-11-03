@@ -147,6 +147,17 @@ function createOrg(options) {
 
   // ---------- SOQL subset ----------
   const get = (row, p) => p.split('.').reduce((v, k) => (v == null ? v : v[k]), row);
+  /** SOQL LIKE: % any run, _ one character, \\% \\_ \\' \\\\ literal. */
+  function likePattern(raw) {
+    const t = raw.trim().slice(1, -1);
+    let out = '';
+    for (let i = 0; i < t.length; i++) {
+      const ch = t[i];
+      if (ch === '\\' && i + 1 < t.length) { out += t[++i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); continue; }
+      out += ch === '%' ? '.*' : ch === '_' ? '.' : ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+    return new RegExp('^' + out + '$', 'i');
+  }
   function literal(s) {
     s = s.trim();
     if (s === 'null') return null;
@@ -200,7 +211,7 @@ function createOrg(options) {
       let c;
       if ((c = /^\((.+)\)$/.exec(cond))) return c[1].split(' OR ').some(x => test(r, x));
       if ((c = /^([\w.]+) IN \((.+)\)$/.exec(cond))) return listValues(c[2]).includes(val(r, c[1]));
-      if ((c = /^([\w.]+) LIKE (.+)$/.exec(cond))) { const re = new RegExp('^' + literal(c[2]).replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*') + '$', 'i'); return re.test(String(val(r, c[1]) || '')); }
+      if ((c = /^([\w.]+) LIKE (.+)$/.exec(cond))) { const re = likePattern(c[2]); return re.test(String(val(r, c[1]) || '')); }
       if ((c = /^([\w.]+) (=|!=) (.+)$/.exec(cond))) { const v = literal(c[3]); return c[2] === '=' ? val(r, c[1]) === v : val(r, c[1]) !== v; }
       throw bad('unparsed condition: ' + cond);
     };
@@ -317,6 +328,7 @@ function createOrg(options) {
             if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(fields.Name || '') || /__/.test(fields.Name)) err = 'INVALID_FIELD: The API name can only contain underscores and alphanumeric characters';
             if (T.PermissionSet.some(x => !x.IsOwnedByProfile && x.Name === fields.Name && !x.NamespacePrefix)) err = 'DUPLICATE_DEVELOPER_NAME: The API name is already in use';
           }
+          if (['ObjectPermissions', 'FieldPermissions', 'SetupEntityAccess', 'PermissionSetTabSetting'].includes(type) && !T.PermissionSet.some(x => x.Id === fields.ParentId)) err = 'INVALID_CROSS_REFERENCE_KEY: invalid cross reference id';
           if (type === 'PermissionSetTabSetting') {
             if (!['DefaultOn', 'DefaultOff'].includes(fields.Visibility)) err = 'INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST: Visibility: bad value for restricted picklist field: ' + fields.Visibility;
             else if (T.PermissionSetTabSetting.some(x => x.ParentId === fields.ParentId && x.Name === fields.Name)) err = 'DUPLICATE_VALUE: duplicate value found: Name';
@@ -351,7 +363,7 @@ function createOrg(options) {
           if (!r) err = 'ENTITY_IS_DELETED: entity is deleted';
           else {
             const merged = Object.assign({}, r, fields);
-            if (t === 'PermissionSet' && fields.Name !== undefined && (!/^[A-Za-z][A-Za-z0-9_]*$/.test(fields.Name) || /__/.test(fields.Name))) err = 'INVALID_FIELD: The API name can only contain underscores and alphanumeric characters';
+            if (t === 'PermissionSet' && fields.Name !== undefined && (!/^[A-Za-z][A-Za-z0-9_]*$/.test(fields.Name) || /__|_$/.test(fields.Name))) err = 'INVALID_FIELD: The API name can only contain underscores and alphanumeric characters';
             if (S.silentlyIgnoreFieldEdit && t === 'FieldPermissions') merged.PermissionsEdit = r.PermissionsEdit;
             err = err || check(t, merged);
             if (!err) apply.push(() => { Object.assign(r, S.silentlyIgnoreFieldEdit && t === 'FieldPermissions' ? omit(fields, 'PermissionsEdit') : fields); if (t === 'PermissionSet') r.SystemModstamp = new Date(Date.now() + (++S.seq)).toISOString(); });

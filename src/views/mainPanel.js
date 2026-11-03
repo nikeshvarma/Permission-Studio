@@ -741,6 +741,8 @@ class MainPanel {
    * snapshot and change-log entry, reporting progress as it goes.
    */
   async _applyPlan(m, progressType, resultType, path) {
+    if (this._saving) return this.post({ type: resultType, error: 'A save is already running. Wait for it to finish.' });
+    if (!m || !Array.isArray(m.plan)) return this.post({ type: resultType, error: 'Nothing to save.' });
     const conn = await this._conn().catch(e => { this.post({ type: resultType, error: String(e.message || e) }); return null; });
     if (!conn) return;
     if (conn.isProduction && !this._confirmed(m.confirm)) return this.post({ type: resultType, error: 'Type the org’s alias or username to confirm saving to production.' });
@@ -836,9 +838,25 @@ class MainPanel {
 
   objWizardApply(m) { return this._applyPlan(m, 'objWizardProgress', 'objWizardResult', 'object access wizard'); }
 
+  /**
+   * A save error in plain words. When Salesforce says the record doesn't exist,
+   * check whether the item itself was deleted (in Setup, by someone else) and say so.
+   */
+  async _explain(conn, item, e) {
+    const msg = String((e && e.message) || e);
+    if (!/INVALID_CROSS_REFERENCE_KEY|ENTITY_IS_DELETED|INVALID_ID_FIELD|entity is deleted/i.test(msg)) return msg;
+    try {
+      const r = await conn.query('SELECT Id FROM PermissionSet WHERE Id = ' + soqlStr(item.permissionSetId));
+      if (r.records.length) return msg;
+      this.load({ force: true }).catch(() => {});
+      return item.label + ' no longer exists in ' + (this.ctx.org.alias || this.ctx.org.username) + ': it may have been deleted in Setup. The lists are being refreshed; nothing was saved.';
+    } catch (x) { return msg; }
+  }
+
+  /** The typed org name, ignoring case and surrounding spaces; a wrong name is still refused. */
   _confirmed(typed) {
-    const t = String(typed || '').trim();
-    return t === this.ctx.org.alias || t === this.ctx.org.username;
+    const t = String(typed || '').trim().toLowerCase();
+    return !!t && [this.ctx.org.alias, this.ctx.org.username].some(n => n && String(n).toLowerCase() === t);
   }
 
   /** apply() plus snapshot and log, returning { status, count, message, snapshotId }. */
@@ -884,6 +902,8 @@ class MainPanel {
     try {
       const conn = await this._conn();
       if (!item || item.kind !== 'permissionSet' || item.managed) throw new Error('Only your own permission sets can be renamed here.');
+      const bad = nameProblem(m.label, m.name, m.description);
+      if (bad) throw new Error(bad);
       if (!await this._confirmWrite(conn, m, 'psSaved')) return;
       await conn.update('PermissionSet', [{ Id: item.permissionSetId, Name: m.name, Label: m.label, Description: m.description || null }]);
       await this.s.history.appendLog(this.ctx.projectDir, { org: this.ctx.org.username, target: m.name, kind: 'permissionSet', path: 'rename', result: 'saved', count: 1,
@@ -918,6 +938,9 @@ class MainPanel {
     try {
       const conn = await this._conn();
       if (!src || src.kind !== (mode === 'clone' ? 'permissionSet' : 'profile')) throw new Error(mode === 'clone' ? 'Only permission sets can be cloned.' : 'Only profiles can be copied to a permission set.');
+      const bad = nameProblem(m.label, m.name, m.description);
+      if (bad) throw new Error(bad);
+      if ([...this.items.values()].some(i => i.kind === 'permissionSet' && !i.managed && i.apiName.toLowerCase() === String(m.name).toLowerCase())) throw new Error('A permission set named ' + m.name + ' already exists. Pick another API name.');
       if (!await this._confirmWrite(conn, m, 'psSaved')) return;
       await this._resolve(src, conn);
       progress('Creating the permission set');
@@ -1093,19 +1116,21 @@ class MainPanel {
     const item = this.items.get(m.key);
     const reply = r => this.post(Object.assign({ type: 'saveResult', key: m.key }, r));
     if (!item) return reply({ status: 'error', message: 'That item is no longer in the list. Refresh and try again.' });
-    for (const c of m.changes || []) { const why = editBlocker(item, c.key.split(':')[0]); if (why) return reply({ status: 'error', message: why }); }
+    // One save at a time: a double click, or Ctrl+S during a save, mustn't write (and snapshot) twice.
+    if (this._saving) return reply({ status: 'busy', message: 'A save is already running. Wait for it to finish.' });
+    if (!Array.isArray(m.changes)) return reply({ status: 'error', message: 'These changes are not valid: expected a list of changes.' });
+    this._saving = true;
+    try { return await this._save(m, item, reply); } finally { this._saving = false; }
+  }
+
+  async _save(m, item, reply) {
+    for (const c of m.changes) { const why = c && typeof c.key === 'string' ? editBlocker(item, c.key.split(':')[0]) : null; if (why) return reply({ status: 'error', message: why }); }
     let conn;
     try { conn = await this._conn(); } catch (e) { return reply({ status: 'error', message: String(e.message || e) }); }
-    if (conn.isProduction) {
-      const typed = String(m.confirm || '').trim();
-      if (typed !== this.ctx.org.alias && typed !== this.ctx.org.username) {
-        return reply({ status: 'error', message: 'Type the org’s alias or username to confirm saving to production.' });
-      }
-    }
-    const changes = (m.changes || []).map(c => ({ key: c.key, ref: c.ref || null, before: c.before || null, after: c.after, label: c.label || undefined }));
+    if (conn.isProduction && !this._confirmed(m.confirm)) return reply({ status: 'error', message: 'Type the org’s alias or username to confirm saving to production.' });
+    const changes = m.changes.map(c => ({ key: String((c && c.key) || ''), ref: (c && c.ref) || null, before: (c && c.before) || null, after: c ? c.after : undefined, label: (c && c.label) || undefined }));
     const started = Date.now();
-    const ticket = String(m.ticket || '').trim().slice(0, 80) || undefined;
-    this._saving = true;
+    const ticket = String(m.ticket || '').replace(/\s+/g, ' ').trim().slice(0, 80) || undefined;
     const usesDeploy = changes.some(c => c.key.startsWith('recordType:'));
     const logBase = { org: this.ctx.org.username, target: item.apiName, kind: item.kind, path: usesDeploy ? 'records + deploy' : 'records', count: changes.length };
     try {
@@ -1142,7 +1167,7 @@ class MainPanel {
       await this.s.history.appendLog(this.ctx.projectDir, Object.assign(logBase, {
         result: 'failed', error: String(e.message || e), failedStep: e.failedStep || null, completedSteps: e.completedSteps || [], snapshot: e.snapshotId || null
       })).catch(() => {});
-      reply({ status: 'error', message: String(e.message || e), partial: !!(e.completedSteps && e.completedSteps.length), snapshotId: e.snapshotId || null, restorable: !!e.restorable });
+      reply({ status: 'error', message: await this._explain(conn, item, e), partial: !!(e.completedSteps && e.completedSteps.length), snapshotId: e.snapshotId || null, restorable: !!e.restorable });
     } finally {
       // Every way out, the early conflict return included, lets background refresh run again.
       this._saving = false;
@@ -1174,6 +1199,22 @@ const PREFETCH_LIMIT = 15;
 const PREFETCH_FRESH_MS = 10 * 60 * 1000;
 
 function itemKey(i) { return i.kind + ':' + i.recordId; }
+
+/** Salesforce's rules for a new permission set's label and API name, checked before anything is written. */
+function nameProblem(label, name, description) {
+  const l = String(label || '').trim();
+  const n = String(name || '');
+  if (!l) return 'The label can’t be empty.';
+  if (l.length > 80) return 'The label can be at most 80 characters.';
+  if (!n) return 'The API name can’t be empty.';
+  if (n.length > 80) return 'The API name can be at most 80 characters.';
+  if (!/^[A-Za-z]/.test(n)) return 'The API name must start with a letter.';
+  if (!/^[A-Za-z0-9_]+$/.test(n)) return 'The API name can only contain letters, numbers and underscores.';
+  if (/__/.test(n)) return 'The API name can’t contain two underscores in a row.';
+  if (/_$/.test(n)) return 'The API name can’t end with an underscore.';
+  if (description && String(description).length > 255) return 'The description can be at most 255 characters (it has ' + String(description).length + ').';
+  return null;
+}
 
 function listRow(key, i) {
   return { key, kind: i.kind, label: i.label, apiName: i.apiName, managed: !!i.managed, standard: !!i.standard,
