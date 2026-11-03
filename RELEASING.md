@@ -39,7 +39,7 @@ The test suite drives a stand-in Salesforce CLI through a shell script, so it ru
 
 **Licence.** The project is released under the MIT License (`LICENSE`, and `"license": "MIT"` in `package.json`). A test checks every file for client or org names.
 
-**Add your repository's address** to `package.json`, next to `"publisher"`, replacing `<your-github-user>`:
+**Add your repository's address** to `package.json`, next to `"publisher"`, replacing `<your-github-user>`. Besides linking the extension to its source, it lets the README's screenshots show on the extension's page in VS Code: packaging points them at the repository's files on GitHub, because VS Code only shows images from https addresses. For that the repository must be public, with the `media/readme` images pushed to its default branch.
 
 ```json
 "repository": { "type": "git", "url": "https://github.com/<your-github-user>/permission-studio.git" },

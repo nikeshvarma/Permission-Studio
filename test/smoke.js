@@ -2453,6 +2453,26 @@ test('the stylesheet matches the screen: every class the screen uses has a style
   assert.deepStrictEqual(missing, [], 'media/app.css is missing styles for: ' + missing.join(', ') + '. Is media/app.css from an older version than media/app.js?');
 });
 
+test('README images show in VS Code: the packaged README points them at GitHub over https', () => {
+  const pk = require('../tools/package.js');
+  for (const u of ['https://github.com/o/Permission-Studio', 'https://github.com/o/Permission-Studio.git', 'git+https://github.com/o/Permission-Studio.git', 'git@github.com:o/Permission-Studio.git', 'github:o/Permission-Studio', 'o/Permission-Studio'])
+    assert.strictEqual(pk.githubRepo({ repository: { url: u } }), 'o/Permission-Studio', u);
+  assert.strictEqual(pk.githubRepo({ repository: 'https://github.com/o/r' }), 'o/r', 'a plain string works too');
+  assert.strictEqual(pk.githubRepo({ repository: { url: 'https://gitlab.com/o/r' } }), null);
+  assert.strictEqual(pk.githubRepo({}), null);
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  const out = pk.readmeForPackage(readme, 'o/Permission-Studio');
+  const imgs = [...out.matchAll(/!\[[^\]]*\]\(([^)\s]+)/g)].map(m => m[1]);
+  assert.ok(imgs.length >= 8 && imgs.every(u => u.startsWith('https://raw.githubusercontent.com/o/Permission-Studio/HEAD/media/readme/')), imgs.join('\n'));
+  assert.ok(/\]\(https:\/\/github\.com\/o\/Permission-Studio\/blob\/HEAD\/RELEASING\.md\)/.test(out), 'links to other files go to GitHub');
+  assert.strictEqual(pk.readmeForPackage(readme, null), readme, 'without a GitHub repository nothing is rewritten');
+  assert.strictEqual(pk.readmeForPackage('[a](https://x.dev) [b](#why) ![c](https://x.dev/c.png) <img src="data:image/png;base64,AA">', 'o/r'),
+    '[a](https://x.dev) [b](#why) ![c](https://x.dev/c.png) <img src="data:image/png;base64,AA">', 'web links, anchors and remote images are left alone');
+  const files = ['README.md', 'media/readme/a.png', 'media/icon.png'];
+  assert.deepStrictEqual(pk.packagedFiles(files, 'o/r'), ['README.md', 'media/icon.png'], 'screenshots served from GitHub stay out of the package');
+  assert.deepStrictEqual(pk.packagedFiles(files, null), files);
+});
+
 // ---------- extension wiring ----------
 test('activation: commands and settings match package.json; status bar; version and author', async () => {
   const vscode = require('vscode');
@@ -2463,7 +2483,7 @@ test('activation: commands and settings match package.json; status bar; version 
   assert.deepStrictEqual([...code.matchAll(/c\.get\('([\w.]+)'/g)].map(m => 'permStudio.' + m[1]).sort(), Object.keys(pkg.contributes.configuration.properties).sort());
   assert.ok(vscode.__statusItems[0].shown && vscode.__statusItems[0].command === 'permStudio.open');
   for (const f of ['media/app.js', 'media/app.css', 'media/tab-light.svg', 'media/tab-dark.svg', 'src/model/dependencies.js', pkg.icon]) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
-  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.2.5', 'nikeshvarma', 'Nikesh Varma']);
+  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.2.6', 'nikeshvarma', 'Nikesh Varma']);
   const png = fs.readFileSync(path.join(ROOT, pkg.icon));
   assert.deepStrictEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [256, 256], 'Marketplace icon is 256 px');
   for (const t of ['light', 'dark']) assert.match(fs.readFileSync(path.join(ROOT, 'media', 'tab-' + t + '.svg'), 'utf8'), /fill="#[0-9A-F]{6}"/i, 'tab icon has an explicit colour');
