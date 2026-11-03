@@ -1,0 +1,28 @@
+name: Auto Release Tag
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create and Push Tag
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@://github.com"
+          
+          # Generate version based on date and short commit SHA
+          VERSION="v$(date +'%Y.%m.%d')-${GITHUB_SHA::7}"
+          
+          git tag -a "$VERSION" -m "Automated release tag for build $VERSION"
+          git push origin "$VERSION"
