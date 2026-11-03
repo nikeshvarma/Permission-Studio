@@ -2,6 +2,11 @@
 
 All notable changes to Permission Studio. Versions follow `major.minor.patch`; every delivered change raises the patch number.
 
+## 2.2.5
+
+- A new test fails when `media/app.css` is older than `media/app.js`: every style class the screen uses must be defined. A repository that received the 2.2.3 picker code without its stylesheet built a release where the object and field pickers showed as an unstyled bulleted list.
+- No change to how the extension works.
+
 ## 2.2.4
 
 QA round: what users can get wrong, and what the org can throw at the extension. See docs/QA.md.

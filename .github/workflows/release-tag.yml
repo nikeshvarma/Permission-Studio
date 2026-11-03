@@ -1,3 +1,4 @@
+
 name: Auto Release Tag
 
 on:
@@ -5,11 +6,19 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+
 jobs:
-  tag:
+  run-tests:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    steps:
+      - name: Run CI Checks
+        run: echo "Run your actual CI checks here"
+
+  tag:
+    needs: run-tests
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -17,12 +26,13 @@ jobs:
           fetch-depth: 0
 
       - name: Create and Push Tag
+        env:
+          GITHUB_SHA: ${{ github.sha }}
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@://github.com"
-          
-          # Generate version based on date and short commit SHA
-          VERSION="v$(date +'%Y.%m.%d')-${GITHUB_SHA::7}"
-          
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          VERSION="v$(date -u +'%Y.%m.%d')-${GITHUB_SHA::7}"
+
           git tag -a "$VERSION" -m "Automated release tag for build $VERSION"
           git push origin "$VERSION"
