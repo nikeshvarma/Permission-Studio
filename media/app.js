@@ -46,6 +46,8 @@
   let grantTemplates = [];
   let lastTicket = '';
   let restoreSaved = null;
+  // Starting state of the toggles, from the settings (permStudio.defaults.*); sent each time the page opens and when they change.
+  let uiDefaults = { onlyEnabledAccess: true, onlyEnabledSystemPermissions: false, showAllObjects: false };
   const assigneeFix = {};          // key → { label, users } (users who only lack the permission set licence)          // unsaved changes kept from an earlier session
   let applyTarget = 'wizard';       // which screen is waiting for a bulk save result
   let lastKeyShortcut = 0;
@@ -467,7 +469,7 @@
         org ? h('div', { class: 'org-sub', title: org.username, text: org.username }) : null
       ])
     ]);
-    const status = ctx.connecting ? h('span', { class: 'muted status' }, [spinner(true), ' Connecting…'])
+    const status = ctx.connecting && lists ? h('span', { class: 'muted status' }, [spinner(true), ' Connecting…'])
       : listsMeta.refreshing ? h('span', { class: 'muted status' }, [spinner(true), ' Refreshing…'])
         : listsMeta.savedAt ? h('span', { class: 'muted status updated', text: 'Updated ' + ago(listsMeta.savedAt) }) : null;
     // Each tool has a full and a short name; the short one shows when the window is narrow (see app.css).
@@ -494,10 +496,12 @@
     side.appendChild(h('div', { class: 'list-rail' }, [h('button', { class: 'rail-btn', title: 'Show the list', 'aria-label': 'Show the list', onclick: () => setListCollapsed(false) }, svg(['M8.6 4 7.2 5.4 13.8 12l-6.6 6.6L8.6 20l8-8-8-8Z'])),
       h('span', { class: 'rail-label', text: (KINDS.find(k => k[0] === ui.kind) || [, ''])[1] })]));
     side.appendChild(h('div', { class: 'split-head' }, [
-      h('div', { class: 'kinds-row' }, [h('div', { class: 'kinds', role: 'tablist' }, KINDS.map(([k, label]) => h('button', { role: 'tab', class: ui.kind === k ? 'kind on' : 'kind', 'aria-selected': String(ui.kind === k),
-        onclick: () => { ui.kind = k; save(); renderSide(); } }, [label, h('span', { class: 'count', text: String(lists[k].length) })]))),
-        h('button', { class: 'rail-btn', title: 'Hide the list (more room for the page)', 'aria-label': 'Hide the list', onclick: () => setListCollapsed(true) }, svg(['M15.4 4 16.8 5.4 10.2 12l6.6 6.6-1.4 1.4-8-8 8-8Z']))]),
-      searchBox(ui.search, 'Search this list', v => { ui.search = v; save(); renderList(); })
+      // Tabs share the row and shrink; a short name shows when the list is too narrow for all of them (see app.css).
+      h('div', { class: 'kinds-row' }, [h('div', { class: 'kinds kinds-' + KINDS.length, role: 'tablist' }, KINDS.map(([k, label]) => h('button', { role: 'tab', class: ui.kind === k ? 'kind on' : 'kind', 'aria-selected': String(ui.kind === k),
+        title: label + ' (' + lists[k].length + ')', onclick: () => { ui.kind = k; save(); renderSide(); } }, [h('span', { class: 'kl', text: label }), h('span', { class: 'ks', 'aria-hidden': 'true', text: KIND_SHORT[k] || label }), h('span', { class: 'count', text: String(lists[k].length) })])))]),
+      // The hide button sits beside the search box, so the tabs have the whole row.
+      h('div', { class: 'search-row' }, [searchBox(ui.search, 'Search this list', v => { ui.search = v; save(); renderList(); }),
+        h('button', { class: 'rail-btn', title: 'Hide the list (more room for the page)', 'aria-label': 'Hide the list', onclick: () => setListCollapsed(true) }, svg(['M15.4 4 16.8 5.4 10.2 12l6.6 6.6-1.4 1.4-8-8 8-8Z']))])
     ]));
     side.appendChild(h('div', { class: 'split-list', id: 'list', role: 'listbox', 'aria-label': 'Items' }));
     renderList();
@@ -532,7 +536,7 @@
       if (rest.length || lists.partial) frag.appendChild(h('div', { class: 'si-group', text: 'All ' + KINDS.find(k => k[0] === ui.kind)[1].toLowerCase() }));
     }
     rest.forEach(r => frag.appendChild(item(r)));
-    if (lists.partial) frag.appendChild(h('div', { class: 'empty-line' }, [spinner(true), ' Loading the rest…']));
+    if (lists.partial) frag.appendChild(skeletonBlock('Loading the rest of the list…', 3));
     else if (!rows.length) frag.appendChild(h('p', { class: 'empty-line', text: q ? 'No matches for “' + ui.search + '”.' : 'None in this org.' }));
     box.appendChild(frag);
   }
@@ -567,7 +571,6 @@
       if (el) { el.focus({ preventScroll: true }); if (caret && el.setSelectionRange) { try { el.setSelectionRange(caret[0], caret[1]); } catch (e) { /* not a text field */ } } }
     }
 
-    updateBusy();
   }
   function drawMain() {
     if (ctx.status !== 'ready' && !lists) { main.appendChild(statusView()); return; }
@@ -575,7 +578,7 @@
     if (!ui.selected || !detail) { main.appendChild(h('div', { class: 'illustration' }, [svg(ICONS.permissionSet, 'big-icon'), h('h2', { text: 'Pick something to open' }), h('p', { class: 'muted', text: 'Choose a permission set, group or profile from the list to see and change its access.' })])); return; }
     if (!detail.data) {
       if (detail.state === 'error') main.appendChild(h('div', { class: 'pad' }, alertBox('error', 'Could not read this item. ', [h('pre', { text: detail.message || '' }), h('div', { class: 'btns' }, [h('button', { class: 'btn brand', onclick: () => send({ type: 'select', key: ui.selected, force: true }), text: 'Try again' }), h('button', { class: 'btn neutral', onclick: () => send({ type: 'showLog' }), text: 'Show log' })])])));
-      else main.appendChild(h('div', { class: 'loading-block' }, [spinner(), h('p', { class: 'muted', text: 'Reading from the org…' })]));
+      else main.appendChild(pageSkeleton('Reading ' + (((lists && lists[ui.kind]) || []).concat(lists ? [].concat(...Object.values(lists).filter(Array.isArray)) : []).find(r => r.key === ui.selected) || { label: 'this item' }).label + ' from the org…'));
       return;
     }
     if (ui.restored && pending.size) main.appendChild(h('div', { class: 'restored', role: 'status' }, [
@@ -608,7 +611,7 @@
 
   function statusView() {
     const s = ctx.status;
-    if (s === 'loading') return h('div', { class: 'loading-block' }, [spinner(), h('p', { class: 'muted', text: ctx.message || 'Loading…' })]);
+    if (s === 'loading') return pageSkeleton(ctx.message || 'Connecting to the org…');
     if (s === 'noProject') return h('div', { class: 'illustration' }, [h('h2', { text: 'No Salesforce project open' }), h('p', { class: 'muted', text: 'Open a folder that contains sfdx-project.json, or point the permStudio.project.path setting at one.' })]);
     if (s === 'noOrg') return h('div', { class: 'illustration' }, [h('h2', { text: 'This project has no default org' }), h('p', { class: 'muted', text: 'Set one in a terminal in the project folder, then select Refresh:' }), h('pre', { text: 'sf config set target-org <alias>' })]);
     return h('div', { class: 'pad' }, alertBox('error', 'Could not load the org. ', [h('pre', { text: ctx.message || '' }), h('div', { class: 'btns' }, [h('button', { class: 'btn brand', onclick: () => send({ type: 'refresh' }), text: 'Try again' }), h('button', { class: 'btn neutral', onclick: () => send({ type: 'showLog' }), text: 'Show log' })])]));
@@ -711,6 +714,7 @@
     }))))));
   }
 
+  const KIND_SHORT = { permissionSet: 'Perm Sets', group: 'Groups', profile: 'Profiles' };
   // ---------- layout for the space available (a 14-inch laptop with VS Code's sidebar open is ~970 × 620) ----------
   /** The list starts collapsed in a narrow window until the user chooses. */
   // With nothing open the list is the page, so it only collapses once an item is open.
@@ -758,13 +762,29 @@
     if (id === 'profileSettings') return profileSettingsCard();
     return h('p', { class: 'empty-line', text: 'Unknown section.' });
   }
+  /** Placeholder rows that shimmer, with a line saying what is being read. Used wherever something loads for the first time. */
+  function skeletonBlock(text, rows) {
+    const n = rows || 4;
+    return h('div', { class: 'skeleton', role: 'status', 'aria-busy': 'true', 'aria-label': text }, Array.from({ length: n }, (_, i) => h('div', { class: 'sk-row' }, [
+      h('span', { style: 'width:' + [38, 30, 44, 28, 36, 32][i % 6] + '%' }), h('span', { style: 'width:' + [22, 26, 18, 24, 20, 25][i % 6] + '%' }), h('span', { style: 'width:' + [30, 18, 26, 34, 22, 28][i % 6] + '%' })]))
+      .concat([h('p', { class: 'muted sk-text', text })]));
+  }
+  /** The whole page while an item first loads: the shape of its header, menu and first section. */
+  function pageSkeleton(text) {
+    const bar = w => h('span', { class: 'sk-bar', style: 'width:' + w });
+    return h('div', { class: 'page-skeleton', role: 'status', 'aria-busy': 'true', 'aria-label': text }, [
+      h('div', { class: 'psk-head' }, [h('span', { class: 'sk-bar psk-tile' }), h('div', { class: 'psk-lines' }, [bar('120px'), bar('260px')])]),
+      h('div', { class: 'psk-meta' }, [bar('90px'), bar('110px'), bar('70px'), bar('150px')]),
+      h('div', { class: 'psk-body' }, [h('div', { class: 'psk-nav' }, ['70%', '85%', '60%', '80%', '75%', '65%', '90%', '55%'].map(bar)),
+        h('div', { class: 'psk-card' }, [h('div', { class: 'psk-card-head' }, [bar('140px'), bar('200px')]), skeletonBlock(text, 6)])])]);
+  }
   function loadingCard(title, page, retry, message) {
     const head = h('div', { class: 'card-head' }, [h('h2', { text: title })]);
     const inner = page && page.state === 'error'
       ? alertBox('error', 'Could not read this. ', [h('pre', { text: page.message || '' }), retry ? h('button', { class: 'btn neutral', onclick: retry, text: 'Try again' }) : null])
       : h('div', { class: 'skeleton', 'aria-busy': 'true' }, [0, 1, 2, 3, 4].map(i => h('div', { class: 'sk-row' }, [
         h('span', { style: 'width:' + [38, 30, 44, 28, 36][i] + '%' }), h('span', { style: 'width:' + [22, 26, 18, 24, 20][i] + '%' }), h('span', { style: 'width:' + [30, 18, 26, 34, 22][i] + '%' })]))
-        .concat([h('p', { class: 'muted sk-text', text: message || 'Reading from the org…' })]));
+        .concat([h('p', { class: 'muted sk-text', text: message || (title ? 'Reading ' + title + ' from the org…' : 'Reading from the org…') })]));
     return h('section', { class: 'card' }, [head, h('div', { class: 'card-body' + (page && page.state === 'error' ? '' : ' flush') }, inner)]);
   }
   function select(options, value, onChange, disabled, fid, aria) {
@@ -977,13 +997,13 @@
     const a = access[cat];
     const filterKey = cat + 'Filter';
     const onlyKey = cat + 'Only';
-    if (ui[onlyKey] === undefined) ui[onlyKey] = true;
+    if (ui[onlyKey] === undefined) ui[onlyKey] = uiDefaults.onlyEnabledAccess;
     const head = h('div', { class: 'card-head' }, [h('h2', { text: title }), h('div', { class: 'card-tools' }, [
       a && a.refreshing ? h('span', { class: 'muted status' }, [spinner(true), ' Refreshing…']) : null,
       searchBox(ui[filterKey] || '', 'Search ' + title.toLowerCase(), v => { ui[filterKey] = v; accessLimit = 300; renderMain(); }, 'search.' + cat, true),
       toggle('Show only enabled', ui[onlyKey], v => { ui[onlyKey] = v; accessLimit = 300; renderMain(); })])]);
     if (!a || !a.data) {
-      const inner = a && a.state === 'error' ? alertBox('error', 'Could not read this list. ', [h('pre', { text: a.message || '' })]) : h('div', { class: 'loading-block' }, [spinner(), h('p', { class: 'muted', text: 'Reading from the org…' })]);
+      const inner = a && a.state === 'error' ? alertBox('error', 'Could not read this list. ', [h('pre', { text: a.message || '' })]) : skeletonBlock('Reading ' + ((ACCESS_TABS.find(t => t[0] === cat) || [])[2] || 'this list') + ' from the org…');
       return h('section', { class: 'card' }, [head, h('div', { class: 'card-body' }, inner)]);
     }
     const ok = can(cat);
@@ -1046,7 +1066,7 @@
         ua.openObj = open ? null : o.name; ua.fields = null;
         if (!open) send({ type: 'userFields', userId: u.id, object: o.name, ids: d.sources.map(x => x.permissionSetId) });
         renderMain(); }, text: (open ? '▾ ' : '▸ ') + o.name }))].concat(flags.map(([f]) => h('td', { class: 'c' }, o.flags[f] && o.flags[f].length ? srcDots(d, o.flags[f]) : h('span', { class: 'muted', text: '—' }))))));
-      if (open) rows.push(h('tr', { class: 'why' }, h('td', { colspan: String(flags.length + 1) }, !ua.fields ? h('div', { class: 'loading-block' }, [spinner(), h('p', { class: 'muted', text: 'Reading field access…' })])
+      if (open) rows.push(h('tr', { class: 'why' }, h('td', { colspan: String(flags.length + 1) }, !ua.fields ? skeletonBlock('Reading field access…')
         : ua.fields.length ? h('table', { class: 'datatable inner' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Field' }), h('th', { class: 'c', text: 'Read' }), h('th', { class: 'c', text: 'Edit' })])),
           h('tbody', {}, ua.fields.map(f => h('tr', {}, [h('td', { class: 'mono', text: f.field }), h('td', { class: 'c' }, f.read.length ? srcDots(d, f.read) : '—'), h('td', { class: 'c' }, f.edit.length ? srcDots(d, f.edit) : '—')])))])
           : h('p', { class: 'muted small', text: 'No field access on ' + o.name + '.' }))));
@@ -1091,7 +1111,7 @@
         : h('label', { class: 'fld grow' }, [h('span', { text: 'Org' }), Array.isArray(cmp.orgs)
           ? h('select', { class: 'select', 'data-fid': 'cmp.org', 'aria-label': 'Org', onchange: e => { cmp.org = e.target.value; cmp.result = null; renderMain(); } },
             [h('option', { value: '', text: cmp.orgs.length ? 'Choose an org…' : 'No other orgs signed in to the Salesforce CLI' })].concat(cmp.orgs.map(o => h('option', { value: o.username, selected: o.username === cmp.org, text: (o.alias ? o.alias + ' · ' : '') + o.username }))))
-          : spinner(true)]),
+          : h('span', { class: 'muted small', text: 'Finding the orgs the Salesforce CLI is signed in to…' })]),
       h('button', { class: 'btn brand', disabled: cmp.busy || !A || (cmp.mode === 'here' ? !cmp.b || cmp.b === cmp.a : !cmp.org), onclick: () => {
         cmp.busy = true; cmp.result = null; renderMain();
         send(cmp.mode === 'here' ? { type: 'compare', a: cmp.a, b: cmp.b } : { type: 'compare', a: cmp.a, other: { org: cmp.org, kind: A.kind, apiName: A.apiName } });
@@ -1330,7 +1350,7 @@
     const tools = h('div', { class: 'card-tools' }, [
       searchBox(ui.objFilter, 'Search objects', v => { ui.objFilter = v; renderMain(); }, 'search.objects', true),
       toggle('Show all objects', ui.allObjects, v => { ui.allObjects = v; if (v && catalog === null) { catalog = 'loading'; send({ type: 'objectCatalog' }); } renderMain(); }),
-      catalog === 'loading' && (ui.allObjects || q) ? spinner(true) : null
+      catalog === 'loading' && (ui.allObjects || q) ? h('span', { class: 'muted small', text: 'Loading every object…' }) : null
     ]);
     const table = rows.length ? h('table', { class: 'datatable clickable' }, [
       h('thead', {}, h('tr', {}, [h('th', { class: 'narrow', 'aria-label': 'Favorite' }), h('th', { text: 'Object' }), h('th', { text: 'API Name' }), h('th', { text: 'Access' }), h('th', { class: 'narrow', 'aria-label': 'Open' })])),
@@ -1369,7 +1389,7 @@
       h('span', { class: 'sep', text: '›' }), h('span', { text: (objectPage && objectPage.data && objectPage.data.label) || ui.object })]);
     if (!objectPage || !objectPage.data) {
       if (objectPage && objectPage.state === 'error') return h('div', { class: 'stack' }, [crumbs, alertBox('error', 'Could not read this object. ', [h('pre', { text: objectPage.message || '' })])]);
-      return h('div', { class: 'stack' }, [crumbs, h('div', { class: 'loading-block' }, [spinner(), h('p', { class: 'muted', text: 'Reading fields…' })])]);
+      return h('div', { class: 'stack' }, [crumbs, skeletonBlock('Reading fields…')]);
     }
     const od = objectPage.data;
     const ok = can('object');
@@ -1403,7 +1423,7 @@
     if (!rtPage || !rtPage.data) {
       const inner = rtPage && rtPage.state === 'error'
         ? alertBox('error', 'Could not read record type assignments. ', [h('pre', { text: rtPage.message || '' }), h('button', { class: 'btn neutral', onclick: () => { rtPage = { key: ui.selected, object: ui.object, state: 'loading' }; renderMain(); send({ type: 'loadRecordTypes', key: ui.selected, object: ui.object, force: true }); }, text: 'Try again' })])
-        : h('p', { class: 'muted status' }, [spinner(true), ' Reading assignments through the Metadata API. This takes a few seconds the first time.']);
+        : skeletonBlock('Reading record type assignments with the Metadata API. This takes a few seconds the first time.', 3);
       return h('section', { class: 'card' }, [head, h('div', { class: 'card-body' }, inner)]);
     }
     const d = rtPage.data;
@@ -1661,7 +1681,7 @@
 
   function lookupPage() {
     if (lookup.revoke && (lookup.revoke.plan || lookup.revoke.results || lookup.revoke.busy)) {
-      if (lookup.revoke.busy) return [h('div', { class: 'loading-block' }, [spinner(), h('p', { class: 'muted', text: 'Working out what to remove…' })])];
+      if (lookup.revoke.busy) return [skeletonBlock('Working out what to remove…')];
       const back = () => { lookup.revoke = null; rerunLookup(); };
       return [h('h2', { class: 'sub-title', text: 'Remove access from selected sources' })].concat(planView(lookup.revoke, 'revokeApply', {}, { target: 'revoke', onDone: back, onBack: () => { lookup.revoke = null; renderMain(); }, saveLabel: 'Remove' }));
     }
@@ -1671,7 +1691,7 @@
         onclick: () => { lookup.mode = m; lookup.result = null; lookup.sel = new Set(); if (m !== 'access' && !lookupOptions) { lookupOptions = 'loading'; send({ type: 'lookupOptions' }); } renderMain(); }, text: label })));
     const out = [h('div', { class: 'lk-bar' }, [h('div', { class: 'fld' }, [h('span', { text: 'Look up' }), modeBar])].concat(mode === 'access' ? accessInputs() : permissionInputs(mode === 'system'))
       .concat([recentLookups.length ? h('div', { class: 'lk-recent' }, ['Recent: '].concat(recentLookups.slice(0, 5).flatMap((r, i) => [i ? ' · ' : '', h('button', { class: 'link', onclick: () => runRecent(r), text: r.label })]))) : null]))];
-    if (lookup.busy) out.push(h('div', { class: 'loading-block' }, [spinner(), h('p', { class: 'muted', text: 'Checking permission sets, profiles, groups and assignments…' })]));
+    if (lookup.busy) out.push(skeletonBlock('Checking permission sets, profiles, groups and assignments…'));
     const r = lookup.result;
     if (r && r.error) out.push(alertBox('error', r.error));
     if (r && !r.error && (r.object || r.permission)) out.push(...lookupResults(r));
@@ -1745,7 +1765,7 @@
       h('button', { class: 'btn brand', disabled: lookup.busy, onclick: find, text: lookup.busy ? 'Looking…' : 'Find' })];
   }
   function permissionInputs(sys) {
-    if (!lookupOptions || !lookupOptions.ready) return [lookupOptions && lookupOptions.message ? alertBox('error', lookupOptions.message) : spinner(true)];
+    if (!lookupOptions || !lookupOptions.ready) return [lookupOptions && lookupOptions.message ? alertBox('error', lookupOptions.message) : h('div', { class: 'fld grow' }, skeletonBlock('Loading the permission list…', 1))];
     const opts = sys ? lookupOptions.system : lookupOptions.custom;
     const high = sys ? opts.filter(isHighImpact) : [];
     const rest = sys ? opts.filter(o => !isHighImpact(o)) : opts;
@@ -1926,7 +1946,7 @@
       objectPicker(w.object, v => { w.object = v; w.fields = null; w.chosen = new Set(); if (v) send({ type: 'wizardFields', object: v }); renderMain(); }, 'wz.obj'),
       w.object ? searchBox(w.filter, 'Search fields', v => { w.filter = v; renderMain(); }, 'wz.filter', true) : null,
       w.object ? toggle('Custom fields only', w.customOnly, v => { w.customOnly = v; renderMain(); }) : null])]),
-      h('div', { class: 'card-body flush scroll-y short' }, !w.object ? h('p', { class: 'empty-line', text: 'Pick an object first.' }) : !w.fields ? h('div', { class: 'loading-block' }, spinner())
+      h('div', { class: 'card-body flush scroll-y short' }, !w.object ? h('p', { class: 'empty-line', text: 'Pick an object first.' }) : !w.fields ? skeletonBlock('Reading ' + w.object + '’s fields…', 5)
         : shownFields.length ? h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, [h('th', { class: 'c narrow', text: 'Grant' }), h('th', { text: 'Field' }), h('th', { text: 'API Name' }), h('th', { text: 'Type' })])),
           h('tbody', {}, shownFields.map(f => h('tr', { class: w.chosen.has(f.name) ? 'row-edited' : '' }, [h('td', { class: 'c narrow' }, checkbox({ checked: w.chosen.has(f.name), fid: 'wz.' + f.name, aria: f.label,
             onChange: v => { if (v) w.chosen.add(f.name); else w.chosen.delete(f.name); renderMain(); } })), h('td', { class: 'strong', text: f.label }), h('td', { class: 'muted mono', text: f.apiName }),
@@ -2093,7 +2113,7 @@
 
   function historyPage() {
     if (historyData === null) { historyData = 'loading'; send({ type: 'history' }); }
-    if (!Array.isArray(historyData)) return [h('div', { class: 'loading-block' }, spinner())];
+    if (!Array.isArray(historyData)) return [skeletonBlock('Reading the save history…', 5)];
     if (hf.setup && historySetupData === null) { historySetupData = 'loading'; send({ type: 'historySetup', days: hf.days === 'all' ? 180 : Number(hf.days) }); }
     const labelOf = key => { const k = (key || '').split(':')[0]; const r = lists && lists[k] && lists[k].find(x => x.key === key); return r ? r.label : null; };
     const since = hf.days === 'all' ? 0 : Date.now() - Number(hf.days) * 86400e3;
@@ -2232,12 +2252,6 @@
     ui.restored = pending.size;
     restoreSaved = null;
     renderMain(); renderFooter();
-  }
-  /** The thin bar at the top of the page moves while anything is loading. */
-  function updateBusy() {
-    const busy = !!((listsMeta && listsMeta.refreshing) || (detail && (detail.state === 'loading' || detail.refreshing)) || lookup.busy || ua.busy || cmp.busy ||
-      main.querySelector('.skeleton, .loading-block, .status .spinner'));
-    document.body.classList.toggle('is-busy', busy);
   }
   function renderFooter() {
     persistPending();
@@ -2637,6 +2651,16 @@
         }
         break;
       }
+      case 'uiDefaults':
+        uiDefaults = { onlyEnabledAccess: m.onlyEnabledAccess !== false, onlyEnabledSystemPermissions: m.onlyEnabledSystemPermissions === true, showAllObjects: m.showAllObjects === true };
+        // The settings decide where each toggle starts; flipping one on the page still works for the session.
+        for (const k of Object.keys(ui)) if (/Only$/.test(k)) delete ui[k];
+        ui.sysEnabled = uiDefaults.onlyEnabledSystemPermissions;
+        ui.allObjects = uiDefaults.showAllObjects;
+        if (ui.allObjects && catalog === null) { catalog = 'loading'; send({ type: 'objectCatalog' }); }
+        save();
+        if (detail && detail.data && !ui.tool) renderMain();
+        break;
       case 'shortcut': if (m.name === 'save' && Date.now() - lastKeyShortcut > 600) shortcutSave(); break;
       case 'history': historyData = m.entries || []; if (ui.tool === 'history') renderMain(); break;
       case 'objWizardInfo': if (objWizard.object === m.object) { objWizard.info = { recordTypes: m.recordTypes, columns: m.columns }; if (m.message) toast('error', m.message, { title: 'Could not read ' + m.object }); if (ui.tool === 'objwizard') renderMain(); } break;
@@ -2725,8 +2749,6 @@
     if (modal && modal.kind === 'review') { const b = document.getElementById('saveBtn'); if (b && !b.disabled) doSave(false); return; }
     if (!modal && pending.size && detail && detail.data) openModal({ kind: 'review' });
   }
-  // The progress bar (shown while anything loads; see updateBusy).
-  document.body.prepend(h('div', { class: 'busy-bar', 'aria-hidden': 'true' }));
   document.addEventListener('keydown', e => {
     const tag = (e.target && e.target.tagName) || '';
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(tag);

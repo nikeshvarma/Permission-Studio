@@ -2,6 +2,30 @@
 
 All notable changes to Permission Studio. Versions follow `major.minor.patch`; every delivered change raises the patch number.
 
+## 2.3.5
+
+- README completed: contents, commands, every key feature (including Changes in Setup, a profile's users, copying API names, offline screens and the org badges), the six steps of a save, limitations, a fuller FAQ and troubleshooting, the project structure and a link to the changelog.
+- Marketplace keywords widened (permission set group, object permissions, muting, security, Salesforce CLI, Agentforce and more).
+- No change to how the extension works.
+
+## 2.3.4
+
+- Fixed: Agent Access and Email Routing Address Access kept showing "INVALID_FIELD:" after the 2.3.3 fix. The page showed a list saved in the cache by the older version: an expired cached value was handed back to the refresh that should have replaced it. Now a refresh always waits for the fresh value, a list that fails is shown as an error and never cached, and a new version starts with an empty cache.
+- New settings for where the toggles start: `permStudio.defaults.onlyEnabledAccess` (access lists, on), `permStudio.defaults.onlyEnabledSystemPermissions` (System Permissions, off) and `permStudio.defaults.showAllObjects` (Object Settings, off). They apply each time the page opens and as soon as they change; flipping a toggle on the page still works for the session.
+- Loading: a page or section that loads for the first time shows placeholder rows with a line saying what is being read ("Reading Sales Operations from the org…", "Reading Apex Class Access from the org…"), and nothing else. The progress bar at the top is gone, and the three-dot indicator is kept only for background refreshes ("Refreshing…").
+
+## 2.3.3
+
+- Fixed: Agent Access and Email Routing Address Access showed "INVALID_FIELD:" in orgs whose BotDefinition or EmailRoutingAddress lacks a field the list asked for (NamespacePrefix, DisplayName). The newer access lists now ask the org which fields the object has and query only those.
+- Errors now show Salesforce's own reason ("No such column … on entity …") instead of only the error code.
+- Fixed: with all three lists shown (permission sets, groups and profiles), the Profiles tab was cut off. The tabs now share the row (short names, with the count under each, when the list is narrow), and the hide-the-list button sits beside the search box.
+- README rewritten: the problem it solves, a task-by-task comparison with Setup, key features with screenshots, getting started, safety, shortcuts, settings and an FAQ.
+
+## 2.3.2
+
+- README brought up to date with 2.3.0 and 2.3.1: the table of what can be seen and changed now covers the newer kinds of access, profile settings, muting and licence assignment; "And more" covers the refresh on open and the laptop layout; the Settings table lists `permStudio.refreshOnOpen`; every screenshot shows the current screen.
+- No change to how the extension works.
+
 ## 2.3.1
 
 Laptop screens. Checked at the sizes a 14-inch laptop gives the page in VS Code (about 970 × 620 with VS Code's sidebar open, up to 1480 × 760), every screen fits with nothing cut off.
