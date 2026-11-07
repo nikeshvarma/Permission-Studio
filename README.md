@@ -1,102 +1,164 @@
 # Permission Studio
 
-View and edit Salesforce permission sets, permission set groups and profiles without leaving VS Code. Permission Studio works on your project's default org and signs in the way the Salesforce CLI does, so there is nothing extra to set up.
+**See, change and understand Salesforce access without leaving VS Code.**
+
+Permission Studio is a Visual Studio Code extension for Salesforce admins and developers. It puts permission sets, permission set groups and profiles on one screen next to your code: edit them like Setup, change many at once, find out who can do what and why, and review every change before it reaches the org.
+
+[![Latest release](https://img.shields.io/github/v/release/nikeshvarma/Permission-Studio?label=release)](https://github.com/nikeshvarma/Permission-Studio/releases)
+[![Tests](https://github.com/nikeshvarma/Permission-Studio/actions/workflows/ci.yml/badge.svg)](https://github.com/nikeshvarma/Permission-Studio/actions/workflows/ci.yml)
+[![MIT licence](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+[![VS Code 1.85 or later](https://img.shields.io/badge/VS%20Code-1.85%2B-007ACC.svg)](https://code.visualstudio.com/)
+[![Salesforce CLI v2](https://img.shields.io/badge/Salesforce%20CLI-v2-00A1E0.svg)](https://developer.salesforce.com/tools/salesforcecli)
 
 Developed by Nikesh Varma.
 
 ![Permission Studio showing a permission set's object settings, with colour-coded Read, Create, Edit, Delete, View All and Modify All tags](media/readme/overview.png)
 
-## Why
+## Contents
 
-Checking or changing access in Setup means a lot of clicking: open the permission set, open Object Settings, open the object, find the field, edit, save, then do it again for the next permission set. Answering "who can edit this field?" means checking every profile, permission set and group by hand.
+- [The problem](#the-problem)
+- [How Permission Studio helps](#how-permission-studio-helps)
+- [Key features](#key-features)
+- [Getting started](#getting-started)
+- [Commands](#commands)
+- [What you can see and change](#what-you-can-see-and-change)
+- [How it works](#how-it-works)
+- [Safety and privacy](#safety-and-privacy)
+- [Keyboard shortcuts](#keyboard-shortcuts)
+- [Settings](#settings)
+- [Limitations](#limitations)
+- [FAQ](#faq)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing) · [Development](#development) · [Changelog](#changelog) · [License](#license)
 
-Permission Studio puts all of it on one screen in VS Code, next to your code. Every change is reviewed before it is saved, checked against what is in the org right now, and can be undone.
+## The problem
 
-## What it does
+Access is where Salesforce work slows down. In Setup, every question and every change is a walk through pages:
 
-**Edit like Setup, then review before anything is saved.** Object, field, record type and system permissions, Apex class, Visualforce page, flow and app access, custom permissions, tab settings and more are checkboxes, grouped the way Setup groups a permission set. Permission rules apply as you click: granting Edit also grants Read, and Modify All brings everything below it. System and custom permissions follow Salesforce's own dependency rules, read from the org: turning on Modify All Data also turns on what it needs. Changes are highlighted and counted until you save.
+- **Changing access is repetitive.** Giving new fields to eight permission sets means opening each one, finding the object, editing, ticking and saving, eight times over.
+- **"Who can edit this field?" has no quick answer.** Access can come from a profile, any number of permission sets, a group, or an org-wide permission such as Modify All Data. Checking means opening each of them, or writing SOQL.
+- **Mistakes are easy and quiet.** Setup saves the moment you click. There is no list of what you are about to change, no warning that a permission reaches every record in the org, and no undo.
+- **Groups and profiles hide their effects.** A group's access is the sum of its permission sets minus its muting; a user's access is the sum of everything assigned to them. Neither is shown in one place.
+- **Paperwork is manual.** A ticket or design document needs a record of what changed, which means screenshots or retyping.
+- **Orgs drift apart.** Comparing a permission set in a sandbox with the same one in production is done side by side, by eye.
+
+## How Permission Studio helps
+
+| Task | In Setup | With Permission Studio |
+| --- | --- | --- |
+| Give three new fields Read and Edit across eight permission sets and profiles | Open each item, Object Settings, the object, Edit, tick, Save: eight times | **Grant field access**: pick the fields, pick the items, see what each has now, review, save once |
+| Find out who can edit `Lead.Rating`, and through what | Check every profile, permission set and group, or write SOQL | **Find access**: type `Lead.Rating`; every user, the sources that grant it, and **Why?** for each user |
+| See everything one user can do | Open the user, then each profile, permission set and group they hold | **User access**: one view, with the source of every permission |
+| Compare a permission set in a sandbox with production | Two browser windows, compared by eye | **Compare**: every difference, filterable and copyable as a table |
+| Turn off one permission for a group's users | Find or create the muting permission set, edit it, save | **Muted Permissions**: tick it, review, save |
+| Record a change for an ADO or Jira ticket | Screenshots, or retyping | **Copy summary**: a Markdown or Excel table, with the ticket number |
+| Undo a mistake | Redo it by hand, from memory | **Undo** from History, or from the notice after saving |
+| Check what changed on a permission set recently | Setup Audit Trail, filtered by hand | **Changes in Setup**, on the item itself |
+
+## Key features
+
+### Edit like Setup, with safety Setup doesn't have
+
+Every section of a permission set or profile is on one screen: object, field, record type and system permissions; Apex class, Visualforce page, flow, app and connected app access; custom permissions, custom metadata types, custom settings and tab settings. Salesforce's permission rules apply as you click: Edit brings Read, Modify All brings everything below it, and system and custom permissions follow the dependency rules read from your org, with a note under the checkbox saying what else changed. Changes are highlighted and counted, and stay until you save, even if you close the tab or reload VS Code.
 
 ![An object's page with object permissions, record type assignments and field permissions, three changes waiting to be saved](media/readme/editing.png)
 
-**Every save is checked first.** Save opens a review that starts with the impact: how many users are affected, which high-impact permissions are granted and what access is removed. Then every change on one line, where you can drop any single change. Add a ticket such as an ADO story and it follows the save into History and copied summaries. On a production org you type the org's name to confirm. Ctrl/Cmd+S opens the review and saves from it.
+### Review before anything is saved
+
+Save opens a review that starts with the impact: how many changes, how many users they reach, which high-impact permissions are being granted (Modify All Data, View All Data, Use Any API Client and others are spelled out in plain words), and what access is being removed. Then every change on one line, where any one can be dropped. Add a ticket number and it follows the save into History and copied summaries. On a production org you type the org's name to confirm.
 
 ![The review: changes, users affected, high-impact permissions and removals first, then each change on one line with granted chips and a button to remove it](media/readme/review.png)
 
-**Find out who has access.** Type an object or a field (`Lead.Rating`), filter by profile, license, source or user status, and use **Why?** to see exactly how each user gets the access, even through a group's member permission sets. Remove the access from selected sources, or grant it to more, straight from the results.
+### Find out who has access, and why
 
-It works for system and custom permissions too, such as Modify All Data or Use Any API Client. View All Data, Modify All Data and View All Fields are counted.
+Type an object or a field (`Lead.Rating`), or pick a system or custom permission. Filter by profile, licence, source or user status. **Why?** shows exactly how each user gets the access, including through a group's member permission sets. From the results, remove the access from chosen sources, or grant it to more. View All Data, Modify All Data and View All Fields are counted, and recent searches are a click away.
 
 ![Find access for Lead.Rating: filters, users with the permission sets, profiles and groups that grant it, how one user gets it through a group, and the sources](media/readme/find-access.png)
 
-**Grant access in bulk.** **Grant field access** gives fields Read or Read and Edit across many permission sets and profiles at once. **Grant object access** does the same for object permissions and record types, including profile defaults. The review shows what changes on each item; access is only ever added.
+### Grant access in bulk
+
+**Grant field access** gives fields Read or Read and Edit across many permission sets and profiles at once, showing what each already has and what will change, with a running total of the users reached. **Grant object access** sets object permissions and record types in one grid, including profile defaults. Access is only ever added. Save your choices as a template for the next new field.
 
 ![Grant field access: two fields chosen, each permission set's and profile's current access next to what will change, and a running summary](media/readme/grant-field-access.png)
 
 ![Grant object access: a grid of permission sets and profiles by object permission, with what's already granted and what will be added](media/readme/grant-object-access.png)
 
-**Manage permission set groups.** Add or remove a group's member permission sets, and mute permissions in the group: object, field and system permissions its permission sets grant can be turned off for the group's users without changing the permission sets themselves. A group without a muting permission set gets one in a click. Salesforce recalculates the group in the background; the status shows while it runs, and the group's access refreshes when it finishes.
+### See everything one user can do
+
+**User access** adds up a user's profile, permission sets and groups (with expiry dates) and their permission set licences, then shows the object, field, system and custom permissions those come to. Coloured dots show which source grants each one.
+
+![User access: one user's sources of access, licences, and object and system permissions with where each comes from](media/readme/user-access.png)
+
+### Compare items and orgs
+
+Compare two permission sets, profiles or groups in this org, or the same one in another org the Salesforce CLI is signed in to: object, field, system, app, Apex, Visualforce, flow, custom permission, custom metadata, custom setting and tab differences, filterable by area and copyable as Markdown.
+
+![Compare: the same permission set in two orgs, with each difference](media/readme/compare.png)
+
+### Permission set groups, including muting
+
+Add or remove a group's member permission sets while Salesforce recalculates the group in the background; the status shows while it runs and the group's access refreshes when it finishes. Under **Muted Permissions**, mute object, field and system permissions the group's permission sets grant, without changing the permission sets themselves. A group without a muting permission set gets one in a click.
 
 ![A permission set group's members, one being added, with the recalculation in progress](media/readme/groups.png)
 
 ![Muted Permissions on a permission set group: the object and system permissions its permission sets grant, with what is muted ticked](media/readme/muting.png)
 
-**Newer kinds of access.** Agent access (Agentforce employee agents), external credential principals, external data sources, Service presence statuses and email routing addresses, for permission sets and profiles. They're read and saved with the Metadata API; a feature the org doesn't have says so.
+### Profiles, assignments and the newer kinds of access
 
-**Profile settings.** A profile's default app and login flow, data category visibility, and its password and session policies, edited like everything else and reviewed before saving.
+- **Profile settings:** default app, login flow, data category visibility, password policy and session settings; also page layout assignments, login hours and login IP ranges, and the profile's users.
+- **Newer kinds of access:** Agent Access (Agentforce employee agents), External Credential Principal Access, External Data Source Access, Service Presence Statuses Access and Email Routing Address Access, for permission sets and profiles. A kind the org doesn't have says so.
+- **Assignments:** add or remove users, with expiry dates and a warning when one expires soon. Users who can't hold a permission set's licence are flagged before you save, and a missing permission set licence can be assigned in the same save.
+- **User access policies:** a permission set or group shows the policies that assign it automatically, and the review warns before you remove an assignment a policy may give back.
+- **Rename and clone** permission sets, or **copy a profile to a new permission set**, Salesforce's recommended permission-set-led model.
 
-**User access policies and licences.** A permission set or group shows the user access policies that assign it automatically, and the review warns before you remove an assignment a policy may give back. Assigning a permission set to users who lack its permission set licence can assign the licence in the same save.
+### History, undo and paperwork
 
-**See everything one user can do.** User access adds up a user's profile, permission sets and groups (with expiry dates), their permission set licences, and the object, field, system and custom permissions those add up to, each with the sources that grant it.
-
-![User access: one user's sources of access, licences, and object and system permissions with where each comes from](media/readme/user-access.png)
-
-**Compare.** Two permission sets, profiles or groups in this org, or the same one in another org the Salesforce CLI is signed in to: every object, field, system, app, Apex, Visualforce, flow, custom permission, custom metadata, custom setting and tab difference, filterable and copyable as Markdown.
-
-![Compare: the same permission set in two orgs, with each difference](media/readme/compare.png)
-
-**Every save in History.** Undo any save, or copy saves as a table for an ADO or Jira ticket, a design document or an Excel workbook.
+Every save is kept in History with its changes, ticket and result, alongside changes made in Setup (from Setup Audit Trail). Undo any save, or copy saves as a Markdown or Excel table for a ticket, a design document or a release note. Each item also has a **Changes in Setup** section: who changed it in Setup recently, and what.
 
 ![History grouped by day: saves with their changes and tickets, a failed save, and a change made in Setup](media/readme/history.png)
 
-**And more:**
+### Built for everyday work
 
-- **Assignments:** see who has a permission set or group, add or remove users, and set expiry dates.
-- **Profile-only settings:** page layout assignments, login hours and login IP ranges.
-- **Rename and clone** permission sets, or **copy a profile to a new permission set** (Salesforce's recommended permission-set-led model): its access, tab settings and record types, with the profile's user license. Nothing is removed from the profile.
-- **License checks:** users who can't hold a permission set's license are flagged before you save. Session-based permission sets are tagged.
-- **Changes in Setup:** who changed the open item in Setup recently, from Setup Audit Trail.
-- **Favorites:** star the items and objects you use most; they load first and open instantly.
-- **Open from a file:** right-click a permission set, profile or group file and choose **Open in Permission Studio**, or use **Permission Studio: Open Item…** in the Command Palette.
-- **Keep your source in step:** optionally update the project's `.permissionset-meta.xml` or `.profile-meta.xml` after a save, ready to commit.
-- **Easy to read:** colour-coded permissions, **High impact** tags on org-wide system permissions (including Use Any API Client and Approve Uninstalled Connected Apps), and warnings on assignments that expire soon.
-- **Light or dark:** the screen follows your VS Code theme.
+- **Always current:** each time the page opens, everything is read from the org again; a background refresh keeps it current while you work. Unsaved changes are kept.
+- **Fast:** screens open at once from what you saw last time and refresh in the background, using the Salesforce CLI's own connection inside VS Code. Long lists load progressively; the last screens stay readable offline.
+- **Easy to read:** colour-coded permissions, **High impact** tags on org-wide system permissions, **Managed** and **Session-based** tags, and **Sandbox** and **Production** badges on the org.
+- **Fits a laptop screen:** the layout follows the space the page has. When it's narrow, the section menu shows icons only and the item list can be hidden to a rail.
+- **Keeps your source in step:** optionally update the project's `.permissionset-meta.xml` or `.profile-meta.xml` after a save, ready to commit.
+- **Small things that add up:** favorites that load first, copy any API name with one click, keyboard shortcuts, **Open in Permission Studio** from any permission set, profile or group file, and light and dark themes.
 
 ![The same permission set in a light theme](media/readme/light-theme.png)
 
-## How it works
-
-![How Permission Studio reads from your org through the Salesforce CLI's own connection, and the six steps of every save: review, check, snapshot, write, verify, record](media/readme/how-it-works.png)
-
-**Reading.** Permission Studio loads the Salesforce CLI's own connection library and runs it inside VS Code. It uses the CLI's sign-in, token renewal, proxy settings and network route, without starting an `sf` process for each call. Screens open at once from what you saw last time and refresh from the org in the background; lists are only re-read when something in the org changed.
-
-**Saving.** Only the records that change are written. Before writing, every changed entry is read again, so an edit someone made in Setup since you loaded the screen is never silently overwritten. The values from just before the save are kept as a snapshot for undo. Afterwards everything is read back, and anything the org did not take is reported. Tab settings are records too. Record types, page layouts and login settings go through the Metadata API; each deploy is preceded by a full copy of the item's access, and anything a deploy removed can be restored in one click.
-
 ## Getting started
 
-You need:
+### Requirements
 
 - VS Code 1.85 or later
-- Salesforce CLI v2 (`sf`)
+- Salesforce CLI v2 (`sf`), signed in to your org
 - A Salesforce project (a folder with `sfdx-project.json`) with a default org: `sf config set target-org <alias>`
 
-To install:
+### Install
 
-1. Download the latest `.vsix` from the repository's **Releases** page.
-2. In VS Code, open the Extensions view, then **…** → **Install from VSIX…**, and pick the file. Or run `code --install-extension permission-studio-<version>.vsix`.
-3. Open your Salesforce project. Permission Studio starts loading in the background straight away.
-4. Click the shield in the status bar, or run **Permission Studio: Open** from the Command Palette.
+1. Download the latest `.vsix` from the [Releases](https://github.com/nikeshvarma/Permission-Studio/releases) page.
+2. In VS Code, open the Extensions view, then **…** › **Install from VSIX…**, and pick the file. Or run `code --install-extension permission-studio-<version>.vsix`.
 
-The org is always the project's default org. Change it the usual way (`sf config set target-org <alias>`, or the org picker in the Salesforce extensions) and the screen switches to the new org on its own.
+### First run
+
+1. Open your Salesforce project. Permission Studio starts loading in the background straight away.
+2. Click the shield in the status bar, or run **Permission Studio: Open** from the Command Palette.
+3. Pick a permission set, group or profile from the list, and its sections appear on the right.
+
+Permission Studio always works on the project's default org. Change it the usual way (`sf config set target-org <alias>`, or the org picker in the Salesforce extensions) and the screen switches to the new org on its own. No passwords, tokens or extra sign-in.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| **Permission Studio: Open** | Open the Permission Studio page (also the shield in the status bar) |
+| **Permission Studio: Open Item…** | Pick a permission set, group or profile by name and open it |
+| **Open in Permission Studio** | From a permission set, profile or group file (Explorer, editor title or tab menu): open that item |
+| **Permission Studio: Refresh** | Read everything from the org again |
+| **Permission Studio: Show Log** | Connection steps, fallbacks and Salesforce's own error messages |
+| **Permission Studio: Clear Cache** | Empty the saved screens for every org |
 
 ## What you can see and change
 
@@ -109,17 +171,50 @@ The org is always the project's default org. Change it the usual way (`sf config
 | Tab Settings | Yes | Yes | records |
 | System Permissions | Yes | Yes | records |
 | Login Hours and Login IP Ranges | — | Yes | Metadata API deploy |
+| Agent Access, External Credential Principal Access, External Data Source Access, Service Presence Statuses Access, Email Routing Address Access | Yes | Yes | Metadata API deploy |
+| Profile settings: default app, login flow, data category visibility | — | Yes | Metadata API deploy |
+| Profile settings: password policy and session settings | — | Yes | Metadata API deploy (the profile's own policy) |
 | Assignments, with expiry dates | Yes, and groups | Read-only list of users | records |
+| Permission set licences, when an assignee lacks one | Yes | — | records (assigned in the same save) |
 | Member permission sets | — | — | records (groups only) |
+| Muted permissions: object, field and system | — | — | Metadata API deploy (groups only, the group's muting permission set) |
+| Changes in Setup (Setup Audit Trail) | Read-only | Read-only | — |
 
-A group's access comes from its member permission sets, so on a group you change its members and assignments, and edit the permission sets themselves for anything else. Managed-package permission sets and groups are read-only apart from their assignments. Standard profiles are read-only.
+A group's access comes from its member permission sets, so on a group you change its members, assignments and muting, and edit the permission sets themselves for anything else. Managed-package permission sets and groups are read-only apart from their assignments. Standard profiles are read-only.
+
+## How it works
+
+![How Permission Studio reads from your org through the Salesforce CLI's own connection, and the six steps of every save: review, check, snapshot, write, verify, record](media/readme/how-it-works.png)
+
+**Reading.** Permission Studio loads the Salesforce CLI's own connection library and runs it inside VS Code, so it uses the CLI's sign-in, token renewal, proxy settings and network route without starting an `sf` process for each call. If that isn't possible it falls back to direct REST calls, then to `sf` processes, and says so.
+
+**Saving.** Every save follows the same six steps:
+
+1. **Review:** you see every change and its impact, and confirm.
+2. **Check:** every changed entry is read again, so an edit someone made in Setup since you loaded the screen is never silently overwritten.
+3. **Snapshot:** the values from just before the save are kept for undo.
+4. **Write:** only the records that change are written, in one request where possible. Settings that only exist in metadata go through the Metadata API; a deploy that changes an item's own access is preceded by a full copy of that access and checked afterwards.
+5. **Verify:** everything is read back, and anything the org did not take is reported.
+6. **Record:** the save goes into History, with its ticket.
 
 ## Safety and privacy
 
 - **No credentials:** Permission Studio never asks for a password or stores a token. It uses the session the Salesforce CLI already holds, and tokens never appear in the log.
-- **Cached screens:** they are kept in the extension's own storage, one folder per org, never in your project. **Permission Studio: Clear Cache** empties it.
-- **Snapshots and the change log:** they are written to `.permstudio/` in the project, for History and undo. Add `.permstudio/` to your `.gitignore`.
-- **Production:** saving to a production org always asks you to type the org's name. Whether an org is production is read from the org itself, never from its alias.
+- **Review and confirm:** nothing is written without the review, and production asks you to type the org's name. Whether an org is production is read from the org itself, never from its alias.
+- **No silent overwrites:** a change made in Setup after you loaded the screen is detected and shown before anything is saved.
+- **Undo:** every save keeps a snapshot of the values just before it.
+- **Cached screens:** kept in the extension's own storage, one folder per org, never in your project, and cleared when a new version is installed. **Permission Studio: Clear Cache** empties it.
+- **Snapshots and the change log:** written to `.permstudio/` in the project, for History and undo. Add `.permstudio/` to your `.gitignore`.
+- **No telemetry:** Permission Studio talks only to your org. Nothing is sent anywhere else.
+- **Open source:** every line is in this repository, under the MIT licence.
+
+## Keyboard shortcuts
+
+| Keys | What they do |
+| --- | --- |
+| `Ctrl+S` / `Cmd+S` | Open the review; press again to save |
+| `Esc` | Close a dialog, or leave a tool page |
+| `/` | Jump to the search box |
 
 ## Settings
 
@@ -128,6 +223,10 @@ A group's access comes from its member permission sets, so on a group you change
 | `permStudio.lists.show` | `["permissionSet", "profile"]` | Which lists to show and load: `permissionSet`, `group`, `profile` |
 | `permStudio.autoRefresh.enabled` | `true` | Refresh in the background while VS Code has focus |
 | `permStudio.autoRefresh.minutes` | `5` | Minutes between background refreshes, 1 to 30 |
+| `permStudio.refreshOnOpen` | `true` | Read everything again each time the page opens, or comes back into view after a minute or more |
+| `permStudio.defaults.onlyEnabledAccess` | `true` | Start access lists (Assigned Apps, Apex Class Access, Custom Permissions, Agent Access and the others) with **Show only enabled** on |
+| `permStudio.defaults.onlyEnabledSystemPermissions` | `false` | Start System Permissions with **Show only enabled** on |
+| `permStudio.defaults.showAllObjects` | `false` | Start Object Settings with **Show all objects** on |
 | `permStudio.favorites.items` | `[]` | Favorite permission sets, groups and profiles, e.g. `"permissionSet:Sales_Operations"` |
 | `permStudio.favorites.objects` | `[]` | Favorite objects, e.g. `"Lead"` |
 | `permStudio.localFile.update` | `ask` | Update the project's source file after a save: `ask`, `always` or `never` |
@@ -138,25 +237,68 @@ A group's access comes from its member permission sets, so on a group you change
 | `permStudio.apiVersion` | empty | API version for queries; empty uses what the CLI reports |
 | `permStudio.connection.mode` | `auto` | `auto` (CLI library, then REST, then `sf` processes), `library`, `rest` or `cli` |
 
+## Limitations
+
+Permission Studio deliberately leaves a few things to Setup:
+
+- **Creating and deleting** permission sets, permission set groups and profiles. You can rename and clone permission sets, copy a profile to a new permission set, and create a group's muting permission set.
+- **Managed-package permission sets and standard profiles** can't be changed, as in Setup; their assignments can.
+- **Compare** covers records-based access (object, field, system, app, Apex, Visualforce, flow, custom permission, custom metadata, custom setting and tab). Record types, layouts and metadata-only settings aren't compared.
+- **Login flows** can be set or changed on a profile but not removed; remove one in Setup › Login Flows.
+- **One org at a time:** the project's default org. Compare is the one place that reads a second org.
+
+## FAQ
+
+**Does it change my source files?** Only if you ask: after a save it can update the matching `.permissionset-meta.xml` or `.profile-meta.xml` in your project (`permStudio.localFile.update`). Otherwise it works on the org only.
+
+**Does it work with scratch orgs, sandboxes and production?** Yes, any org the Salesforce CLI is signed in to. Production always asks for confirmation.
+
+**What does it need in the org?** The same permissions you'd need in Setup: View Setup and Configuration to read, and Manage Profiles and Permission Sets (or Assign Permission Sets, for assignments) to change things. Setup Audit Trail entries need View Setup Audit Trail.
+
+**Can I use it on managed-package permission sets?** You can see them and manage their assignments; Salesforce doesn't allow changing their access.
+
+**Is my data sent anywhere?** No. Permission Studio talks only to your org, through the Salesforce CLI's connection.
+
 ## Troubleshooting
 
-**Permission Studio: Show Log** records each connection step and the reason for any fallback, including Salesforce's own error code. A **CLI connection** badge in the top bar means calls are going through `sf` processes, which is slower. If that happens, the log says why. Setting `permStudio.sf.installPath` to the CLI's folder usually brings back the faster connection. If the CLI can no longer renew the session, log in again with `sf org login web --alias <alias>`.
+**Permission Studio: Show Log** records each connection step and the reason for any fallback, including Salesforce's own error.
+
+- **A "CLI connection" badge in the top bar** means calls are going through `sf` processes, which is slower. The log says why; setting `permStudio.sf.installPath` to the CLI's folder usually brings back the faster connection.
+- **"Session expired" or sign-in errors:** log in again with `sf org login web --alias <alias>`.
+- **A section says "Couldn't list these: …"** with Salesforce's reason: the org or your user lacks something that section reads. A feature the org doesn't have at all is shown as such instead.
+- **The screen looks out of date:** run **Permission Studio: Refresh**, or **Clear Cache** to start afresh.
 
 ## Contributing
 
-Bug reports, ideas and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to report an issue, set up the code and send a change.
+Bug reports, ideas and pull requests are welcome. [Open an issue](https://github.com/nikeshvarma/Permission-Studio/issues), or see [CONTRIBUTING.md](CONTRIBUTING.md) for how to set up the code and send a change, and [RELEASING.md](RELEASING.md) for how releases are built.
 
 ## Development
 
-There is no build step and there are no dependencies: the extension is plain JavaScript.
+There is no build step and there are no runtime dependencies: the extension is plain JavaScript.
 
 ```
-npm test             the test suite (a stand-in Salesforce CLI and a small in-memory org)
+npm test             the test suite (a stand-in Salesforce CLI and an in-memory org)
 npm run package      builds dist/permission-studio-<version>.vsix with only Node.js
 ```
 
-[RELEASING.md](RELEASING.md) covers building, GitHub releases and, later, the Marketplace. [CHANGELOG.md](CHANGELOG.md) lists what changed in each version. Design notes are in [docs/DESIGN.md](docs/DESIGN.md).
+```
+extension.js          entry point: settings, commands, status bar, background loading
+src/org/              connecting to the org: the CLI's library, REST, sf processes, Metadata API
+src/data/             reading: lists, an item's access, Find access, User access, Compare, cache
+src/changes/          saving: the save path, snapshots and History, change summaries
+src/model/            Salesforce's permission rules and the permission model
+src/xml/              reading and updating the project's source files
+src/views/            the Permission Studio page (extension side)
+media/                the page itself (app.js, app.css), icons and README images
+test/                 the test suite, a stand-in CLI and an in-memory org
+tools/                packaging, release notes and the README image check
+docs/                 the design document and the QA report
+```
+
+## Changelog
+
+Every release is described in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-[MIT](LICENSE). Free to use, change and share, including in commercial work, as long as the copyright notice is kept.
+[MIT](LICENSE) © Nikesh Varma

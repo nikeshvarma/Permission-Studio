@@ -3,6 +3,7 @@
 const vscode = require('vscode');
 const os = require('os');
 const path = require('path');
+const fs = require('fs');
 const project = require('./src/org/project');
 const connection = require('./src/org/connection');
 const { detectProduction } = require('./src/org/orgs');
@@ -31,7 +32,10 @@ function settings() {
     kinds: listKinds(c.get('lists.show', ['permissionSet', 'profile'])),
     autoRefresh: c.get('autoRefresh.enabled', true) !== false,
     autoRefreshMinutes: Math.min(30, Math.max(1, Math.round(Number(c.get('autoRefresh.minutes', 5)) || 5))),
-    refreshOnOpen: c.get('refreshOnOpen', true) !== false
+    refreshOnOpen: c.get('refreshOnOpen', true) !== false,
+    onlyEnabledAccess: c.get('defaults.onlyEnabledAccess', true) !== false,
+    onlyEnabledSystemPermissions: c.get('defaults.onlyEnabledSystemPermissions', false) === true,
+    showAllObjects: c.get('defaults.showAllObjects', false) === true
   };
 }
 
@@ -100,6 +104,14 @@ function activate(context) {
 
   // One cache folder per org username, in the extension's own storage (never in the project).
   const caches = new Map();
+  // A new version starts with an empty cache: screens saved by an older version (an old error
+  // message, data in an older shape) are never shown by a newer one.
+  const cacheBase = (context.globalStorageUri && context.globalStorageUri.fsPath) || path.join(os.tmpdir(), 'permission-studio');
+  const version = (context.extension && context.extension.packageJSON && context.extension.packageJSON.version) || require('./package.json').version;
+  if (context.globalState && context.globalState.get('permStudio.cacheVersion') !== version) {
+    try { fs.rmSync(path.join(cacheBase, 'cache'), { recursive: true, force: true }); } catch (e) { /* nothing cached yet */ }
+    context.globalState.update('permStudio.cacheVersion', version);
+  }
   function cacheFor(username) {
     if (!settings().cacheEnabled) return disabled();
     if (!caches.has(username)) {
@@ -133,6 +145,7 @@ function activate(context) {
     insight: require('./src/data/insight'),
     insightSystem: (conn, ids) => require('./src/data/insight').systemPermissionsOf(conn, ids),
     refreshOnOpen: () => settings().refreshOnOpen,
+    uiDefaults: () => { const s3 = settings(); return { onlyEnabledAccess: s3.onlyEnabledAccess, onlyEnabledSystemPermissions: s3.onlyEnabledSystemPermissions, showAllObjects: s3.showAllObjects }; },
     // Orgs the Salesforce CLI is signed in to (for Compare), from its own library.
     listOrgs: async () => {
       const s2 = settings();
@@ -202,6 +215,7 @@ function activate(context) {
       if (e.affectsConfiguration('permStudio.autoRefresh')) scheduleRefresh();
       if (e.affectsConfiguration('permStudio.lists.show') && !panel.isOpen) panel.load({ force: false }).catch(() => {});
       if (!panel.isOpen) return;
+      if (e.affectsConfiguration('permStudio.defaults')) panel.postDefaults();
       const favs = e.affectsConfiguration('permStudio.favorites');
       if (e.affectsConfiguration('permStudio.sf.installPath')) { sfcore.reset(); if (context.globalState) context.globalState.update(sfcore.CACHE_KEY, undefined); }
       const other = ['sf.path', 'sf.installPath', 'project.path', 'apiVersion', 'connection.mode', 'cache.enabled', 'lists.show'].some(k => e.affectsConfiguration('permStudio.' + k));

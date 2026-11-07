@@ -35,6 +35,9 @@ class MainPanel {
 
   get isOpen() { return !!this.panel; }
 
+  /** The starting state of the screen's "Show only enabled" and "Show all objects" toggles (settings). */
+  postDefaults() { if (this.s.uiDefaults) this.post(Object.assign({ type: 'uiDefaults' }, this.s.uiDefaults())); }
+
   /** permStudio.refreshOnOpen (default on). */
   _refreshOnOpen() { return !this.s.refreshOnOpen || this.s.refreshOnOpen() !== false; }
 
@@ -75,6 +78,7 @@ class MainPanel {
         if (this.ctx && this.items.size) { this._replay(); replayed = true; } else if (this.ctx && this.ctx.status) this.post(contextMessage(this.ctx, this.conn)); else await this.load();
         this._webviewReady = true;
         this.post({ type: 'persisted', values: this._persisted() });
+        this.postDefaults();
         // Opening the page shows what's cached at once, then reads everything again (a fresh load needs no second read).
         if (replayed && this._refreshOnOpen()) this.fullRefresh('page opened').catch(() => {});
         if (this._pendingOpen) { this.post({ type: 'selectKey', key: this._pendingOpen }); this._pendingOpen = null; }
@@ -1065,9 +1069,9 @@ class MainPanel {
     await this._swr('access:' + key + ':' + category, async () => {
       const conn = await this._conn();
       const [list, enabled] = await Promise.all([
-        this.cache.swr('metaEntities:' + category, () => this.s.loader.listMetaEntities(conn, category), null, { force: options && options.force, maxAgeMs: 10 * 60 * 1000 }).then(r => r.value),
+        this.cache.swr('metaEntities:' + category, () => this.s.loader.listMetaEntities(conn, category), null, { force: options && options.force, maxAgeMs: 10 * 60 * 1000, noStale: true }).then(r => r.value),
         this.cache.swr('metaAccess:' + key, () => this.s.metadata.readMetaAccess(conn, item).then(m => [...m]), null,
-          { force: options && options.force, maxAgeMs: 10 * 60 * 1000, notBefore: dirty ? dirty.value : 0 }).then(r => new Map(r.value))]);
+          { force: options && options.force, maxAgeMs: 10 * 60 * 1000, noStale: true, notBefore: dirty ? dirty.value : 0 }).then(r => new Map(r.value))]);
       const items = list.items.map(x => Object.assign({}, x, { enabled: !!(enabled.get(category + ':' + x.name) || {}).enabled }));
       // Something the item enables that the org list doesn't show (not visible to this user, say) is still listed.
       for (const [k, v] of enabled) if (k.startsWith(category + ':') && v.enabled && !items.some(x => category + ':' + x.name === k)) items.push({ name: k.slice(category.length + 1), label: k.slice(category.length + 1), enabled: true, description: '' });

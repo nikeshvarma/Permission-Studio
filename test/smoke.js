@@ -2450,8 +2450,8 @@ test('the stylesheet matches the screen: every class the screen uses has a style
   for (const m of js.matchAll(/class: '([^']*)'/g)) for (const c of m[1].split(/\s+/)) if (c) used.add(c);
   for (const m of js.matchAll(/setAttribute\('class', '([^']*)'\)/g)) for (const c of m[1].split(/\s+/)) if (c) used.add(c);
   for (const m of js.matchAll(/classList\.(?:add|toggle|remove)\('([\w-]+)'/g)) used.add(m[1]);
-  // Markers that deliberately have no style of their own; nav-g- and dot- are the start of names built in code.
-  const plain = new Set(['neutral', 'icon-btn', 'org-text', 'si-note', 'nav-g-', 'dot-']);
+  // Markers that deliberately have no style of their own; nav-g-, dot- and kinds- are the start of names built in code.
+  const plain = new Set(['neutral', 'icon-btn', 'org-text', 'si-note', 'nav-g-', 'dot-', 'kinds-']);
   const missing = [...used].filter(c => !styled.has(c) && !plain.has(c)).sort();
   assert.deepStrictEqual(missing, [], 'media/app.css is missing styles for: ' + missing.join(', ') + '. Is media/app.css from an older version than media/app.js?');
 });
@@ -2465,8 +2465,12 @@ test('README images show in VS Code: the packaged README points them at GitHub o
   assert.strictEqual(pk.githubRepo({}), null);
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
   const out = pk.readmeForPackage(readme, 'o/Permission-Studio');
-  const imgs = [...out.matchAll(/!\[[^\]]*\]\(([^)\s]+)/g)].map(m => m[1]);
+  // Screenshots now come from GitHub; badges (shields.io, GitHub Actions) were already https and stay as they are.
+  const all = [...out.matchAll(/!\[[^\]]*\]\(([^)\s]+)/g)].map(m => m[1]);
+  const badges = all.filter(u => /^https:\/\/img\.shields\.io\/|\/actions\/workflows\/.*\/badge\.svg$/.test(u));
+  const imgs = all.filter(u => !badges.includes(u));
   assert.ok(imgs.length >= 8 && imgs.every(u => u.startsWith('https://github.com/o/Permission-Studio/raw/HEAD/media/readme/')), imgs.join('\n'));
+  assert.deepStrictEqual(badges, [...readme.matchAll(/!\[[^\]]*\]\((https:[^)\s]+)/g)].map(m => m[1]), 'badges unchanged');
   assert.ok(/\]\(https:\/\/github\.com\/o\/Permission-Studio\/blob\/HEAD\/RELEASING\.md\)/.test(out), 'links to other files go to GitHub');
   assert.strictEqual(pk.readmeForPackage(readme, null), readme, 'without a GitHub repository nothing is rewritten');
   assert.strictEqual(pk.readmeForPackage('[a](https://x.dev) [b](#why) ![c](https://x.dev/c.png) <img src="data:image/png;base64,AA">', 'o/r'),
@@ -2680,6 +2684,85 @@ test('compare: two permission sets in this org, and the same one across two orgs
   assert.match(posts(p, 'compareResult').pop().error, /No permission set named Nope in other@example.com/);
 });
 
+test('newer access lists use only the fields the org has (the reported INVALID_FIELD), and errors show Salesforce’s real reason', async () => {
+  resetOrg();
+  const c = conn();
+  await assert.rejects(c.query('SELECT DeveloperName, MasterLabel, NamespacePrefix FROM BotDefinition'), e => /No such column 'NamespacePrefix'/.test(e.message), 'the test org fails it as the sandbox did');
+  const agents = await loader.listMetaEntities(c, 'agent');
+  assert.deepStrictEqual([agents.unavailable, agents.items.map(x => x.name)], [undefined, ['HR_Helper', 'Sales_Coach']]);
+  const email = await loader.listMetaEntities(c, 'emailRouting');
+  assert.deepStrictEqual([email.unavailable, email.items.map(x => [x.name, x.label])], [undefined, [['support@acme.example', 'support@acme.example']]]);
+  const ds = await loader.listMetaEntities(c, 'externalDataSource');
+  assert.deepStrictEqual(ds.items.map(x => [x.name, x.description]), [['Warehouse', 'Per-user identity']]);
+  const ps = await loader.listMetaEntities(c, 'presenceStatus');
+  assert.match(ps.unavailable, /doesn’t have this feature/);
+  const err = new Error('INVALID_FIELD: \nSELECT X FROM Y\n ^\nERROR at Row:1:Column:8\nNo such column \'X\' on entity \'Y\'. If you are attempting to use a custom field, be sure to append the \'__c\' after the custom field name. Please reference your WSDL.');
+  assert.strictEqual(loader.sfReason(err), "No such column 'X' on entity 'Y'.", 'the reason, not "INVALID_FIELD:"');
+  assert.strictEqual(loader.sfReason(new Error('INSUFFICIENT_ACCESS: you can’t')), 'INSUFFICIENT_ACCESS: you can’t');
+});
+
+test('the reported Agent Access error: an old cached failure gives way to a fresh list; failures are never cached', async () => {
+  resetOrg();
+  await withEnv({ FAKE_SF_TOKEN: tokenFile, FAKE_SF_INSTANCE: INSTANCE }, async () => {
+    const { mp, p } = await metaPanel();
+    const key = 'permissionSet:' + PS1;
+    await mp.select(key);
+    // What 2.3.2 left in the cache: an old list with the bare error, older than its 10 minutes.
+    mp.cache.set('metaEntities:agent', { items: [], unavailable: 'INVALID_FIELD:' });
+    mp.cache._mem.get('metaEntities:agent').savedAt = Date.now() - 60 * 60 * 1000;
+    await mp.openAccess(key, 'agent');
+    const last = posts(p, 'accessDetail').filter(x => x.category === 'agent').pop().data;
+    assert.deepStrictEqual([last.unavailable, last.items.map(x => x.name)], [null, ['HR_Helper', 'Sales_Coach']], 'the fresh list, not the stale error');
+    // A real failure is shown as an error and not saved, so the last good list survives.
+    const before = mp.cache.get('metaEntities:emailRouting');
+    const saved = mp.s.conn.query.bind(mp.s.conn);
+    mp.s.conn.query = async q => { if (/EmailRoutingAddress/.test(q)) throw new Error('INVALID_FIELD: \nSELECT x\n^\nNo such column \'Address\' on entity \'EmailRoutingAddress\'. If you are attempting to use a custom field'); return saved(q); };
+    await mp.openAccess(key, 'emailRouting', { force: true });
+    mp.s.conn.query = saved;
+    const err = posts(p, 'accessError').filter(x => x.category === 'emailRouting').pop();
+    assert.ok(err && /Couldn’t list these: No such column 'Address'/.test(err.message), JSON.stringify(err));
+    assert.deepStrictEqual(mp.cache.get('metaEntities:emailRouting'), before, 'nothing cached for a failure');
+  });
+});
+
+test('cache: a refresh never hands back an expired value', async () => {
+  const c = new Cache(path.join(tmp, 'nostale-' + Date.now()));
+  c.set('k', 'old');
+  c._mem.get('k').savedAt = Date.now() - 1000;
+  assert.strictEqual((await c.swr('k', async () => 'new', null, { maxAgeMs: 10 })).value, 'old', 'the usual: stale first, refreshed behind');
+  await settle(10);
+  c.set('k', 'old'); c._mem.get('k').savedAt = Date.now() - 1000;
+  assert.strictEqual((await c.swr('k', async () => 'new', null, { maxAgeMs: 10, noStale: true })).value, 'new', 'noStale waits for the fresh value');
+});
+
+test('upgrading clears the screens cached by the older version; the toggles start where the settings say', async () => {
+  const vscode = require('vscode');
+  const store = path.join(tmp, 'gs-upgrade-' + Date.now());
+  fs.mkdirSync(path.join(store, 'cache', 'someone'), { recursive: true });
+  fs.writeFileSync(path.join(store, 'cache', 'someone', 'old.json'), '{}');
+  const state = new Map([['permStudio.cacheVersion', '2.3.2']]);
+  const ctxExt = (st) => ({ subscriptions: { push() {} }, extensionUri: vscode.Uri.file(ROOT), globalStorageUri: vscode.Uri.file(store),
+    globalState: { get: k => st.get(k), update: async (k, v) => st.set(k, v) }, workspaceState: { get() {}, update: async () => {} }, extension: { packageJSON: require('../package.json') } });
+  delete require.cache[require.resolve('../extension')];
+  require('../extension').activate(ctxExt(state));
+  assert.ok(!fs.existsSync(path.join(store, 'cache')), 'the old cache is gone');
+  assert.strictEqual(state.get('permStudio.cacheVersion'), require('../package.json').version);
+  fs.mkdirSync(path.join(store, 'cache', 'someone'), { recursive: true });
+  delete require.cache[require.resolve('../extension')];
+  require('../extension').activate(ctxExt(state));
+  assert.ok(fs.existsSync(path.join(store, 'cache', 'someone')), 'the same version keeps its cache');
+  // defaults reach the screen when it opens
+  resetOrg();
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices({ uiDefaults: () => ({ onlyEnabledAccess: false, onlyEnabledSystemPermissions: true, showAllObjects: true }) }));
+  const p = mp.show();
+  await mp.load();
+  p._send({ type: 'ready' });
+  await settle(60);
+  assert.deepStrictEqual(posts(p, 'uiDefaults').pop(), { type: 'uiDefaults', onlyEnabledAccess: false, onlyEnabledSystemPermissions: true, showAllObjects: true });
+  const pkg = require('../package.json').contributes.configuration.properties;
+  assert.deepStrictEqual(['permStudio.defaults.onlyEnabledAccess', 'permStudio.defaults.onlyEnabledSystemPermissions', 'permStudio.defaults.showAllObjects'].map(k => pkg[k] && pkg[k].default), [true, false, false], 'today’s behaviour by default');
+});
+
 // ---------- extension wiring ----------
 test('activation: commands and settings match package.json; status bar; version and author', async () => {
   const vscode = require('vscode');
@@ -2690,7 +2773,7 @@ test('activation: commands and settings match package.json; status bar; version 
   assert.deepStrictEqual([...code.matchAll(/c\.get\('([\w.]+)'/g)].map(m => 'permStudio.' + m[1]).sort(), Object.keys(pkg.contributes.configuration.properties).sort());
   assert.ok(vscode.__statusItems[0].shown && vscode.__statusItems[0].command === 'permStudio.open');
   for (const f of ['media/app.js', 'media/app.css', 'media/tab-light.svg', 'media/tab-dark.svg', 'src/model/dependencies.js', pkg.icon]) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
-  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.3.1', 'nikeshvarma', 'Nikesh Varma']);
+  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.3.5', 'nikeshvarma', 'Nikesh Varma']);
   const png = fs.readFileSync(path.join(ROOT, pkg.icon));
   assert.deepStrictEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [256, 256], 'Marketplace icon is 256 px');
   for (const t of ['light', 'dark']) assert.match(fs.readFileSync(path.join(ROOT, 'media', 'tab-' + t + '.svg'), 'utf8'), /fill="#[0-9A-F]{6}"/i, 'tab icon has an explicit colour');
@@ -2736,7 +2819,14 @@ test('open source: MIT licence in the repository, the package and the README', (
 
 test('every image the README shows exists and ships in the extension', () => {
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
-  const imgs = [...readme.matchAll(/!\[([^\]]*)\]\(([^)]+)\)/g)];
+  const all = [...readme.matchAll(/!\[([^\]]*)\]\(([^)]+)\)/g)];
+  // Badges: https images from the hosts VS Code trusts for badges (it refuses badge SVGs from anywhere else).
+  const badges = all.filter(([, , src]) => /^https:/.test(src));
+  for (const [, alt, src] of badges) {
+    assert.ok(/^https:\/\/(img\.shields\.io\/|github\.com\/[\w.-]+\/[\w.-]+\/actions\/workflows\/[\w.-]+\/badge\.svg)/.test(src), src + ' is a trusted badge host');
+    assert.ok(alt.length > 3, 'alt text for ' + src);
+  }
+  const imgs = all.filter(m => !badges.includes(m));
   assert.ok(imgs.length >= 8, imgs.length + ' images');
   for (const [, alt, src] of imgs) {
     assert.ok(alt.length > 20, 'descriptive alt text for ' + src);

@@ -2,7 +2,7 @@
   "name": "permission-studio",
   "displayName": "Permission Studio",
   "description": "View and edit Salesforce permission sets, permission set groups and profiles for your project's default org, right inside VS Code.",
-  "version": "2.3.1",
+  "version": "2.3.5",
   "publisher": "nikeshvarma",
   "author": {
     "name": "Nikesh Varma"
@@ -25,9 +25,17 @@
   "keywords": [
     "salesforce",
     "permission set",
+    "permission set group",
     "profile",
     "field level security",
-    "sfdx"
+    "object permissions",
+    "muting",
+    "access",
+    "security",
+    "admin",
+    "sfdx",
+    "salesforce cli",
+    "agentforce"
   ],
   "icon": "media/icon.png",
   "main": "./extension.js",
@@ -199,6 +207,21 @@
           "type": "boolean",
           "default": true,
           "description": "Read everything from the org again each time the Permission Studio page opens, or comes back into view after a minute or more. Unsaved changes are kept."
+        },
+        "permStudio.defaults.onlyEnabledAccess": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start access lists (Assigned Apps, Apex Class Access, Custom Permissions, Agent Access and the others) with \u201cShow only enabled\u201d on."
+        },
+        "permStudio.defaults.onlyEnabledSystemPermissions": {
+          "type": "boolean",
+          "default": false,
+          "description": "Start System Permissions with \u201cShow only enabled\u201d on."
+        },
+        "permStudio.defaults.showAllObjects": {
+          "type": "boolean",
+          "default": false,
+          "description": "Start Object Settings with \u201cShow all objects\u201d on (every object, not only those the item has access to)."
         }
       }
     },

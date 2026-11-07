@@ -103,6 +103,8 @@ class Cache {
       return { value, savedAt: Date.now(), stale: false };
     }
     if (o.maxAgeMs && Date.now() - cached.savedAt < o.maxAgeMs) return { value: cached.value, savedAt: cached.savedAt, stale: false };
+    // For a value that feeds a refresh: an expired one is read again and waited for, never handed back stale.
+    if (o.noStale) { const value = await run(); return { value, savedAt: Date.now(), stale: false }; }
     const before = JSON.stringify(cached.value);
     run().then(value => {
       if (onFresh) onFresh(value, JSON.stringify(value) !== before);

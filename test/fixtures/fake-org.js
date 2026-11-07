@@ -88,11 +88,11 @@ function createOrg(options) {
     ],
     MutingPermissionSet: [{ Id: '0QM000000000001AAA', DeveloperName: 'Sales_Bundle_Muting', MasterLabel: 'Sales Bundle Muting', NamespacePrefix: null }],
     // Newer kinds of access. This org has no Omni-Channel, so ServicePresenceStatus isn't here (as in many orgs).
-    BotDefinition: [{ DeveloperName: 'Sales_Coach', MasterLabel: 'Sales Coach', NamespacePrefix: null }, { DeveloperName: 'HR_Helper', MasterLabel: 'HR Helper', NamespacePrefix: null }],
+    BotDefinition: [{ DeveloperName: 'Sales_Coach', MasterLabel: 'Sales Coach' }, { DeveloperName: 'HR_Helper', MasterLabel: 'HR Helper' }],
     ExternalCredentialParameter: [{ ParameterName: 'Integration', ParameterType: 'NamedPrincipal', ExternalCredential: { DeveloperName: 'ERP', MasterLabel: 'ERP' } },
       { ParameterName: 'Auth', ParameterType: 'AuthProtocol', ExternalCredential: { DeveloperName: 'ERP', MasterLabel: 'ERP' } }],
     ExternalDataSource: [{ DeveloperName: 'Warehouse', MasterLabel: 'Warehouse', NamespacePrefix: null, PrincipalType: 'PerUser' }],
-    EmailRoutingAddress: [{ Address: 'support@acme.example', DisplayName: 'Acme Support' }],
+    EmailRoutingAddress: [{ Address: 'support@acme.example' }],
     ApexClass: [
       { Id: '01p000000000001AAA', Name: 'AccountTriggerHandler', NamespacePrefix: null },
       { Id: '01p000000000002AAA', Name: 'LeadService', NamespacePrefix: null },
@@ -127,6 +127,8 @@ function createOrg(options) {
   T.PermissionSetAssignment.push(psa(T.User[0], { PermissionSetId: '0PS000000000001AAA' }), psa(T.User[1], { PermissionSetId: '0PS000000000001AAA', ExpirationDate: '2026-12-31T00:00:00.000+0000' }),
     psa(T.User[2], { PermissionSetId: '0PS00000000000GAAA', PermissionSetGroupId: '0PG000000000001AAA' }));
 
+  // As in the reported sandbox: BotDefinition has no NamespacePrefix, EmailRoutingAddress has no DisplayName.
+  const FIELDS_OF = { BotDefinition: ['Id', 'DeveloperName', 'MasterLabel'], EmailRoutingAddress: ['Id', 'Address'] };
   const DESCRIBE = {
     Lead: { name: 'Lead', label: 'Lead', fields: [
       { name: 'Id', label: 'Lead ID', type: 'id', permissionable: false, updateable: false, createable: false },
@@ -223,6 +225,10 @@ function createOrg(options) {
     const [, colText, table, where, order, limit] = m;
     if (!T[table]) throw Object.assign(new Error("sObject type '" + table + "' is not supported."), { code: 'INVALID_TYPE' });
     const cols = colText.split(', ').map(c => c.trim());
+    // Objects whose fields vary by org: a column the org doesn't have fails as Salesforce fails it.
+    if (FIELDS_OF[table]) for (const c of cols.concat((where || '').match(/\b[A-Z]\w*(?=\s*(?:=|!=|IN|LIKE|<|>))/g) || [], order ? order.split(', ') : [])) {
+      if (!c.includes('.') && !FIELDS_OF[table].includes(c)) throw Object.assign(new Error('\n' + q + '\n' + ' '.repeat(Math.max(0, q.indexOf(c))) + '^\nERROR at Row:1:Column:' + (q.indexOf(c) + 1) + '\nNo such column \'' + c + '\' on entity \'' + table + '\'. If you are attempting to use a custom field, be sure to append the \'__c\' after the custom field name. Please reference your WSDL or the describe call for the appropriate names.'), { code: 'INVALID_FIELD' });
+    }
     let rows = T[table].slice();
     const val = (r, f) => { const v = get(r, f); return v === undefined ? null : v; };
     const test = (r, cond) => {
@@ -570,6 +576,9 @@ function createOrg(options) {
         if (p.endsWith('/sobjects')) return send(res, 200, GLOBAL);
         const d = /\/sobjects\/(\w+)\/describe$/.exec(p);
         if (d) {
+          if (FIELDS_OF[d[1]]) return send(res, 200, { name: d[1], fields: FIELDS_OF[d[1]].map(n => ({ name: n, label: n, type: 'string' })) });
+          if (['ExternalDataSource', 'ExternalCredentialParameter'].includes(d[1]) && T[d[1]]) return send(res, 200, { name: d[1], fields: Object.keys(T[d[1]][0] || {}).concat(['Id']).map(n => ({ name: n, label: n, type: 'string' })) });
+          if (d[1] === 'ServicePresenceStatus' && !T.ServicePresenceStatus) return send(res, 404, [{ errorCode: 'NOT_FOUND', message: 'The requested resource does not exist' }]);
           if (d[1] === 'ObjectPermissions') {
             const f = ['Id', 'SobjectType', 'ParentId', 'PermissionsRead', 'PermissionsCreate', 'PermissionsEdit', 'PermissionsDelete', 'PermissionsViewAllRecords', 'PermissionsModifyAllRecords'];
             if (S.viewAllFields) f.push('PermissionsViewAllFields');

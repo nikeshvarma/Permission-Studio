@@ -291,26 +291,58 @@ const ENTITY = {
 };
 
 /**
- * What the org has for each newer kind of access (best effort: a feature the org
- * doesn't have, or can't be queried, gives an empty list with a reason).
+ * Salesforce's own reason for a failed call. Its messages often start with a code
+ * and put the reason on a later line ("INVALID_FIELD: \nSELECT …\n ^\nERROR at …\nNo such
+ * column 'X' on entity 'Y'. If you …"), so the first line alone says nothing.
+ */
+function sfReason(e) {
+  const lines = String((e && e.message) || e).split('\n').map(l => l.trim()).filter(Boolean);
+  const hit = lines.find(l => /^No such column|^sObject type|is not supported|^Didn't understand|^unexpected token/i.test(l));
+  const text = hit || lines.filter(l => !/^SELECT |^\^$|^ERROR at Row/i.test(l)).pop() || lines[0] || 'Unknown error';
+  return text.replace(/\s*If you are attempting to use a custom field[\s\S]*$/i, '').trim();
+}
+
+/**
+ * What the org has for each newer kind of access. Fields differ between orgs and
+ * API versions (BotDefinition has no NamespacePrefix in some orgs, for example),
+ * so each list names the fields it would like, best first, and the query uses
+ * only the ones the org's describe shows. A feature the org doesn't have gives an
+ * empty list with a reason.
  */
 const META_LISTS = {
-  agent: { soql: 'SELECT DeveloperName, MasterLabel, NamespacePrefix FROM BotDefinition ORDER BY MasterLabel', name: r => (r.NamespacePrefix ? r.NamespacePrefix + '__' : '') + r.DeveloperName, label: r => r.MasterLabel || r.DeveloperName },
-  externalCredential: { soql: "SELECT ExternalCredential.DeveloperName, ExternalCredential.MasterLabel, ParameterName, ParameterType FROM ExternalCredentialParameter WHERE ParameterType IN ('NamedPrincipal', 'PerUserPrincipal')",
-    name: r => (r.ExternalCredential && r.ExternalCredential.DeveloperName) + '-' + r.ParameterName, label: r => ((r.ExternalCredential && r.ExternalCredential.MasterLabel) || '') + ': ' + r.ParameterName,
-    description: r => r.ParameterType === 'PerUserPrincipal' ? 'Per-user principal' : 'Named principal' },
-  externalDataSource: { soql: 'SELECT DeveloperName, MasterLabel, NamespacePrefix, PrincipalType FROM ExternalDataSource ORDER BY MasterLabel', name: r => (r.NamespacePrefix ? r.NamespacePrefix + '__' : '') + r.DeveloperName, label: r => r.MasterLabel || r.DeveloperName,
+  agent: { object: 'BotDefinition', name: ['DeveloperName'], label: ['MasterLabel'], order: 'MasterLabel' },
+  externalDataSource: { object: 'ExternalDataSource', name: ['DeveloperName'], label: ['MasterLabel'], extra: ['PrincipalType'], order: 'MasterLabel',
     description: r => r.PrincipalType === 'PerUser' ? 'Per-user identity' : r.PrincipalType ? 'Identity: ' + r.PrincipalType : '' },
-  presenceStatus: { soql: 'SELECT DeveloperName, MasterLabel FROM ServicePresenceStatus ORDER BY MasterLabel', name: r => r.DeveloperName, label: r => r.MasterLabel || r.DeveloperName },
-  emailRouting: { soql: 'SELECT Address, DisplayName FROM EmailRoutingAddress ORDER BY Address', name: r => r.Address, label: r => r.DisplayName ? r.DisplayName + ' <' + r.Address + '>' : r.Address }
+  presenceStatus: { object: 'ServicePresenceStatus', name: ['DeveloperName'], label: ['MasterLabel'], order: 'MasterLabel' },
+  emailRouting: { object: 'EmailRoutingAddress', name: ['Address', 'DeveloperName'], label: ['DisplayName', 'MasterLabel'], order: null,
+    labelOf: (r, f) => r[f.label] && r[f.label] !== r[f.name] ? r[f.label] + ' <' + r[f.name] + '>' : r[f.name] },
+  // A principal is "<external credential>-<parameter name>", so this one reads two objects' fields at once.
+  externalCredential: { object: 'ExternalCredentialParameter', custom: true }
 };
 async function listMetaEntities(conn, cat) {
   const d = META_LISTS[cat];
   try {
-    const r = await conn.query(d.soql);
-    return { items: r.records.map(x => ({ name: d.name(x), label: d.label(x), description: d.description ? d.description(x) : '', namespace: x.NamespacePrefix || '' })) };
+    if (d.custom) {
+      const r = await conn.query("SELECT ExternalCredential.DeveloperName, ExternalCredential.MasterLabel, ParameterName, ParameterType FROM ExternalCredentialParameter WHERE ParameterType IN ('NamedPrincipal', 'PerUserPrincipal')");
+      return { items: r.records.map(x => ({ name: (x.ExternalCredential && x.ExternalCredential.DeveloperName) + '-' + x.ParameterName,
+        label: ((x.ExternalCredential && x.ExternalCredential.MasterLabel) || '') + ': ' + x.ParameterName, description: x.ParameterType === 'PerUserPrincipal' ? 'Per-user principal' : 'Named principal', namespace: '' })) };
+    }
+    let desc;
+    try { desc = await conn.describe(d.object); } catch (e) { return { items: [], unavailable: 'This org doesn’t have this feature, or your user can’t see it.' }; }
+    const has = new Set((desc.fields || []).map(f => f.name));
+    const f = { name: d.name.find(n => has.has(n)), label: d.label.find(n => has.has(n)), ns: has.has('NamespacePrefix') ? 'NamespacePrefix' : null };
+    if (!f.name) return { items: [], unavailable: 'This org’s ' + d.object + ' has no name field this extension knows (' + d.name.join(' or ') + ').' };
+    const cols = [...new Set([f.name, f.label, f.ns].concat((d.extra || []).filter(x => has.has(x))).filter(Boolean))];
+    const order = d.order && has.has(d.order) ? ' ORDER BY ' + d.order : '';
+    const r = await conn.query('SELECT ' + cols.join(', ') + ' FROM ' + d.object + order);
+    const items = r.records.map(x => ({ name: (f.ns && x[f.ns] ? x[f.ns] + '__' : '') + x[f.name], label: d.labelOf ? d.labelOf(x, f) : (f.label && x[f.label]) || x[f.name],
+      description: d.description ? d.description(x) : '', namespace: (f.ns && x[f.ns]) || '' }));
+    if (!order) items.sort((a, b) => String(a.label).localeCompare(String(b.label)));
+    return { items };
   } catch (e) {
-    return { items: [], unavailable: /INVALID_TYPE|not supported|is not supported|does not exist/i.test(e.message) ? 'This org doesn’t have this feature, or your user can’t see it.' : String(e.message || e).split('\n')[0] };
+    if (/INVALID_TYPE|is not supported|does not exist/i.test(e.message)) return { items: [], unavailable: 'This org doesn’t have this feature, or your user can’t see it.' };
+    // Anything else is thrown, so it's shown as an error and never cached (the last good list stays).
+    throw new Error('Couldn’t list these: ' + sfReason(e));
   }
 }
 
@@ -731,4 +763,4 @@ module.exports = { loadDetail, loadObjectDetail, loadObjectPermissions, loadSyst
   listEntities, loadAccessRows, loadEntityAccess, listRecordTypes, loadGroupComponents, groupStatus, listTabs, loadTabSettings,
   loadTabsPage, loadAssignments, expirationField, searchUsers, loadObjectAccessFor, whoHasAccess, TAB_FROM_API, whoHasPermission,
   permissionOptions, permissionDependencies, assignmentBlockers, setupChanges, profilesFiltered, assigneeCounts, fieldAccessAll,
-  objectAccessAll, profilePermissionSets, setupChangesFor, META_LISTS, listMetaEntities, licenseFix };
+  objectAccessAll, profilePermissionSets, setupChangesFor, META_LISTS, listMetaEntities, licenseFix, sfReason };

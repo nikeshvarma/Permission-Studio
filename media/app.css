@@ -509,15 +509,9 @@ main.stack .grant-cols { grid-template-columns: 1fr; } main.stack .grant-sum { p
 .loading-block { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 28px 12px; }
 .loading-block p, .sk-text { animation: ps-pulse 1.6s ease-in-out infinite; }
 @keyframes ps-pulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
-.busy-bar { position: fixed; top: 0; left: 0; right: 0; height: 2px; z-index: 100; overflow: hidden; pointer-events: none; opacity: 0; transition: opacity .2s; }
-.busy-bar::after { content: ""; position: absolute; top: 0; bottom: 0; width: 35%; background: var(--vscode-progressBar-background, var(--p-read)); border-radius: 2px; animation: ps-sweep 1.2s ease-in-out infinite; }
-body.is-busy .busy-bar { opacity: 1; }
-@keyframes ps-sweep { 0% { left: -35%; } 100% { left: 100%; } }
-@media (prefers-reduced-motion: reduce) {
-  .spinner > span, .loading-block p, .sk-text, .busy-bar::after { animation: none; }
-  .spinner > span { opacity: .8; transform: none; }
-  .busy-bar::after { left: 0; width: 100%; opacity: .6; }
-}
+body.is-busy @media (prefers-reduced-motion: reduce) {
+  .spinner > span, .loading-block p, .sk-text,   .spinner > span { opacity: .8; transform: none; }
+  }
 
 /* small shared pieces */
 .card-note { margin: 0; }
@@ -617,3 +611,36 @@ main.nav-compact .nav-toggle { align-self: center; padding: 6px; }
 /* A cell of permission tags wraps onto two lines when the table is narrow; each tag stays whole. */
 .datatable td:has(> .pill.perm), .datatable td.wrap { white-space: normal; }
 .pill.perm { white-space: nowrap; margin-block: 1px; }
+/* List tabs: they share the row and shrink, so the hide button and every tab stay visible;
+   with all three lists, short names show when the list is narrow. */
+.split { container: side / inline-size; }
+.kinds { display: flex; min-width: 0; overflow: hidden; }
+.kinds .kind { flex: 1 1 auto; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding-left: 6px; padding-right: 6px; }
+.kinds .kind .kl, .kinds .kind .ks { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.kinds .kind .count { flex: none; }
+.kinds .kind .ks { display: none; }
+.search-row { display: flex; align-items: center; gap: 6px; }
+.search-row .search { flex: 1; min-width: 0; }
+/* All three lists in a narrow list: short names, with the count under each name. */
+@container side (max-width: 360px) {
+  .kinds-3 .kind .kl { display: none; }
+  .kinds-3 .kind .ks { display: inline; }
+  .kinds-3 .kind { flex-direction: column; gap: 0; padding: 3px 4px; line-height: 1.2; }
+  .kinds-3 .kind .count { font-size: 10.5px; padding: 0 5px; }
+}
+
+/* Page placeholder while an item first loads: the shape of the header, menu and first section. */
+.sk-bar { display: block; height: 10px; border-radius: 5px; background: linear-gradient(90deg, var(--line) 0%, color-mix(in srgb, var(--vscode-foreground) 16%, transparent) 50%, var(--line) 100%); background-size: 200% 100%; animation: sk 1.4s ease-in-out infinite; }
+.page-skeleton { padding: 18px 24px; display: flex; flex-direction: column; gap: 16px; }
+.psk-head { display: flex; gap: 14px; align-items: center; }
+.psk-tile { width: 40px; height: 40px; border-radius: 8px; flex: none; }
+.psk-lines { display: flex; flex-direction: column; gap: 8px; }
+.psk-lines .sk-bar:last-child { height: 16px; }
+.psk-meta { display: flex; gap: 28px; flex-wrap: wrap; }
+.psk-body { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 20px; }
+.psk-nav { display: flex; flex-direction: column; gap: 14px; padding-top: 6px; }
+.psk-card { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.psk-card-head { display: flex; justify-content: space-between; gap: 16px; padding: 14px; border-bottom: 1px solid var(--line); }
+main.nav-compact .psk-body, main.stack .psk-body { grid-template-columns: 44px minmax(0, 1fr); }
+main.nav-compact .psk-nav .sk-bar, main.stack .psk-nav .sk-bar { width: 22px !important; height: 18px; }
+.skeleton .sk-text { margin-top: 10px; }
