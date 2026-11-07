@@ -63,9 +63,7 @@ Every section of a permission set or profile is on one screen: object, field, re
 
 ![An object's page with object permissions, record type assignments and field permissions, three changes waiting to be saved](media/readme/editing.png)
 
-### Review before anything is saved
-
-Save opens a review that starts with the impact: how many changes, how many users they reach, which high-impact permissions are being granted (Modify All Data, View All Data, Use Any API Client and others are spelled out in plain words), and what access is being removed. Then every change on one line, where any one can be dropped. Add a ticket number and it follows the save into History and copied summaries. On a production org you type the org's name to confirm.
+**Every save is checked first.** Save opens a review that starts with the impact: how many users are affected, which high-impact permissions are granted and what access is removed. Then every change on one line, where you can drop any single change. Add a ticket such as an JIRA story and it follows the save into History and copied summaries. On a production org you type the org's name to confirm. Ctrl/Cmd+S opens the review and saves from it.
 
 ![The review: changes, users affected, high-impact permissions and removals first, then each change on one line with granted chips and a button to remove it](media/readme/review.png)
 
