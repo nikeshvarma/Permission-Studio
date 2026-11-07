@@ -45,7 +45,8 @@
   let recentLookups = [];
   let grantTemplates = [];
   let lastTicket = '';
-  let restoreSaved = null;          // unsaved changes kept from an earlier session
+  let restoreSaved = null;
+  const assigneeFix = {};          // key → { label, users } (users who only lack the permission set licence)          // unsaved changes kept from an earlier session
   let applyTarget = 'wizard';       // which screen is waiting for a bulk save result
   let lastKeyShortcut = 0;
   let stageAfterLoad = null; // stageChanges waiting for its item to open
@@ -61,17 +62,25 @@
   const ACCESS_TABS = [['app', 'Assigned Apps', 'Assigned Apps', 'App'], ['apexClass', 'Apex Class Access', 'Apex Class Access', 'Class'],
     ['apexPage', 'Visualforce Page Access', 'Visualforce Page Access', 'Page'], ['flow', 'Flow Access', 'Flow Access', 'Flow'],
     ['connectedApp', 'Connected App Access', 'Connected App Access', 'Connected App'], ['customPermission', 'Custom Permissions', 'Custom Permissions', 'Permission'],
-    ['customMetadata', 'Custom Metadata Types', 'Custom Metadata Types', 'Type'], ['customSetting', 'Custom Settings', 'Custom Setting Definitions', 'Setting']];
+    ['customMetadata', 'Custom Metadata Types', 'Custom Metadata Types', 'Type'], ['customSetting', 'Custom Settings', 'Custom Setting Definitions', 'Setting'],
+    // Newer kinds of access, saved with the Metadata API.
+    // Short names for the menu; the card title has Setup's full name.
+    ['agent', 'Agent Access', 'Agent Access', 'Agent'], ['externalCredential', 'External Credentials', 'External Credential Principal Access', 'Principal'],
+    ['externalDataSource', 'External Data Sources', 'External Data Source Access', 'Data Source'], ['presenceStatus', 'Presence Statuses', 'Service Presence Statuses Access', 'Status'],
+    ['emailRouting', 'Email Routing Addresses', 'Email Routing Address Access', 'Address']];
+  const META_ACCESS = ['agent', 'externalCredential', 'externalDataSource', 'presenceStatus', 'emailRouting'];
   // The record page menu, grouped the way Setup groups a permission set's overview.
   const SECTIONS = [
-    ['Group', [['components', 'Permission Sets', k => k === 'group']]],
-    ['Apps', [['app'], ['objects', 'Object Settings'], ['apexClass'], ['apexPage'], ['flow'], ['connectedApp'], ['customPermission'], ['customMetadata'], ['customSetting'], ['tab', 'Tab Settings', k => k === 'permissionSet' || k === 'profile']]],
-    ['System', [['system', 'System Permissions'], ['login', 'Login Hours & IP Ranges', k => k === 'profile']]],
+    ['Group', [['components', 'Permission Sets', k => k === 'group'], ['muting', 'Muted Permissions', k => k === 'group']]],
+    ['Apps', [['app'], ['objects', 'Object Settings'], ['apexClass'], ['apexPage'], ['flow'], ['connectedApp'], ['customPermission'], ['customMetadata'], ['customSetting'], ['tab', 'Tab Settings', k => k === 'permissionSet' || k === 'profile'],
+      ['agent', null, k => k !== 'group'], ['externalCredential', null, k => k !== 'group'], ['externalDataSource', null, k => k !== 'group'], ['presenceStatus', null, k => k !== 'group'], ['emailRouting', null, k => k !== 'group']]],
+    ['System', [['system', 'System Permissions'], ['login', 'Login Hours & IP Ranges', k => k === 'profile'], ['profileSettings', 'Profile Settings', k => k === 'profile']]],
     ['Users', [['assignment', 'Assignments', k => k !== 'profile'], ['users', 'Users', k => k === 'profile']]],
     ['Activity', [['audit', 'Changes in Setup']]]
   ];
   const CATEGORY_TITLES = [['groupComponent', 'Permission Sets in Group'], ['object', 'Object Permissions'], ['field', 'Field Permissions'], ['recordType', 'Record Type Assignments'], ['layoutAssignment', 'Page Layout Assignments'],
-    ['user', 'System Permissions'], ['tab', 'Tab Settings'], ['loginHours', 'Login Hours'], ['loginIpRanges', 'Login IP Ranges'], ['assignment', 'Assignments'], ['audit', 'Changes in Setup']]
+    ['user', 'System Permissions'], ['tab', 'Tab Settings'], ['loginHours', 'Login Hours'], ['loginIpRanges', 'Login IP Ranges'], ['assignment', 'Assignments'], ['audit', 'Changes in Setup'],
+    ['mute', 'Muted Permissions'], ['defaultApp', 'Default App'], ['loginFlow', 'Login Flow'], ['dataCategory', 'Data Category Visibility'], ['passwordPolicy', 'Password Policy'], ['sessionSetting', 'Session Settings']]
     .concat(ACCESS_TABS.map(t => [t[0], t[2]]));
   // One colour per object permission, used everywhere the permission appears.
   const TONE = { read: 'perm-read', create: 'perm-create', edit: 'perm-edit', delete: 'perm-delete', viewAll: 'perm-viewall', modifyAll: 'perm-modifyall', viewAllFields: 'perm-viewall' };
@@ -81,6 +90,13 @@
     'ViewEncryptedData', 'BulkApiHardDelete', 'TransferAnyEntity', 'EditReadonlyFields', 'PasswordNeverExpires', 'ManageAuthProviders', 'ManageIpAddresses',
     'ManageLoginAccessPolicies', 'ManageSandboxes', 'ManageCustomPermissions', 'ManageDataIntegrations', 'InstallPackaging']);
   const NAV_ICONS = {
+    agent: ['M12 2a4 4 0 0 1 4 4v1h1a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-1.6L12 22l-3.4-3H7a3 3 0 0 1-3-3v-6a3 3 0 0 1 3-3h1V6a4 4 0 0 1 4-4Zm-3 9.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Zm6 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z'],
+    externalCredential: ['M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1Zm2 0h6V7a3 3 0 0 0-6 0v3Z'],
+    externalDataSource: ['M12 3c4.4 0 8 1.3 8 3v12c0 1.7-3.6 3-8 3s-8-1.3-8-3V6c0-1.7 3.6-3 8-3Zm6 5.2C16.6 8.7 14.4 9 12 9s-4.6-.3-6-.8V11c0 .5 2.3 1.5 6 1.5s6-1 6-1.5V8.2Z'],
+    presenceStatus: ['M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20Zm0 5a5 5 0 1 0 0 10 5 5 0 0 0 0-10Z'],
+    emailRouting: ['M3 5h18a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Zm1 2.3V17h16V7.3l-8 5.2-8-5.2Zm1.6-.3L12 11.2 18.4 7H5.6Z'],
+    muting: ['M3.3 2 2 3.3 6.7 8H4v8h4l5 5v-6.7l4.3 4.3a6.9 6.9 0 0 1-1.3.8v2.1a9 9 0 0 0 2.7-1.5l2 2 1.3-1.3L3.3 2ZM13 3l-2.6 2.6L13 8.2V3Zm6 9c0 .8-.2 1.6-.4 2.3l1.5 1.5A8.9 8.9 0 0 0 21 12a9 9 0 0 0-5-8.1v2.1A7 7 0 0 1 19 12Z'],
+    profileSettings: ['M12 1 3 5v6c0 5.5 3.8 10.7 9 12 5.2-1.3 9-6.5 9-12V5l-9-4Zm0 6a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm0 8c2 0 4 1 4.5 2.3A7.7 7.7 0 0 1 12 20.6a7.7 7.7 0 0 1-4.5-3.3C8 16 10 15 12 15Z'],
     app: ['M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z'],
     objects: ['M12 2 3 7v10l9 5 9-5V7l-9-5Zm0 2.3L18.6 8 12 11.7 5.4 8 12 4.3ZM5 9.7l6 3.4v6.6l-6-3.4V9.7Zm8 10v-6.6l6-3.4v6.6l-6 3.4Z'],
     apexClass: ['M8.6 16.6 4 12l4.6-4.6L7.2 6l-6 6 6 6 1.4-1.4Zm6.8 0L20 12l-4.6-4.6L16.8 6l6 6-6 6-1.4-1.4Z'],
@@ -448,17 +464,20 @@
           ctx.mode === 'cli' ? h('span', { class: 'badge', title: 'Direct API calls were refused or blocked, so calls go through the Salesforce CLI.', text: 'CLI connection' }) : null,
           ctx.offline ? h('span', { class: 'badge error', text: 'Offline · saved data' }) : null
         ]),
-        org ? h('div', { class: 'org-sub', text: org.username }) : null
+        org ? h('div', { class: 'org-sub', title: org.username, text: org.username }) : null
       ])
     ]);
     const status = ctx.connecting ? h('span', { class: 'muted status' }, [spinner(true), ' Connecting…'])
       : listsMeta.refreshing ? h('span', { class: 'muted status' }, [spinner(true), ' Refreshing…'])
-        : listsMeta.savedAt ? h('span', { class: 'muted status', text: 'Updated ' + ago(listsMeta.savedAt) }) : null;
-    const tool = (id, label) => h('button', { class: 'btn ' + (ui.tool === id ? 'brand' : 'neutral'), disabled: ctx.status !== 'ready' || !lists, onclick: () => (ui.tool === id ? closeTool() : openTool(id)), text: label });
+        : listsMeta.savedAt ? h('span', { class: 'muted status updated', text: 'Updated ' + ago(listsMeta.savedAt) }) : null;
+    // Each tool has a full and a short name; the short one shows when the window is narrow (see app.css).
+    const tool = (id, label, short) => h('button', { class: 'btn tool-btn ' + (ui.tool === id ? 'brand' : 'neutral'), title: label, disabled: ctx.status !== 'ready' || !lists, onclick: () => (ui.tool === id ? closeTool() : openTool(id)) },
+      [h('span', { class: 'tl', text: label }), h('span', { class: 'ts', 'aria-hidden': 'true', text: short })]);
     top.append(left, h('div', { class: 'actions' }, [status,
-      h('div', { class: 'btn-group' }, [tool('lookup', 'Find access'), tool('wizard', 'Grant field access'), tool('objwizard', 'Grant object access'), tool('history', 'History')]),
+      h('div', { class: 'btn-group' }, [tool('lookup', 'Find access', 'Find'), tool('wizard', 'Grant field access', 'Grant fields'), tool('objwizard', 'Grant object access', 'Grant objects'),
+        tool('useraccess', 'User access', 'User access'), tool('compare', 'Compare', 'Compare'), tool('history', 'History', 'History')]),
       h('button', { class: 'btn neutral', onclick: () => send({ type: 'showLog' }), text: 'Log' }),
-      h('button', { class: 'btn neutral icon-btn', title: 'Refresh everything from the org', 'aria-label': 'Refresh', disabled: ctx.status === 'loading',
+      h('button', { class: 'btn neutral icon-btn', title: 'Refresh everything from the org' + (listsMeta.savedAt && !listsMeta.refreshing ? ' (updated ' + ago(listsMeta.savedAt) + ')' : ''), 'aria-label': 'Refresh', disabled: ctx.status === 'loading',
         onclick: () => guard(() => send({ type: 'refresh' })) }, [svg(ICONS.refresh), h('span', { text: 'Refresh' })])
     ]));
   }
@@ -470,9 +489,14 @@
     side.textContent = '';
     body.classList.toggle('no-side', !lists);
     if (!lists) return;
+    applyLayout();
+    // Collapsed: a thin rail with a button to bring the list back (the page shows an item picker instead).
+    side.appendChild(h('div', { class: 'list-rail' }, [h('button', { class: 'rail-btn', title: 'Show the list', 'aria-label': 'Show the list', onclick: () => setListCollapsed(false) }, svg(['M8.6 4 7.2 5.4 13.8 12l-6.6 6.6L8.6 20l8-8-8-8Z'])),
+      h('span', { class: 'rail-label', text: (KINDS.find(k => k[0] === ui.kind) || [, ''])[1] })]));
     side.appendChild(h('div', { class: 'split-head' }, [
-      h('div', { class: 'kinds', role: 'tablist' }, KINDS.map(([k, label]) => h('button', { role: 'tab', class: ui.kind === k ? 'kind on' : 'kind', 'aria-selected': String(ui.kind === k),
+      h('div', { class: 'kinds-row' }, [h('div', { class: 'kinds', role: 'tablist' }, KINDS.map(([k, label]) => h('button', { role: 'tab', class: ui.kind === k ? 'kind on' : 'kind', 'aria-selected': String(ui.kind === k),
         onclick: () => { ui.kind = k; save(); renderSide(); } }, [label, h('span', { class: 'count', text: String(lists[k].length) })]))),
+        h('button', { class: 'rail-btn', title: 'Hide the list (more room for the page)', 'aria-label': 'Hide the list', onclick: () => setListCollapsed(true) }, svg(['M15.4 4 16.8 5.4 10.2 12l6.6 6.6-1.4 1.4-8-8 8-8Z']))]),
       searchBox(ui.search, 'Search this list', v => { ui.search = v; save(); renderList(); })
     ]));
     side.appendChild(h('div', { class: 'split-list', id: 'list', role: 'listbox', 'aria-label': 'Items' }));
@@ -517,6 +541,7 @@
     pending.clear(); objectPage = null; rtPage = null; access = {}; accessLimit = 300;
     tabsPage = null; assignPage = null; loginPage = null; layoutPage = null; componentsPage = null; auditPage = null; assigneeBlockers = {}; localFile = null; userResults = null; ui.tool = null; renderTop();
     document.querySelectorAll('.split-item').forEach(b => { const on = b.getAttribute('data-key') === key; b.classList.toggle('on', on); b.setAttribute('aria-selected', String(on)); });
+    applyLayout();
     detail = { key, state: 'loading' };
     renderMain(); renderFooter();
     send({ type: 'select', key });
@@ -541,6 +566,8 @@
       const el = fid ? main.querySelector('[data-fid="' + CSS.escape(fid) + '"]') : null;
       if (el) { el.focus({ preventScroll: true }); if (caret && el.setSelectionRange) { try { el.setSelectionRange(caret[0], caret[1]); } catch (e) { /* not a text field */ } } }
     }
+
+    updateBusy();
   }
   function drawMain() {
     if (ctx.status !== 'ready' && !lists) { main.appendChild(statusView()); return; }
@@ -555,8 +582,10 @@
       h('span', { class: 'grow' }, [h('b', { text: pending.size + (pending.size === 1 ? ' unsaved change' : ' unsaved changes') }), ' from your last session ' + (pending.size === 1 ? 'was' : 'were') + ' kept and ' + (pending.size === 1 ? 'is' : 'are') + ' ready to review.']),
       h('button', { class: 'btn neutral', onclick: () => { pending.clear(); ui.restored = 0; renderMain(); renderFooter(); }, text: 'Discard' }),
       h('button', { class: 'btn brand', onclick: () => openModal({ kind: 'review' }), text: 'Review' })]));
-    if (isNarrow()) main.appendChild(narrowPicker());
+    if (isNarrow() || listCollapsed()) main.appendChild(narrowPicker());
     main.appendChild(pageHeader(detail.data.header));
+    const pn = policyNote();
+    if (pn) main.appendChild(pn);
     if (detail.data.header.readOnlyReason) main.appendChild(h('div', { class: 'pad-x' }, alertBox('info', detail.data.header.readOnlyReason)));
     main.appendChild(sectionsView());
   }
@@ -568,7 +597,7 @@
   /** Narrow windows: the item list becomes a picker. */
   function narrowPicker() {
     const groups = KINDS.map(([kind, title]) => h('optgroup', { label: title }, ((lists && lists[kind]) || []).map(r => h('option', { value: r.key, selected: r.key === ui.selected, text: r.label }))));
-    return h('div', { class: 'narrow-bar' }, [h('select', { class: 'select', 'aria-label': 'Open an item', onchange: e => { const k = e.target.value; guard(() => { ui.kind = k.split(':')[0]; save(); renderSide(); choose(k); }); } }, groups),
+    return h('div', { class: 'narrow-bar' + (listCollapsed() ? ' show' : '') }, [h('select', { class: 'select', 'aria-label': 'Open an item', onchange: e => { const k = e.target.value; guard(() => { ui.kind = k.split(':')[0]; save(); renderSide(); choose(k); }); } }, groups),
       ui.selected && (lists[ui.kind] || []).some(r => r.key === ui.selected) ? star(favs.items.has(favId((lists[ui.kind] || []).find(r => r.key === ui.selected))), 'this item', () => {
         const r = (lists[ui.kind] || []).find(x => x.key === ui.selected); if (r) send({ type: 'toggleFavorite', kind: 'item', id: favId(r) }); }) : null]);
   }
@@ -619,6 +648,9 @@
     if (tabsPage && tabsPage.data) send({ type: 'loadTabs', key: ui.selected });
     if (assignPage && assignPage.data) send({ type: 'loadAssignments', key: ui.selected });
     if (componentsPage && componentsPage.data) send({ type: 'loadComponents', key: ui.selected });
+    if (muting && muting.key === ui.selected && muting.data) send({ type: 'loadMuting', key: ui.selected });
+    if (profSettings && profSettings.key === ui.selected && profSettings.data) send({ type: 'loadProfileSettings', key: ui.selected });
+    if (policies[ui.selected]) send({ type: 'loadPolicies', key: ui.selected });
   }
   function reloadCurrent() {
     pending.clear(); renderFooter();
@@ -628,6 +660,9 @@
     if (tabsPage) send({ type: 'loadTabs', key: ui.selected, force: true });
     if (assignPage) send({ type: 'loadAssignments', key: ui.selected, force: true });
     if (componentsPage) send({ type: 'loadComponents', key: ui.selected, force: true });
+    if (muting && muting.key === ui.selected) send({ type: 'loadMuting', key: ui.selected, force: true });
+    if (profSettings && profSettings.key === ui.selected) send({ type: 'loadProfileSettings', key: ui.selected, force: true });
+    if (policies[ui.selected]) { delete policies[ui.selected]; }
     if (auditPage) send({ type: 'loadAudit', key: ui.selected, force: true });
     if (loginPage) send({ type: 'loadLogin', key: ui.selected, force: true });
     if (layoutPage && ui.object) send({ type: 'loadLayouts', key: ui.selected, object: ui.object, force: true });
@@ -660,18 +695,48 @@
     if (el && n !== null) el.textContent = String(n);
   }
   function nav(kind) {
-    return h('nav', { class: 'section-nav', 'aria-label': 'Sections' }, SECTIONS.filter(([, entries]) => entries.some(e => !e[2] || e[2](kind))).map(([group, entries]) => h('div', { class: 'nav-group nav-g-' + group.toLowerCase() }, [
+    const compact = main.classList.contains('nav-compact');
+    const toggle = h('button', { class: 'nav-toggle', title: compact ? 'Show section names' : 'Show icons only (more room for the page)', 'aria-label': compact ? 'Show section names' : 'Show icons only',
+      onclick: () => { ui.navMode = compact ? 'full' : 'compact'; save(); applyLayout(); renderMain(); } }, [svg(compact ? ['M8.6 4 7.2 5.4 13.8 12l-6.6 6.6L8.6 20l8-8-8-8Z'] : ['M15.4 4 16.8 5.4 10.2 12l6.6 6.6-1.4 1.4-8-8 8-8Z']), h('span', { class: 'nav-label', text: 'Icons only' })]);
+    return h('nav', { class: 'section-nav', 'aria-label': 'Sections' }, [toggle].concat(SECTIONS.filter(([, entries]) => entries.some(e => !e[2] || e[2](kind))).map(([group, entries]) => h('div', { class: 'nav-group nav-g-' + group.toLowerCase() }, [
       h('div', { class: 'nav-title', text: group })].concat(entries.filter(e => !e[2] || e[2](kind)).map(e => {
       const id = e[0];
       const on = (ui.page !== 'object' && ui.section === id) || (ui.page === 'object' && id === 'objects');
       const n = sectionCount(id);
       const dirty = [...pending.values()].some(p => sectionOf(p.cat) === id);
-      return h('button', { class: 'nav-item' + (on ? ' on' : ''), 'data-section': id, 'aria-current': on ? 'page' : null,
+      return h('button', { class: 'nav-item' + (on ? ' on' : ''), 'data-section': id, 'aria-current': on ? 'page' : null, title: sectionLabel(id) + (n ? ' (' + n + ')' : ''),
         onclick: () => { ui.section = id; ui.page = 'detail'; accessLimit = 300; save(); renderMain(); main.scrollTop = 0; } },
-      [NAV_ICONS[id] ? svg(NAV_ICONS[id], 'nav-icon') : null, h('span', { class: 'nav-label', text: sectionLabel(id) }), dirty ? h('span', { class: 'dot', title: 'Unsaved changes' }) : null,
+      [NAV_ICONS[id] ? svg(NAV_ICONS[id], 'nav-icon') : h('span', { class: 'nav-icon nav-letter', 'aria-hidden': 'true', text: sectionLabel(id).slice(0, 1) }), h('span', { class: 'nav-label', text: sectionLabel(id) }), dirty ? h('span', { class: 'dot', title: 'Unsaved changes' }) : null,
         n === null ? null : h('span', { class: 'count' + (n ? ' has' : ''), text: String(n) })]);
-    })))));
+    }))))));
   }
+
+  // ---------- layout for the space available (a 14-inch laptop with VS Code's sidebar open is ~970 × 620) ----------
+  /** The list starts collapsed in a narrow window until the user chooses. */
+  // With nothing open the list is the page, so it only collapses once an item is open.
+  function listCollapsed() { if (!ui.selected && !ui.tool) return false; return ui.listCollapsed === undefined ? window.innerWidth < 1024 : !!ui.listCollapsed; }
+  function setListCollapsed(v) { ui.listCollapsed = v; save(); applyLayout(); renderSide(); renderMain(); }
+  /**
+   * Layout from the width the page actually has (VS Code's sidebar, a split editor
+   * and zoom all change it): the section menu shows icons only when the page is
+   * narrow (unless the user asked for names), and two-column pages stack.
+   */
+  function applyLayout() {
+    body.classList.toggle('list-collapsed', !!lists && listCollapsed());
+    const w = main.clientWidth || window.innerWidth;
+    const compact = ui.navMode === 'compact' || (ui.navMode !== 'full' && w < 860);
+    const changed = main.classList.contains('nav-compact') !== compact;
+    main.classList.toggle('nav-compact', compact);
+    main.classList.toggle('stack', w < 980);
+    return changed;
+  }
+  let layoutWidth = 0;
+  new ResizeObserver(() => {
+    const w = main.clientWidth;
+    if (Math.abs(w - layoutWidth) < 4) return;
+    layoutWidth = w;
+    if (applyLayout() && detail && detail.data && !ui.tool) renderMain();
+  }).observe(main);
   function sectionOf(cat) {
     if (cat === 'object' || cat === 'field' || cat === 'recordType' || cat === 'layoutAssignment') return 'objects';
     if (cat === 'user') return 'system';
@@ -689,6 +754,8 @@
     if (id === 'login') return loginCard();
     if (id === 'components') return componentsCard();
     if (id === 'audit') return auditCard();
+    if (id === 'muting') return mutingCard();
+    if (id === 'profileSettings') return profileSettingsCard();
     return h('p', { class: 'empty-line', text: 'Unknown section.' });
   }
   function loadingCard(title, page, retry, message) {
@@ -922,6 +989,8 @@
     const ok = can(cat);
     const q = (ui[filterKey] || '').trim().toLowerCase();
     let rows = a.data.items;
+    const metaNote = a.data.metadata ? h('p', { class: 'card-note muted small', text: 'Read and saved with the Metadata API, so saving takes a little longer than for other settings.' }) : null;
+    if (a.data.metadata && !rows.length) return h('section', { class: 'card' }, [head, h('div', { class: 'card-body' }, [metaNote, h('p', { class: 'empty-line', text: a.data.unavailable || 'None in this org.' })])]);
     // Searching looks through everything, so a class or permission can be found and granted.
     if (q) rows = rows.filter(x => x.label.toLowerCase().includes(q) || x.name.toLowerCase().includes(q));
     else if (ui[onlyKey]) rows = rows.filter(x => x.enabled || pending.has(cat + ':' + x.name));
@@ -931,7 +1000,7 @@
       h('tbody', { id: 'accBody' }, shown.map(x => accessRow(cat, x, ok)))
     ]) : h('p', { class: 'empty-line', text: q ? 'Nothing matches.' : ui[onlyKey] ? 'None enabled. Search or turn off “Show only enabled” to grant some.' : 'None in this org.' });
     const more = rows.length > shown.length ? h('div', { class: 'more' }, [h('button', { class: 'btn neutral', onclick: () => { accessLimit += 500; renderMain(); }, text: 'Show ' + Math.min(500, rows.length - shown.length) + ' more of ' + (rows.length - shown.length) })]) : null;
-    return h('section', { class: 'card' }, [head, h('div', { class: 'card-body flush' }, [body, more])]);
+    return h('section', { class: 'card' }, [head, metaNote ? h('div', { class: 'card-body slim' }, metaNote) : null, h('div', { class: 'card-body flush' }, [body, more])]);
   }
   function accessRow(cat, x, ok) {
     const k = cat + ':' + x.name;
@@ -940,6 +1009,302 @@
       h('td', { class: 'c narrow' }, checkbox({ checked: on, disabled: !ok, edited: edited(k, 'enabled'), fid: k, aria: x.label, onChange: v => toggleEntity(cat, x, v) })),
       h('td', { class: 'strong' }, [x.label, ui.ruleNote && ui.ruleNote.key === k ? h('span', { class: 'rule-note', role: 'status', text: ui.ruleNote.text }) : null]), h('td', { class: 'muted mono', text: x.name }),
       h('td', { class: 'muted' }, cat === 'customPermission' ? (x.description || '') : x.namespace ? h('span', { class: 'pill', text: x.namespace }) : '')]);
+  }
+
+  // ---------- User access: one user's combined access ----------
+  let ua = { q: '', results: null, userId: null, data: null, busy: false, error: null, objQ: '', sysQ: '', openObj: null, fields: null };
+  const srcDots = (d, ids) => h('span', { class: 'src-dots', title: 'Granted by: ' + ids.map(i => d.sources[i] ? d.sources[i].label : '?').join(', ') },
+    ids.slice(0, 4).map(i => h('i', { class: 'dot-' + (SRC_CLASS[(d.sources[i] || {}).kind] || 'ps') })));
+  function userAccessPage() {
+    const out = [h('div', { class: 'lk-bar' }, [h('div', { class: 'fld grow' }, [h('span', { text: 'User' }),
+      searchBox(ua.q, 'Type a name or username', v => { ua.q = v; if (v.trim().length >= 2) send({ type: 'userSearch', text: v }); else ua.results = null; renderMain(); }, 'ua.q', true)])])];
+    if (ua.results && ua.results.text === ua.q && !ua.picked) out.push(h('ul', { class: 'results' }, ua.results.users.length ? ua.results.users.map(u => h('li', {}, h('button', { class: 'result',
+      onclick: () => { Object.assign(ua, { userId: u.userId, picked: true, q: u.name, data: null, error: null, busy: true, openObj: null, fields: null }); send({ type: 'userAccess', userId: u.userId }); renderMain(); } },
+      [h('b', { text: u.name }), h('span', { class: 'muted', text: ' ' + u.username + (u.profile ? ' · ' + u.profile : '') })]))) : [h('li', { class: 'muted', text: ua.results.message || 'No users match.' })]));
+    if (ua.busy) { out.push(loadingCard('Adding up this user’s access', { state: 'loading' }, null, 'Reading the profile, permission sets, groups and their permissions…')); return out; }
+    if (ua.error) { out.push(alertBox('error', ua.error)); return out; }
+    const d = ua.data;
+    if (!d) { out.push(h('p', { class: 'empty-line', text: 'Pick a user to see everything they can do, and why.' })); return out; }
+    const u = d.user;
+    out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, [u.name, u.active ? null : h('span', { class: 'pill', text: 'Inactive' })]),
+      h('div', { class: 'card-tools' }, h('button', { class: 'btn neutral small', onclick: () => { ua.busy = true; send({ type: 'userAccess', userId: u.id }); renderMain(); }, text: 'Read again' }))]),
+      h('div', { class: 'card-body ua-head' }, [
+        h('div', {}, [h('span', { class: 'k', text: 'Username' }), h('span', { class: 'mono', text: u.username })]),
+        h('div', {}, [h('span', { class: 'k', text: 'Profile' }), h('span', { text: u.profile || '—' })]),
+        h('div', {}, [h('span', { class: 'k', text: 'Role' }), h('span', { text: u.role || '—' })]),
+        h('div', {}, [h('span', { class: 'k', text: 'User licence' }), h('span', { text: u.license || '—' })]),
+        h('div', { class: 'wide' }, [h('span', { class: 'k', text: 'Permission set licences' }), d.licenses.length ? h('span', {}, d.licenses.map(l => h('span', { class: 'pill', text: l }))) : h('span', { class: 'muted', text: 'None' })]),
+        h('div', { class: 'wide' }, [h('span', { class: 'k', text: 'Access comes from' }), h('span', {}, d.sources.map(x => [srcChip(x), x.expires ? h('span', { class: 'pill warn', text: 'until ' + x.expires }) : null]).flat())])])]));
+    // objects
+    const oq = ua.objQ.trim().toLowerCase();
+    const objs = d.objects.filter(o => !oq || o.name.toLowerCase().includes(oq));
+    const flags = OBJECT_FLAGS.filter(([f]) => f !== 'viewAllFields');
+    const rows = [];
+    for (const o of objs) {
+      const open = ua.openObj === o.name;
+      rows.push(h('tr', { class: open ? 'why' : '' }, [h('td', {}, h('button', { class: 'link strong', onclick: () => {
+        ua.openObj = open ? null : o.name; ua.fields = null;
+        if (!open) send({ type: 'userFields', userId: u.id, object: o.name, ids: d.sources.map(x => x.permissionSetId) });
+        renderMain(); }, text: (open ? '▾ ' : '▸ ') + o.name }))].concat(flags.map(([f]) => h('td', { class: 'c' }, o.flags[f] && o.flags[f].length ? srcDots(d, o.flags[f]) : h('span', { class: 'muted', text: '—' }))))));
+      if (open) rows.push(h('tr', { class: 'why' }, h('td', { colspan: String(flags.length + 1) }, !ua.fields ? h('div', { class: 'loading-block' }, [spinner(), h('p', { class: 'muted', text: 'Reading field access…' })])
+        : ua.fields.length ? h('table', { class: 'datatable inner' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Field' }), h('th', { class: 'c', text: 'Read' }), h('th', { class: 'c', text: 'Edit' })])),
+          h('tbody', {}, ua.fields.map(f => h('tr', {}, [h('td', { class: 'mono', text: f.field }), h('td', { class: 'c' }, f.read.length ? srcDots(d, f.read) : '—'), h('td', { class: 'c' }, f.edit.length ? srcDots(d, f.edit) : '—')])))])
+          : h('p', { class: 'muted small', text: 'No field access on ' + o.name + '.' }))));
+    }
+    out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, ['Object permissions ', h('span', { class: 'count', text: String(objs.length) })]),
+      h('div', { class: 'card-tools' }, [h('span', { class: 'legend2' }, [h('span', { class: 'lg pr', text: 'profile' }), h('span', { class: 'lg ps', text: 'permission set' }), h('span', { class: 'lg gr', text: 'group' })]),
+        searchBox(ua.objQ, 'Search objects', v => { ua.objQ = v; renderMain(); }, 'ua.objQ', true)])]),
+      h('div', { class: 'card-body flush scroll-y' }, objs.length ? h('table', { class: 'datatable mtx' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Object' })].concat(flags.map(([, l]) => h('th', { class: 'c', text: l.replace(' Records', '') }))))), h('tbody', {}, rows)])
+        : h('p', { class: 'empty-line', text: oq ? 'No object matches.' : 'This user has no object access.' }))]));
+    const sq = ua.sysQ.trim().toLowerCase();
+    const sys = d.system.filter(x => !sq || x.label.toLowerCase().includes(sq) || x.name.toLowerCase().includes(sq));
+    out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, ['System permissions ', h('span', { class: 'count', text: String(sys.length) })]),
+      h('div', { class: 'card-tools' }, searchBox(ua.sysQ, 'Search system permissions', v => { ua.sysQ = v; renderMain(); }, 'ua.sysQ', true))]),
+      h('div', { class: 'card-body flush scroll-y' }, sys.length ? h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Permission' }), h('th', { text: 'Granted by' })])),
+        h('tbody', {}, sys.map(x => h('tr', {}, [h('td', { class: 'strong' }, [x.label, isHighImpact(x) ? h('span', { class: 'pill risk', text: 'High impact' }) : null]),
+          h('td', { class: 'wrap' }, x.sources.map(i => srcChip(d.sources[i])))])))]) : h('p', { class: 'empty-line', text: 'No system permissions match.' }))]));
+    if (d.custom.length) out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, h('h2', {}, ['Custom permissions ', h('span', { class: 'count', text: String(d.custom.length) })])),
+      h('div', { class: 'card-body flush' }, h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Custom permission' }), h('th', { text: 'API Name' }), h('th', { text: 'Granted by' })])),
+        h('tbody', {}, d.custom.map(x => h('tr', {}, [h('td', { class: 'strong', text: x.label }), h('td', { class: 'mono muted', text: x.name }), h('td', { class: 'wrap' }, x.sources.map(i => srcChip(d.sources[i])))])))]))]));
+    return out;
+  }
+
+  // ---------- Compare ----------
+  let cmp = { a: '', b: '', mode: 'here', org: '', orgs: null, busy: false, result: null, q: '', area: '' };
+  function itemOptions(filterKind) {
+    return KINDS.filter(([k]) => !filterKind || k === filterKind).map(([kind, title]) => h('optgroup', { label: title }, ((lists && lists[kind]) || []).map(r => h('option', { value: r.key, text: r.label }))));
+  }
+  function itemSelect(value, onPick, fid, aria, filterKind) {
+    return h('select', { class: 'select', 'data-fid': fid, 'aria-label': aria, onchange: e => onPick(e.target.value) }, [h('option', { value: '', text: 'Choose…', selected: !value })].concat(itemOptions(filterKind).map(g => { for (const o of g.children) if (o.value === value) o.selected = true; return g; })));
+  }
+  function comparePage() {
+    if (!cmp.a && ui.selected) cmp.a = ui.selected;
+    const all = KINDS.flatMap(([k]) => (lists && lists[k]) || []);
+    const A = all.find(r => r.key === cmp.a);
+    if (cmp.mode === 'other' && cmp.orgs === null) { cmp.orgs = 'loading'; send({ type: 'listOrgs' }); }
+    const out = [h('div', { class: 'lk-bar cmp-bar' }, [
+      h('label', { class: 'fld grow' }, [h('span', { text: 'Compare' }), itemSelect(cmp.a, v => { cmp.a = v; cmp.result = null; renderMain(); }, 'cmp.a', 'First item')]),
+      h('div', { class: 'fld' }, [h('span', { text: 'With' }), h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Where' }, [['here', 'In this org'], ['other', 'In another org']].map(([v, t]) =>
+        h('button', { class: cmp.mode === v ? 'on' : '', role: 'radio', 'aria-checked': String(cmp.mode === v), onclick: () => { cmp.mode = v; cmp.result = null; renderMain(); }, text: t })))]),
+      cmp.mode === 'here'
+        ? h('label', { class: 'fld grow' }, [h('span', { text: 'Second item' }), itemSelect(cmp.b, v => { cmp.b = v; cmp.result = null; renderMain(); }, 'cmp.b', 'Second item')])
+        : h('label', { class: 'fld grow' }, [h('span', { text: 'Org' }), Array.isArray(cmp.orgs)
+          ? h('select', { class: 'select', 'data-fid': 'cmp.org', 'aria-label': 'Org', onchange: e => { cmp.org = e.target.value; cmp.result = null; renderMain(); } },
+            [h('option', { value: '', text: cmp.orgs.length ? 'Choose an org…' : 'No other orgs signed in to the Salesforce CLI' })].concat(cmp.orgs.map(o => h('option', { value: o.username, selected: o.username === cmp.org, text: (o.alias ? o.alias + ' · ' : '') + o.username }))))
+          : spinner(true)]),
+      h('button', { class: 'btn brand', disabled: cmp.busy || !A || (cmp.mode === 'here' ? !cmp.b || cmp.b === cmp.a : !cmp.org), onclick: () => {
+        cmp.busy = true; cmp.result = null; renderMain();
+        send(cmp.mode === 'here' ? { type: 'compare', a: cmp.a, b: cmp.b } : { type: 'compare', a: cmp.a, other: { org: cmp.org, kind: A.kind, apiName: A.apiName } });
+      }, text: cmp.busy ? 'Comparing…' : 'Compare' }),
+      cmp.mode === 'other' && A ? h('p', { class: 'muted small lk-recent', text: 'The ' + ({ permissionSet: 'permission set', profile: 'profile', group: 'permission set group' }[A.kind]) + ' named ' + A.apiName + ' in the other org.' }) : null])];
+    if (cmp.busy) { out.push(loadingCard('Comparing', { state: 'loading' }, null, 'Reading both sides…')); return out; }
+    const r = cmp.result;
+    if (!r) { out.push(h('p', { class: 'empty-line', text: 'Choose two items, or one item and another org, then Compare.' })); return out; }
+    if (r.error) { out.push(alertBox('error', r.error)); return out; }
+    const areas = [...new Set(r.rows.map(x => x.area))];
+    const q = cmp.q.trim().toLowerCase();
+    const rows = r.rows.filter(x => (!cmp.area || x.area === cmp.area) && (!q || (x.entry + ' ' + x.a + ' ' + x.b).toLowerCase().includes(q)));
+    out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, [r.rows.length ? r.rows.length + (r.rows.length === 1 ? ' difference' : ' differences') : 'No differences']),
+      h('div', { class: 'card-tools' }, [r.rows.length ? h('button', { class: 'btn neutral small', onclick: () => send({ type: 'copy', text: r.markdown }), text: 'Copy as Markdown' }) : null])]),
+      h('div', { class: 'card-body' }, [h('p', { class: 'flat' }, [h('b', { text: r.labelA }), ' compared with ', h('b', { text: r.labelB }), '. ', h('span', { class: 'muted', text: 'Object, field, system, app, Apex, Visualforce, flow, custom permission, custom metadata, custom setting and tab access. Record types, layouts and the Metadata-only settings aren’t compared.' })]),
+        areas.length ? h('div', { class: 'filters' }, [filterChip('Area', cmp.area, [['', 'All']].concat(areas.map(a => [a, a + ' (' + r.rows.filter(x => x.area === a).length + ')'])), v => { cmp.area = v; renderMain(); }, ''),
+          h('div', { class: 'grow' }), searchBox(cmp.q, 'Search entries', v => { cmp.q = v; renderMain(); }, 'cmp.q', true)]) : null]),
+      rows.length ? h('div', { class: 'card-body flush scroll-y' }, h('table', { class: 'datatable cmp' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Area' }), h('th', { text: 'Entry' }), h('th', { text: r.labelA }), h('th', { text: r.labelB })])),
+        h('tbody', {}, rows.map(x => h('tr', {}, [h('td', { class: 'muted', text: x.area }), h('td', { class: 'mono', text: x.entry }), h('td', { class: /^(No access|Off|Hidden)$/.test(x.a) ? 'muted' : 'strong', text: x.a }), h('td', { class: /^(No access|Off|Hidden)$/.test(x.b) ? 'muted' : 'strong', text: x.b })])))])) : null]));
+    return out;
+  }
+
+  // ---------- muting in permission set groups ----------
+  let muting = null;          // { key, state, data, refreshing }
+  let mutingFieldList = null; // { key, object, fields, error }
+  let mutingForm = null;      // { label, name, confirm, busy }
+  function ensureMuting() {
+    if (muting && muting.key === ui.selected) return;
+    muting = { key: ui.selected, state: 'loading' };
+    send({ type: 'loadMuting', key: ui.selected });
+  }
+  const ALL_OFF = { read: false, create: false, edit: false, delete: false, viewAll: false, modifyAll: false };
+  /** Mute or unmute one object permission, as Setup does: muting Read mutes what needs it; unmuting Delete unmutes Edit and Read. */
+  function toggleMuteObject(o, f, v, base) {
+    const k = 'mute:object:' + o.name;
+    const next = Object.assign({}, eff(k, base));
+    next[f] = v;
+    if (v) for (const g of Deps.OBJECT_REQUIRED_BY[f] || []) { if (o.props[g]) next[g] = true; }
+    else for (const g of Deps.OBJECT_REQUIRES[f] || []) next[g] = false;
+    stage(k, base, next, f, o.name, 'mute');
+  }
+  function toggleMuteField(field, f, v, base) {
+    const k = 'mute:field:' + field.field;
+    const next = Object.assign({}, eff(k, base));
+    next[f] = v;
+    if (f === 'read' && v) next.edit = !!field.edit;
+    if (f === 'edit' && !v) next.read = false;
+    stage(k, base, next, f, field.field, 'mute');
+  }
+  function mutingCard() {
+    ensureMuting();
+    if (!muting.data) return [loadingCard('Muted Permissions', muting, () => { muting = null; renderMain(); })];
+    const d = muting.data;
+    const ok = can('mute');
+    const mutedMap = new Map(d.muted);
+    const g = detail.data.header;
+    if (!d.muting) {
+      if (!mutingForm) mutingForm = { label: g.label + ' Muting', name: (g.apiName + '_Muting').replace(/__+/g, '_').slice(0, 80), confirm: '' };
+      return [h('section', { class: 'card' }, [h('div', { class: 'card-head' }, h('h2', { text: 'Muted Permissions' })), h('div', { class: 'card-body' }, [
+        h('p', { text: 'Muting turns off chosen permissions for this group’s users without changing the permission sets in it. A group needs a muting permission set first; it has none yet.' }),
+        ok ? h('div', { class: 'form-grid' }, [
+          h('label', { class: 'fld' }, [h('span', { text: 'Label' }), h('input', { type: 'text', class: 'text', value: mutingForm.label, 'data-fid': 'mute.label', maxlength: '80', oninput: e => { mutingForm.label = e.target.value; } })]),
+          h('label', { class: 'fld' }, [h('span', { text: 'API name' }), h('input', { type: 'text', class: 'text mono', value: mutingForm.name, 'data-fid': 'mute.name', maxlength: '80', oninput: e => { mutingForm.name = e.target.value; } })]),
+          ctx.production ? h('label', { class: 'fld' }, [h('span', { text: 'Type ' + (ctx.org.alias || ctx.org.username) + ' to confirm' }), h('input', { type: 'text', class: 'text', value: mutingForm.confirm, 'data-fid': 'mute.confirm', oninput: e => { mutingForm.confirm = e.target.value; } })]) : null,
+          h('div', { class: 'btns' }, h('button', { class: 'btn brand', disabled: !!mutingForm.busy, onclick: () => { mutingForm.busy = true; renderMain(); send({ type: 'createMuting', key: ui.selected, label: mutingForm.label.trim(), name: mutingForm.name.trim(), confirm: mutingForm.confirm }); },
+            text: mutingForm.busy ? 'Creating…' : 'Create muting permission set' }))]) : alertBox('info', g.readOnlyReason || 'This group can’t be changed here.')])])];
+    }
+    const flagCols = OBJECT_FLAGS.filter(([f]) => f !== 'viewAllFields');
+    const q = (ui.muteFilter || '').trim().toLowerCase();
+    const objs = d.objects.filter(o => !q || o.name.toLowerCase().includes(q));
+    const objRows = objs.map(o => {
+      const k = 'mute:object:' + o.name;
+      const base = Object.assign({}, ALL_OFF, mutedMap.get(k) || {});
+      const now = eff(k, base);
+      const open = ui.muteObject === o.name;
+      return h('tr', { class: pending.has(k) ? 'row-edited' : Object.values(now).some(Boolean) ? 'muted-row' : '', 'data-row': k }, [
+        h('td', {}, h('button', { class: 'link strong', onclick: () => { ui.muteObject = open ? null : o.name; if (!open) { mutingFieldList = { key: ui.selected, object: o.name }; send({ type: 'mutingFields', key: ui.selected, object: o.name }); } renderMain(); }, text: (open ? '▾ ' : '▸ ') + o.name }))]
+        .concat(flagCols.map(([f, label]) => h('td', { class: 'c' }, o.props[f]
+          ? checkbox({ checked: !!now[f], disabled: !ok, edited: edited(k, f), fid: k + '.' + f, aria: 'Mute ' + label + ' on ' + o.name, onChange: v => toggleMuteObject(o, f, v, base) })
+          : h('span', { class: 'muted', title: 'Not granted by the group’s permission sets', text: '—' })))));
+    });
+    const out = [h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, ['Muted object permissions ', h('span', { class: 'count', text: String(objs.length) })]),
+      h('div', { class: 'card-tools' }, [h('span', { class: 'pill', title: 'The group’s muting permission set', text: d.muting.label }), searchBox(ui.muteFilter || '', 'Search objects', v => { ui.muteFilter = v; renderMain(); }, 'mute.filter', true)])]),
+      h('div', { class: 'card-body slim' }, h('p', { class: 'muted small flat', text: 'A tick mutes the permission for users of this group. Only what the group’s ' + d.members + ' permission set' + (d.members === 1 ? '' : 's') + ' grant can be muted; access from a profile or another assignment isn’t affected.' })),
+      h('div', { class: 'card-body flush scroll-y' }, objs.length ? h('table', { class: 'datatable mtx' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Object' })].concat(flagCols.map(([, label]) => h('th', { class: 'c', text: 'Mute ' + label.replace(' Records', '') }))))),
+        h('tbody', {}, objRows)]) : h('p', { class: 'empty-line', text: 'The group’s permission sets grant no object access.' }))])];
+    if (ui.muteObject && mutingFieldList && mutingFieldList.object === ui.muteObject) {
+      const fl = mutingFieldList;
+      out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, h('h2', { text: 'Muted field permissions: ' + fl.object })),
+        h('div', { class: 'card-body flush scroll-y short' }, !fl.fields ? loadingCard('', { state: 'loading' }) : fl.error ? alertBox('error', fl.error) : fl.fields.length ? h('table', { class: 'datatable' }, [
+          h('thead', {}, h('tr', {}, [h('th', { text: 'Field' }), h('th', { class: 'c', text: 'Mute Read' }), h('th', { class: 'c', text: 'Mute Edit' })])),
+          h('tbody', {}, fl.fields.map(f => {
+            const k = 'mute:field:' + f.field;
+            const base = Object.assign({ read: false, edit: false }, mutedMap.get(k) || {});
+            const now = eff(k, base);
+            return h('tr', { class: pending.has(k) ? 'row-edited' : '', 'data-row': k }, [h('td', { class: 'mono', text: f.field }),
+              h('td', { class: 'c' }, f.read ? checkbox({ checked: !!now.read, disabled: !ok, edited: edited(k, 'read'), fid: k + '.read', aria: 'Mute Read on ' + f.field, onChange: v => toggleMuteField(f, 'read', v, base) }) : '—'),
+              h('td', { class: 'c' }, f.edit ? checkbox({ checked: !!now.edit, disabled: !ok, edited: edited(k, 'edit'), fid: k + '.edit', aria: 'Mute Edit on ' + f.field, onChange: v => toggleMuteField(f, 'edit', v, base) }) : '—')]);
+          }))]) : h('p', { class: 'empty-line', text: 'The group’s permission sets grant no field access on ' + fl.object + '.' }))]));
+    }
+    const sq = (ui.muteSysFilter || '').trim().toLowerCase();
+    const sys = d.system.filter(x => !sq || x.label.toLowerCase().includes(sq) || x.name.toLowerCase().includes(sq));
+    out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, ['Muted system permissions ', h('span', { class: 'count', text: String(sys.length) })]),
+      h('div', { class: 'card-tools' }, searchBox(ui.muteSysFilter || '', 'Search system permissions', v => { ui.muteSysFilter = v; renderMain(); }, 'mute.sysfilter', true))]),
+      h('div', { class: 'card-body flush scroll-y' }, sys.length ? h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, [h('th', { class: 'c narrow', text: 'Mute' }), h('th', { text: 'Permission' }), h('th', { text: 'API Name' })])),
+        h('tbody', {}, sys.map(x => {
+          const k = 'mute:user:' + x.name;
+          const base = Object.assign({ enabled: false }, mutedMap.get(k) || {});
+          const now = eff(k, base);
+          return h('tr', { class: pending.has(k) ? 'row-edited' : now.enabled ? 'muted-row' : '', 'data-row': k }, [
+            h('td', { class: 'c narrow' }, checkbox({ checked: !!now.enabled, disabled: !ok, edited: edited(k, 'enabled'), fid: k, aria: 'Mute ' + x.label, onChange: v => stage(k, base, { enabled: v }, 'enabled', x.label, 'mute') })),
+            h('td', { class: 'strong' }, [x.label, isHighImpact(x) ? h('span', { class: 'pill risk', text: 'High impact' }) : null]), h('td', { class: 'muted mono', text: x.name })]);
+        }))]) : h('p', { class: 'empty-line', text: 'The group’s permission sets grant no system permissions.' }))]));
+    return out;
+  }
+
+  // ---------- profile settings ----------
+  let profSettings = null; // { key, state, data }
+  function ensureProfileSettings() {
+    if (profSettings && profSettings.key === ui.selected) return;
+    profSettings = { key: ui.selected, state: 'loading' };
+    send({ type: 'loadProfileSettings', key: ui.selected });
+  }
+  // The values Setup offers for each policy field.
+  const PASSWORD_UI = [
+    ['passwordExpiration', 'User passwords expire in', [['30', '30 days'], ['60', '60 days'], ['90', '90 days'], ['180', '180 days'], ['365', 'One year'], ['0', 'Never expires']]],
+    ['passwordHistory', 'Enforce password history', [['0', 'No passwords remembered']].concat([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24].map(n => [String(n), n + (n === 1 ? ' password' : ' passwords') + ' remembered']))],
+    ['minimumPasswordLength', 'Minimum password length', Array.from({ length: 46 }, (_, i) => [String(i + 5), (i + 5) + ' characters'])],
+    ['passwordComplexity', 'Password complexity requirement', [['0', 'No restriction'], ['1', 'Must include alpha and numeric characters'], ['2', 'Must include alpha, numeric and special characters'], ['3', 'Must include numbers and uppercase and lowercase letters'], ['4', 'Must include numbers, uppercase and lowercase letters and special characters'], ['5', 'Must include 3 of: numbers, uppercase letters, lowercase letters, special characters']]],
+    ['passwordQuestion', 'Password question requirement', [['0', 'None'], ['1', 'Cannot contain password']]],
+    ['maxLoginAttempts', 'Maximum invalid login attempts', [['0', 'No limit'], ['3', '3'], ['5', '5'], ['10', '10']]],
+    ['lockoutInterval', 'Lockout effective period', [['15', '15 minutes'], ['30', '30 minutes'], ['60', '60 minutes'], ['0', 'Forever (must be reset by admin)']]],
+    ['obscure', 'Obscure secret answer for password resets', [['false', 'No'], ['true', 'Yes']]],
+    ['minimumPasswordLifetime', 'Require a minimum 1 day password lifetime', [['false', 'No'], ['true', 'Yes']]]];
+  const SESSION_UI = [
+    ['sessionTimeout', 'Timeout value', [['15', '15 minutes'], ['30', '30 minutes'], ['60', '1 hour'], ['120', '2 hours'], ['240', '4 hours'], ['480', '8 hours'], ['720', '12 hours'], ['1440', '24 hours']]],
+    ['sessionTimeoutWarning', 'Show the timeout warning popup', [['true', 'Yes'], ['false', 'No']]],
+    ['forceLogout', 'Force logout on session timeout', [['false', 'No'], ['true', 'Yes']]],
+    ['sessionPersistence', 'Keep users logged in', [['false', 'No'], ['true', 'Yes']]],
+    ['requiredSessionLevel', 'Session security level required at login', [['STANDARD', 'Standard'], ['HIGH_ASSURANCE', 'High assurance']]]];
+  function policyCard(title, cat, policy, fields, ok, none) {
+    if (!policy) return h('section', { class: 'card' }, [h('div', { class: 'card-head' }, h('h2', { text: title })), h('div', { class: 'card-body' }, h('p', { class: 'muted flat', text: none }))]);
+    const k = cat + ':' + policy.fullName;
+    const base = Object.fromEntries(Object.entries(policy.values).filter(([f]) => fields.some(x => x[0] === f)));
+    const now = eff(k, base);
+    return h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', { text: title }), h('span', { class: 'muted small mono', text: policy.fullName })]),
+      h('div', { class: 'card-body form-grid' + (pending.has(k) ? ' row-edited' : '') }, fields.filter(([f]) => base[f] !== undefined || f in now).map(([f, label, opts]) => {
+        const v = String(now[f] === undefined ? '' : now[f]);
+        const list = opts.some(o => o[0] === v) ? opts : [[v, v]].concat(opts);
+        return h('label', { class: 'fld' }, [h('span', { text: label }), select(list, v, nv => stage(k, base, Object.assign({}, now, { [f]: nv }), f, title, cat), !ok, k + '.' + f, label)]);
+      }))]);
+  }
+  function profileSettingsCard() {
+    ensureProfileSettings();
+    if (!profSettings.data) return [loadingCard('Profile Settings', profSettings, () => { profSettings = null; renderMain(); }, 'Reading the profile’s settings with the Metadata API…')];
+    const d = profSettings.data;
+    const okApp = can('defaultApp');
+    const appLabel = n => (d.appList.find(a => a.name === n) || {}).label || n;
+    const appBase = { app: d.defaultApp || '' };
+    const appNow = eff('defaultApp:all', appBase);
+    const flowBase = { flow: (d.loginFlow && d.loginFlow.flow) || '' };
+    const flowNow = eff('loginFlow:all', flowBase);
+    const out = [h('section', { class: 'card' }, [h('div', { class: 'card-head' }, h('h2', { text: 'Default app and login flow' })), h('div', { class: 'card-body form-grid' }, [
+      h('label', { class: 'fld' + (pending.has('defaultApp:all') ? ' row-edited' : '') }, [h('span', { text: 'Default app' }),
+        select([['', d.defaultApp ? appLabel(d.defaultApp) : 'Not set']].filter(o => !d.defaultApp || o[0] !== '').concat(d.appList.map(a => [a.name, a.label])), appNow.app, v => {
+          if (v) stage('defaultApp:all', appBase, { app: v, previous: d.defaultApp || '' }, 'app', 'Default app: ' + appLabel(v), 'defaultApp');
+        }, !okApp, 'ps.defaultApp', 'Default app'),
+        h('span', { class: 'muted small', text: 'The app users of this profile land in. It also becomes visible to them.' })]),
+      h('label', { class: 'fld' + (pending.has('loginFlow:all') ? ' row-edited' : '') }, [h('span', { text: 'Login flow' }),
+        select([['', flowBase.flow ? flowBase.flow : 'None']].filter(o => !flowBase.flow || o[0] !== '').concat(d.flowList.map(f => [f.name, f.label])), flowNow.flow, v => {
+          if (v) stage('loginFlow:all', flowBase, { flow: v }, 'flow', 'Login flow: ' + v, 'loginFlow');
+        }, !okApp, 'ps.loginFlow', 'Login flow'),
+        h('span', { class: 'muted small', text: flowBase.flow ? 'To remove the login flow, use Setup › Login Flows.' : 'An active screen flow users go through when they log in.' })])])])];
+    const groups = d.groupList.length ? d.groupList : d.dataCategories.map(c => c.group);
+    out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, h('h2', { text: 'Data category visibility' })),
+      h('div', { class: 'card-body flush' }, groups.length ? h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Category group' }), h('th', { text: 'Visibility' })])),
+        h('tbody', {}, groups.map(gname => {
+          const cur = d.dataCategories.find(c => c.group === gname);
+          const k = 'dataCategory:' + gname;
+          const base = { visibility: cur ? cur.visibility : 'NONE' };
+          const now = eff(k, base);
+          return h('tr', { class: pending.has(k) ? 'row-edited' : '', 'data-row': k }, [h('td', { class: 'strong', text: gname }),
+            h('td', {}, base.visibility === 'CUSTOM' ? h('span', { class: 'muted', text: 'Custom (chosen categories; change it in Setup)' })
+              : select([['ALL', 'All categories'], ['NONE', 'None']], now.visibility, v => stage(k, base, { visibility: v }, 'visibility', gname, 'dataCategory'), !okApp, k, 'Visibility of ' + gname))]);
+        }))]) : h('p', { class: 'empty-line', text: 'This org has no data category groups (they come with Knowledge).' }))]));
+    out.push(policyCard('Password policy', 'passwordPolicy', d.passwordPolicy, PASSWORD_UI, okApp, 'This profile uses the org-wide password policy (Setup › Password Policies).'));
+    out.push(policyCard('Session settings', 'sessionSetting', d.sessionSetting, SESSION_UI, okApp, 'This profile uses the org-wide session settings (Setup › Session Settings).'));
+    return out;
+  }
+
+  // ---------- user access policies ----------
+  const policies = {}; // key → { state, list }
+  function ensurePolicies() {
+    const k = ui.selected;
+    const kind = k && k.split(':')[0];
+    if (!k || (kind !== 'permissionSet' && kind !== 'group') || policies[k]) return;
+    policies[k] = { state: 'loading', list: [] };
+    send({ type: 'loadPolicies', key: k });
+  }
+  /** "Assigned automatically by …" under the page header. */
+  function policyNote() {
+    ensurePolicies();
+    const p = policies[ui.selected];
+    if (!p || !p.list.length) return null;
+    // A policy's trigger, in words (Salesforce's values: Create, Update, CreateAndUpdate).
+    const TRIGGER = { Create: 'when a user is created', Update: 'when a user is updated', CreateAndUpdate: 'when a user is created or updated' };
+    const words = x => x.label + ' (' + (x.status || 'Draft') + (x.triggerType ? ', runs ' + (TRIGGER[x.triggerType] || x.triggerType) : '') + ')';
+    const grants = p.list.filter(x => x.grants);
+    const removes = p.list.filter(x => x.removes);
+    return h('div', { class: 'policy-note', role: 'note' }, [h('span', { class: 'ic', text: '⟳' }), h('span', {}, [
+      grants.length ? ['Assigned automatically by ', h('b', { text: grants.map(words).join(', ') }), '. '] : null,
+      removes.length ? ['Removed automatically by ', h('b', { text: removes.map(words).join(', ') }), '. '] : null,
+      'User access policies apply their own criteria, so assignments you change by hand may be changed again.'].flat().filter(Boolean))]);
   }
 
   function objectsCard() {
@@ -961,7 +1326,7 @@
       || [...pending.keys()].some(k => k.startsWith('field:' + o.name + '.')));
     rows.sort((a, b) => (!!a.other - !!b.other) || (favs.objects.has(b.name) - favs.objects.has(a.name)) || a.label.localeCompare(b.label));
     if (q) rows = rows.filter(o => o.label.toLowerCase().includes(q) || o.name.toLowerCase().includes(q));
-    const cols = d.objectColumns;
+    const cols = d.objectColumns || OBJECT_FLAGS.map(f => f[0]);
     const tools = h('div', { class: 'card-tools' }, [
       searchBox(ui.objFilter, 'Search objects', v => { ui.objFilter = v; renderMain(); }, 'search.objects', true),
       toggle('Show all objects', ui.allObjects, v => { ui.allObjects = v; if (v && catalog === null) { catalog = 'loading'; send({ type: 'objectCatalog' }); } renderMain(); }),
@@ -1155,7 +1520,7 @@
 
   // ---------- tool pages ----------
   /**
-   * Find access and History only read, so they open straight away and unsaved
+   * Find access, User access, Compare and History only read, so they open straight away and unsaved
    * changes wait for you to come back. The grant screens save to many items,
    * possibly the one being edited, so they ask first.
    */
@@ -1164,16 +1529,18 @@
       ui.tool = t;
       if (t === 'history') { historyData = null; send({ type: 'history' }); }
       if ((t === 'lookup' || t === 'wizard' || t === 'objwizard') && catalog === null) { catalog = 'loading'; send({ type: 'objectCatalog' }); }
-      renderMain(); renderTop(); main.scrollTop = 0;
+      applyLayout(); renderMain(); renderTop(); main.scrollTop = 0;
     };
-    if (t === 'lookup' || t === 'history') go(); else guard(go);
+    if (['lookup', 'history', 'useraccess', 'compare'].includes(t)) go(); else guard(go);
   }
   function closeTool() { ui.tool = null; renderMain(); renderTop(); }
   function toolPage() {
     const back = h('button', { class: 'link', onclick: closeTool, text: ui.selected ? '‹ Back to the record' : '‹ Back' });
-    const body = ui.tool === 'lookup' ? lookupPage() : ui.tool === 'wizard' ? wizardPage() : ui.tool === 'objwizard' ? objWizardPage() : historyPage();
+    const body = ui.tool === 'lookup' ? lookupPage() : ui.tool === 'wizard' ? wizardPage() : ui.tool === 'objwizard' ? objWizardPage() : ui.tool === 'useraccess' ? userAccessPage() : ui.tool === 'compare' ? comparePage() : historyPage();
     const titles = { lookup: ['Find access', 'Who can see or change an object or field, and through what.'], wizard: ['Grant field access', 'Give one or more fields Read or Edit access across several permission sets and profiles at once.'],
       objwizard: ['Grant object access', 'Give object permissions and record types to several permission sets and profiles at once.'],
+      useraccess: ['User access', 'Everything one user can do, added up across their profile, permission sets and groups, and where each permission comes from.'],
+      compare: ['Compare', 'How two permission sets, profiles or groups differ, in this org or across two orgs.'],
       history: ['Save history', 'Every save made with Permission Studio in this project, newest first.'] };
     return h('div', { class: 'tool' }, [h('div', { class: 'page-header' }, [back, h('div', { class: 'ph-title tool-title' }, [h('h1', { text: titles[ui.tool][0] })]), h('p', { class: 'muted flat', text: titles[ui.tool][1] })]),
       h('div', { class: 'tab-body' }, body)]);
@@ -1866,6 +2233,12 @@
     restoreSaved = null;
     renderMain(); renderFooter();
   }
+  /** The thin bar at the top of the page moves while anything is loading. */
+  function updateBusy() {
+    const busy = !!((listsMeta && listsMeta.refreshing) || (detail && (detail.state === 'loading' || detail.refreshing)) || lookup.busy || ua.busy || cmp.busy ||
+      main.querySelector('.skeleton, .loading-block, .status .spinner'));
+    document.body.classList.toggle('is-busy', busy);
+  }
   function renderFooter() {
     persistPending();
     if (!pending.size) ui.restored = 0;
@@ -1908,7 +2281,7 @@
     AssignPermissionSets: 'assign permission sets to anyone', ViewAllUsers: 'see every user', ResetPasswords: 'reset users’ passwords' };
   /** The review: impact first (counts, risks, removals), then every change on one line. */
   function reviewView(hd) {
-    const rows = [...pending.entries()].map(([k, p]) => ({ k, p, chips: changeChips(p.before, p.after, p.touched) }));
+    const rows = [...pending.entries()].map(([k, p]) => ({ k, p, chips: reviewChips(k, p) }));
     const granted = rows.filter(r => r.chips.some(c => c.sign === '+')).length;
     const removed = rows.filter(r => r.chips.some(c => c.sign === '-'));
     const risky = rows.filter(r => r.p.cat === 'user' && r.p.after.enabled && isHighImpact({ name: r.k.slice(5), label: r.p.label }));
@@ -1934,6 +2307,20 @@
       out.push(h('div', { class: 'rv-call warn', role: 'note' }, [h('span', { class: 'ic', text: '−' }), h('span', { text: 'Users lose ' + lost.join('; ') + (removed.length > 3 ? ' and ' + (removed.length - 3) + ' more' : '') +
         ', unless another permission set, profile or group still gives it to them.' })]));
     }
+    // Assignments a user access policy may change again.
+    const pol = policies[ui.selected];
+    const removedUsers = rows.filter(r => r.p.cat === 'assignment' && r.p.before && r.p.before.assigned && !r.p.after.assigned).length;
+    const granting = pol && pol.list.filter(x => x.grants && /active/i.test(x.status));
+    if (removedUsers && granting && granting.length) out.push(h('div', { class: 'rv-call warn', role: 'note' }, [h('span', { class: 'ic', text: '⟳' }), h('span', {}, [
+      h('b', { text: granting.map(x => x.label).join(', ') }), (granting.length === 1 ? ' grants' : ' grant') + ' this ' + (hd.kindId === 'group' ? 'group' : 'permission set') + ' automatically. ' +
+      'Removed users who match ' + (granting.length === 1 ? 'its' : 'their') + ' criteria may be given it again.'])]));
+    // Users who only lack the permission set licence can get it in the same save.
+    const fix = licenseFixFor();
+    if (fix) {
+      if (modal.assignLicenses === undefined) modal.assignLicenses = true;
+      out.push(h('div', { class: 'rv-license' }, checkbox({ checked: modal.assignLicenses, fid: 'rv.licenses', label: 'Also assign the ' + fix.label + ' permission set licence to ' + fix.count + (fix.count === 1 ? ' user who needs it' : ' users who need it'),
+        onChange: v => { modal.assignLicenses = v; } })));
+    }
     if (modal.ticket === undefined) modal.ticket = lastTicket || '';
     out.push(h('div', { class: 'rv-tools' }, [
       h('input', { type: 'search', class: 'text', placeholder: 'Filter changes', 'aria-label': 'Filter changes', value: modal.filter || '', 'data-fid': 'rv.filter',
@@ -1942,6 +2329,20 @@
         oninput: e => { modal.ticket = e.target.value; } })]));
     out.push(h('div', { class: 'rv-scroll', id: 'rvTable' }, reviewTable(rows)));
     return out;
+  }
+  /** Chips for one change; muting reads as Muted / Unmuted. */
+  function reviewChips(k, p) {
+    const c = changeChips(p.before, p.after, p.touched);
+    if (p.cat !== 'mute') return c;
+    return c.map(x => ({ sign: x.sign === '+' ? '-' : '+', text: (x.sign === '+' ? 'Muted: ' : 'Unmuted: ') + x.text, auto: x.auto }));
+  }
+  /** The licence fix the review offers: { label, count } or null. */
+  function licenseFixFor() {
+    const f = assigneeFix[ui.selected];
+    if (!f || !f.users.length) return null;
+    const newly = [...pending.entries()].filter(([k, p]) => p.cat === 'assignment' && p.after.assigned && !(p.before && p.before.assigned)).map(([, p]) => p.ref);
+    const count = f.users.filter(u => newly.includes(u)).length;
+    return count ? { label: f.label, count } : null;
   }
   function reviewTable(rows) {
     const q = (modal.filter || '').trim().toLowerCase();
@@ -1968,7 +2369,7 @@
     const el = document.getElementById('rvTable');
     if (!el) return;
     el.textContent = '';
-    el.appendChild(reviewTable([...pending.entries()].map(([k, p]) => ({ k, p, chips: changeChips(p.before, p.after, p.touched) }))));
+    el.appendChild(reviewTable([...pending.entries()].map(([k, p]) => ({ k, p, chips: reviewChips(k, p) }))));
   }
 
   function openModal(m) { modal = m; renderModal(); }
@@ -2039,7 +2440,8 @@
     const writeLocal = !!(localFile && localFile.path && localFile.mode !== 'never' && (localFile.mode === 'always' || modal.writeLocal !== false));
     const ticket = (modal.ticket || '').trim();
     if (ticket !== lastTicket) { lastTicket = ticket; send({ type: 'persist', name: 'lastTicket', value: ticket || null }); }
-    send({ type: 'save', key: ui.selected, object: ui.page === 'object' ? ui.object : null, changes, confirm: modal.confirm || '', force: !!force, writeLocal, ticket });
+    send({ type: 'save', key: ui.selected, object: ui.page === 'object' ? ui.object : null, changes, confirm: modal.confirm || '', force: !!force, writeLocal, ticket,
+      assignLicenses: !!(licenseFixFor() && modal.assignLicenses !== false) });
   }
 
   function toast(variant, message, opts) {
@@ -2143,12 +2545,34 @@
       case 'toast': toast(m.variant || 'info', m.message, { title: m.title, sticky: m.sticky }); break;
       case 'permDeps': permDeps = { system: m.system || {}, custom: m.custom || {} }; break;
       case 'lookupOptions': lookupOptions = m.message ? { message: m.message } : { ready: true, system: m.system || [], custom: m.custom || [] }; if (ui.tool === 'lookup') renderMain(); break;
-      case 'assigneeChecks': if (m.key === ui.selected) { Object.assign(assigneeBlockers, m.blockers || {}); renderMain(); } break;
+      case 'assigneeChecks': if (m.key === ui.selected) { Object.assign(assigneeBlockers, m.blockers || {}); assigneeFix[m.key] = m.licenseFix || null;
+        // A user the licence can be assigned to isn't blocked: the review offers to assign it.
+        if (m.licenseFix) for (const u of m.licenseFix.users) assigneeBlockers[u] = 'needs the ' + m.licenseFix.label + ' permission set licence; the review can assign it.';
+        renderMain(); } break;
       case 'auditLoading': if (m.key === ui.selected) { if (auditPage && auditPage.data) auditPage.refreshing = true; else auditPage = { key: m.key, state: 'loading' }; renderMain(); } break;
       case 'audit': if (m.key === ui.selected) { auditPage = { key: m.key, data: m.data, refreshing: m.refreshing, state: 'ready' }; renderMain(); } break;
       case 'auditError': if (m.key === ui.selected) { auditPage = { key: m.key, state: 'error', message: m.message }; renderMain(); } break;
       case 'listsChecked': listsMeta.savedAt = m.savedAt; renderTop(); break;
       case 'autoRefresh': refreshOpen(); break;
+      // The page was opened again: read the open item and its sections again (unsaved changes are kept).
+      case 'fullRefresh': for (const k of Object.keys(policies)) delete policies[k]; refreshOpen(); break;
+      case 'mutingLoading': if (m.key === ui.selected) { if (muting && muting.key === m.key && muting.data) muting.refreshing = true; else muting = { key: m.key, state: 'loading' }; renderMain(); } break;
+      case 'mutingDetail': if (m.key === ui.selected) { muting = { key: m.key, data: m.data, refreshing: m.refreshing, state: 'ready' }; mutingForm = null; renderMain(); } break;
+      case 'mutingError': if (m.key === ui.selected) { muting = { key: m.key, state: 'error', message: m.message }; renderMain(); } break;
+      case 'mutingFields': if (m.key === ui.selected && mutingFieldList && mutingFieldList.object === m.object) { mutingFieldList = { key: m.key, object: m.object, fields: m.fields, error: m.error }; renderMain(); } break;
+      case 'mutingCreated':
+        if (mutingForm) mutingForm.busy = false;
+        if (m.error) toast('error', m.error, { title: 'Could not create the muting permission set' });
+        else toast('success', 'The group now has a muting permission set. Tick what to mute, then save.', { title: 'Muting ready' });
+        renderMain(); break;
+      case 'profileSettingsLoading': if (m.key === ui.selected) { if (profSettings && profSettings.key === m.key && profSettings.data) profSettings.refreshing = true; else profSettings = { key: m.key, state: 'loading' }; renderMain(); } break;
+      case 'profileSettings': if (m.key === ui.selected) { profSettings = { key: m.key, data: m.data, refreshing: m.refreshing, state: 'ready' }; renderMain(); } break;
+      case 'profileSettingsError': if (m.key === ui.selected) { profSettings = { key: m.key, state: 'error', message: m.message }; renderMain(); } break;
+      case 'policies': policies[m.key] = { state: 'ready', list: m.list || [], error: m.error }; if (m.key === ui.selected && !ui.tool) renderMain(); break;
+      case 'userAccess': if (m.userId === ua.userId) { ua.busy = false; ua.data = m.data || null; ua.error = m.error || null; if (ui.tool === 'useraccess') renderMain(); } break;
+      case 'userFields': if (m.userId === ua.userId && m.object === ua.openObj) { ua.fields = m.fields || []; if (ui.tool === 'useraccess') renderMain(); } break;
+      case 'orgs': cmp.orgs = m.orgs || []; if (ui.tool === 'compare') renderMain(); break;
+      case 'compareResult': cmp.busy = false; cmp.result = m; cmp.q = ''; cmp.area = ''; if (ui.tool === 'compare') renderMain(); break;
       case 'tabsLoading': if (m.key === ui.selected) { if (tabsPage && tabsPage.data) tabsPage.refreshing = true; else tabsPage = { key: m.key, state: 'loading' }; renderMain(); } break;
       case 'tabsDetail': if (m.key === ui.selected) { tabsPage = { key: m.key, data: m.data, refreshing: m.refreshing, state: 'ready' }; reconcile(m.data.items.map(t => ['tab:' + t.name, { visibility: t.visibility }])); renderMain(); renderFooter(); } break;
       case 'tabsError': if (m.key === ui.selected) { tabsPage = { key: m.key, state: 'error', message: m.message }; renderMain(); } break;
@@ -2175,7 +2599,9 @@
       case 'loginLoading': if (m.key === ui.selected) { if (loginPage && loginPage.data) loginPage.refreshing = true; else loginPage = { key: m.key, state: 'loading' }; renderMain(); } break;
       case 'loginSettings': if (m.key === ui.selected) { loginPage = { key: m.key, data: m.data, refreshing: m.refreshing, state: 'ready' }; reconcile([['loginHours:all', m.data.hours || {}], ['loginIpRanges:all', { ranges: m.data.ranges || [] }]]); renderMain(); renderFooter(); } break;
       case 'loginError': if (m.key === ui.selected) { loginPage = { key: m.key, state: 'error', message: m.message }; renderMain(); } break;
-      case 'users': userResults = { text: m.text, users: m.users || [], message: m.message }; if (m.text === ui.userQuery) renderMain(); break;
+      case 'users':
+        if (m.text === ua.q && ui.tool === 'useraccess') { ua.results = { text: m.text, users: m.users || [], message: m.message }; ua.picked = false; renderMain(); break; }
+        userResults = { text: m.text, users: m.users || [], message: m.message }; if (m.text === ui.userQuery) renderMain(); break;
       case 'localFile': if (m.key === ui.selected) localFile = { key: m.key, path: m.path, mode: m.mode }; break;
       case 'lookupResult': lookup.busy = false; lookup.result = m.error ? { error: m.error } : m.result; lookup.f.profile = 'any'; lookup.f.license = 'any'; if (ui.tool === 'lookup') renderMain(); break;
       case 'wizardFields':
@@ -2299,6 +2725,8 @@
     if (modal && modal.kind === 'review') { const b = document.getElementById('saveBtn'); if (b && !b.disabled) doSave(false); return; }
     if (!modal && pending.size && detail && detail.data) openModal({ kind: 'review' });
   }
+  // The progress bar (shown while anything loads; see updateBusy).
+  document.body.prepend(h('div', { class: 'busy-bar', 'aria-hidden': 'true' }));
   document.addEventListener('keydown', e => {
     const tag = (e.target && e.target.tagName) || '';
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(tag);

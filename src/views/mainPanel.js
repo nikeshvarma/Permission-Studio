@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { splitKey } = require('../model/model');
 const { editBlocker, editableCategories, currentValues } = require('../changes/apply');
 const { applyObject } = require('../model/dependencies');
+const { META_ACCESS } = require('../model/model');
 const { str: soqlStr } = require('../data/soql');
 
 const KIND_LABEL = { permissionSet: 'Permission Set', group: 'Permission Set Group', profile: 'Profile' };
@@ -34,8 +35,16 @@ class MainPanel {
 
   get isOpen() { return !!this.panel; }
 
+  /** permStudio.refreshOnOpen (default on). */
+  _refreshOnOpen() { return !this.s.refreshOnOpen || this.s.refreshOnOpen() !== false; }
+
   show() {
-    if (this.panel) { this.panel.reveal(); return this.panel; }
+    if (this.panel) {
+      this.panel.reveal();
+      // Opening it again (from the Command Palette or a file) also reads everything again.
+      if (this._webviewReady && this._refreshOnOpen()) this.fullRefresh('page opened again').catch(() => {});
+      return this.panel;
+    }
     const root = this.context.extensionUri;
     const media = vscode.Uri.joinPath(root, 'media');
     const shared = vscode.Uri.joinPath(root, 'src', 'model');
@@ -45,6 +54,11 @@ class MainPanel {
     this.panel.iconPath = { light: vscode.Uri.joinPath(media, 'tab-light.svg'), dark: vscode.Uri.joinPath(media, 'tab-dark.svg') };
     this.panel.webview.html = html(this.panel.webview, media, shared);
     this.panel.onDidDispose(() => { this.panel = null; this._webviewReady = false; });
+    // Back in view after at least a minute in the background: read everything again.
+    if (this.panel.onDidChangeViewState) this.panel.onDidChangeViewState(e => {
+      const p = e && e.webviewPanel ? e.webviewPanel : this.panel;
+      if (p && p.visible && this._webviewReady && this._refreshOnOpen() && Date.now() - (this._lastFull || 0) > 60 * 1000) this.fullRefresh('back in view').catch(() => {});
+    });
     this.panel.webview.onDidReceiveMessage(m => this._onMessage(m).catch(e => this.s.log('Message ' + (m && m.type) + ' failed: ' + (e.stack || e))));
     return this.panel;
   }
@@ -57,9 +71,12 @@ class MainPanel {
       case 'ready':
         // The extension starts loading in the background as soon as a project opens; join that if it's still running.
         if (this._loading) { if (this.ctx) this.post(contextMessage(this.ctx, this.conn, { loading: 'Loading…' })); await this._loading; }
-        if (this.ctx && this.items.size) this._replay(); else if (this.ctx && this.ctx.status) this.post(contextMessage(this.ctx, this.conn)); else await this.load();
+        let replayed = false;
+        if (this.ctx && this.items.size) { this._replay(); replayed = true; } else if (this.ctx && this.ctx.status) this.post(contextMessage(this.ctx, this.conn)); else await this.load();
         this._webviewReady = true;
         this.post({ type: 'persisted', values: this._persisted() });
+        // Opening the page shows what's cached at once, then reads everything again (a fresh load needs no second read).
+        if (replayed && this._refreshOnOpen()) this.fullRefresh('page opened').catch(() => {});
         if (this._pendingOpen) { this.post({ type: 'selectKey', key: this._pendingOpen }); this._pendingOpen = null; }
         break;
       case 'refresh': await this.load({ force: true }); break;
@@ -86,6 +103,15 @@ class MainPanel {
       case 'loadComponents': await this.openComponents(m.key, { force: m.force }); break;
       case 'permDeps': await this.postDependencies(); break;
       case 'wizardCurrent': await this.wizardCurrent(m); break;
+      case 'loadMuting': await this.openMuting(m.key, { force: m.force }); break;
+      case 'mutingFields': await this.mutingFields(m); break;
+      case 'createMuting': await this.createMuting(m); break;
+      case 'loadProfileSettings': await this.openProfileSettings(m.key, { force: m.force }); break;
+      case 'loadPolicies': await this.postPolicies(m.key, { force: m.force }); break;
+      case 'listOrgs': await this.listOrgs(); break;
+      case 'userAccess': await this.userAccess(m); break;
+      case 'userFields': await this.userFields(m); break;
+      case 'compare': await this.compare(m); break;
       case 'objWizardCurrent': await this.objWizardCurrent(m); break;
       case 'revokePlan': await this.revokePlan(m); break;
       case 'historySetup': await this.historySetup(m); break;
@@ -437,8 +463,9 @@ class MainPanel {
     const item = this.items.get(m.key);
     if (!item) return;
     try {
-      const b = await this.s.loader.assignmentBlockers(await this._conn(), item, m.userIds || []);
-      this.post({ type: 'assigneeChecks', key: m.key, blockers: Object.fromEntries(b) });
+      const conn = await this._conn();
+      const [b, fix] = await Promise.all([this.s.loader.assignmentBlockers(conn, item, m.userIds || []), this.s.loader.licenseFix(conn, item, m.userIds || []).catch(() => null)]);
+      this.post({ type: 'assigneeChecks', key: m.key, blockers: Object.fromEntries(b), licenseFix: fix && fix.users.length ? { label: fix.label, users: fix.users } : null });
     } catch (e) { this.s.log('Licence check failed: ' + e.message); }
   }
 
@@ -866,7 +893,7 @@ class MainPanel {
     try {
       await this._resolve(item, conn);
       const r = await this.s.applyChanges(conn, item, changes, {
-        force: !!(extra && extra.force), metadata: this.s.metadata,
+        force: !!(extra && extra.force), metadata: this.s.metadata, assignLicenses: !!(extra && extra.assignLicenses),
         onSnapshot: (snapshot, safety) => this.s.history.saveSnapshot(this.ctx.projectDir, { org: this.ctx.org.username, target: item.apiName, permissionSetId: item.permissionSetId, items: snapshot, safety: safety || undefined }),
         onProgress: extra && extra.onProgress, log: l => this.s.log(l), pollMs: this.s.pollMs
       });
@@ -1016,7 +1043,9 @@ class MainPanel {
   /** Apex class or custom permission tab: every entity in the org with whether this item grants it. */
   async openAccess(key, category, options) {
     const item = this.items.get(key);
-    if (!item || !this.s.loader.ENTITY[category]) return;
+    if (!item) return;
+    if (META_ACCESS.includes(category)) return this.openMetaAccess(item, key, category, options);
+    if (!this.s.loader.ENTITY[category]) return;
     await this._swr('access:' + key + ':' + category, async () => {
       const conn = await this._conn();
       await this._resolve(item, conn);
@@ -1024,6 +1053,191 @@ class MainPanel {
       return this.s.loader.loadEntityAccess(conn, item, category, entities.value);
     }, (data, savedAt, refreshing) => ({ type: 'accessDetail', key, category, data, savedAt, refreshing }),
     () => this._selected === key, { type: 'accessError', key, category }, options);
+  }
+
+  /**
+   * Agents, external credential principals, external data sources, presence
+   * statuses and email routing addresses: what the org has (best effort) and what
+   * the item enables (one Metadata API retrieve, shared by all five, cached).
+   */
+  async openMetaAccess(item, key, category, options) {
+    const dirty = this.cache.get('saved:' + key);
+    await this._swr('access:' + key + ':' + category, async () => {
+      const conn = await this._conn();
+      const [list, enabled] = await Promise.all([
+        this.cache.swr('metaEntities:' + category, () => this.s.loader.listMetaEntities(conn, category), null, { force: options && options.force, maxAgeMs: 10 * 60 * 1000 }).then(r => r.value),
+        this.cache.swr('metaAccess:' + key, () => this.s.metadata.readMetaAccess(conn, item).then(m => [...m]), null,
+          { force: options && options.force, maxAgeMs: 10 * 60 * 1000, notBefore: dirty ? dirty.value : 0 }).then(r => new Map(r.value))]);
+      const items = list.items.map(x => Object.assign({}, x, { enabled: !!(enabled.get(category + ':' + x.name) || {}).enabled }));
+      // Something the item enables that the org list doesn't show (not visible to this user, say) is still listed.
+      for (const [k, v] of enabled) if (k.startsWith(category + ':') && v.enabled && !items.some(x => category + ':' + x.name === k)) items.push({ name: k.slice(category.length + 1), label: k.slice(category.length + 1), enabled: true, description: '' });
+      return { category, items, unavailable: list.items.length ? null : list.unavailable || null, metadata: true };
+    }, (data, savedAt, refreshing) => ({ type: 'accessDetail', key, category, data, savedAt, refreshing }),
+    () => this._selected === key, { type: 'accessError', key, category }, options);
+  }
+
+  // ---------- muting in permission set groups ----------
+
+  /** What the group's member permission sets grant (before muting) and what is muted now. */
+  async openMuting(key, options) {
+    const item = this.items.get(key);
+    if (!item || item.kind !== 'group') return;
+    const dirty = this.cache.get('saved:' + key);
+    await this._swr('muting:' + key, async () => {
+      const conn = await this._conn();
+      const comps = await conn.query('SELECT PermissionSetId FROM PermissionSetGroupComponent WHERE PermissionSetGroupId = ' + soqlStr(item.recordId));
+      const ids = comps.records.map(r => r.PermissionSetId).filter(id => !/^0QM/.test(id));
+      const [objs, sys, muted] = await Promise.all([
+        ids.length ? conn.query('SELECT SobjectType, PermissionsRead, PermissionsCreate, PermissionsEdit, PermissionsDelete, PermissionsViewAllRecords, PermissionsModifyAllRecords FROM ObjectPermissions WHERE ParentId IN (' + ids.map(soqlStr).join(', ') + ')') : { records: [] },
+        this.s.insightSystem(conn, ids),
+        this.s.metadata.readMuting(conn, item)]);
+      const objects = new Map();
+      const F = [['read', 'PermissionsRead'], ['create', 'PermissionsCreate'], ['edit', 'PermissionsEdit'], ['delete', 'PermissionsDelete'], ['viewAll', 'PermissionsViewAllRecords'], ['modifyAll', 'PermissionsModifyAllRecords']];
+      for (const r of objs.records) { const o = objects.get(r.SobjectType) || {}; for (const [f, c] of F) if (r[c]) o[f] = true; objects.set(r.SobjectType, o); }
+      const labels = new Map((await this.s.loader.systemPermissionFields(conn)).map(f => [f.name, f.label]));
+      const system = new Set(); for (const set of sys.values()) for (const n of set) system.add(n);
+      return { muting: muted.muting, members: ids.length, objects: [...objects].map(([name, props]) => ({ name, props })).sort((a, b) => a.name.localeCompare(b.name)),
+        system: [...system].map(n => ({ name: n, label: labels.get(n) || n })).sort((a, b) => a.label.localeCompare(b.label)), muted: [...muted.entries] };
+    }, (data, savedAt, refreshing) => ({ type: 'mutingDetail', key, data, savedAt, refreshing }), () => this._selected === key, { type: 'mutingError', key },
+    Object.assign({ notBefore: dirty ? dirty.value : 0 }, options));
+  }
+
+  /** Fields of one object the group's members grant, for muting field access. */
+  async mutingFields(m) {
+    const item = this.items.get(m.key);
+    if (!item) return;
+    try {
+      const conn = await this._conn();
+      const comps = await conn.query('SELECT PermissionSetId FROM PermissionSetGroupComponent WHERE PermissionSetGroupId = ' + soqlStr(item.recordId));
+      const ids = comps.records.map(r => r.PermissionSetId).filter(id => !/^0QM/.test(id));
+      const rows = ids.length ? (await conn.query('SELECT Field, PermissionsRead, PermissionsEdit FROM FieldPermissions WHERE SobjectType = ' + soqlStr(m.object) + ' AND ParentId IN (' + ids.map(soqlStr).join(', ') + ')')).records : [];
+      const fields = new Map();
+      for (const r of rows) { const f = fields.get(r.Field) || { field: r.Field, read: false, edit: false }; f.read = f.read || r.PermissionsRead; f.edit = f.edit || r.PermissionsEdit; fields.set(r.Field, f); }
+      this.post({ type: 'mutingFields', key: m.key, object: m.object, fields: [...fields.values()].sort((a, b) => a.field.localeCompare(b.field)) });
+    } catch (e) { this.post({ type: 'mutingFields', key: m.key, object: m.object, fields: [], error: String(e.message || e) }); }
+  }
+
+  /** A group without a muting permission set gets one, so its permissions can be muted. */
+  async createMuting(m) {
+    const item = this.items.get(m.key);
+    try {
+      if (!item || item.kind !== 'group' || item.managed) throw new Error('Only your own permission set groups can have muting.');
+      const bad = nameProblem(m.label, m.name);
+      if (bad) throw new Error(bad);
+      const conn = await this._conn();
+      if (conn.isProduction && !this._confirmed(m.confirm)) throw new Error('Type the org’s alias or username to confirm changing production.');
+      if (await this.s.metadata.mutingFor(conn, item)) throw new Error(item.label + ' already has a muting permission set.');
+      await this.s.metadata.createMuting(conn, m.name, m.label);
+      const r = await conn.query('SELECT Id FROM MutingPermissionSet WHERE DeveloperName = ' + soqlStr(m.name));
+      if (!r.records[0]) throw new Error('The muting permission set was created but can’t be found. Refresh and try again.');
+      await conn.createRecords([{ attributes: { type: 'PermissionSetGroupComponent' }, PermissionSetGroupId: item.recordId, PermissionSetId: r.records[0].Id }]);
+      this.cache.set('saved:' + m.key, Date.now());
+      this.post({ type: 'mutingCreated', key: m.key });
+      await this.openMuting(m.key, { force: true });
+      this.pollGroup(m.key).catch(() => {});
+    } catch (e) { this.post({ type: 'mutingCreated', key: m.key, error: String(e.message || e) }); }
+  }
+
+  // ---------- profile settings ----------
+
+  async openProfileSettings(key, options) {
+    const item = this.items.get(key);
+    if (!item || item.kind !== 'profile') return;
+    const dirty = this.cache.get('saved:' + key);
+    await this._swr('profileSettings:' + key, async () => {
+      const conn = await this._conn();
+      const [settings, apps, flows, groups] = await Promise.all([
+        this.s.metadata.readProfileSettings(conn, item),
+        this.cache.swr('entities:app', () => this.s.loader.listEntities(conn, 'app'), null, { maxAgeMs: 10 * 60 * 1000 }).then(r => r.value).catch(() => []),
+        conn.query("SELECT ApiName, Label FROM FlowDefinitionView WHERE ProcessType = 'Flow' AND IsActive = true ORDER BY Label").then(r => r.records.map(f => ({ name: f.ApiName, label: f.Label || f.ApiName }))).catch(() => []),
+        this.s.metadata.listMembers(conn, 'DataCategoryGroup').catch(() => [])]);
+      return Object.assign(settings, { appList: apps.map(a => ({ name: a.name, label: a.label })), flowList: flows, groupList: groups });
+    }, (data, savedAt, refreshing) => ({ type: 'profileSettings', key, data, savedAt, refreshing }), () => this._selected === key, { type: 'profileSettingsError', key },
+    Object.assign({ notBefore: dirty ? dirty.value : 0 }, options));
+  }
+
+  // ---------- user access policies ----------
+
+  /** The user access policies that grant or remove this permission set or group. */
+  async postPolicies(key, options) {
+    const item = this.items.get(key);
+    if (!item || (item.kind !== 'permissionSet' && item.kind !== 'group')) return;
+    try {
+      const conn = await this._conn();
+      const all = (await this.cache.swr('accessPolicies', () => this.s.metadata.accessPolicies(conn), null, { force: options && options.force, maxAgeMs: 30 * 60 * 1000 })).value;
+      const type = item.kind === 'group' ? 'PermissionSetGroup' : 'PermissionSet';
+      const list = all.map(p => Object.assign({}, p, { actions: p.actions.filter(a => a.type === type && a.target === item.apiName) })).filter(p => p.actions.length)
+        .map(p => ({ name: p.name, label: p.label, status: p.status, triggerType: p.triggerType, grants: p.actions.some(a => /grant/i.test(a.action)), removes: p.actions.some(a => /revoke|remove/i.test(a.action)) }));
+      this.post({ type: 'policies', key, list });
+    } catch (e) { this.post({ type: 'policies', key, list: [], error: String(e.message || e).split('\n')[0] }); }
+  }
+
+  // ---------- user access and compare ----------
+
+  async userAccess(m) {
+    try { this.post({ type: 'userAccess', userId: m.userId, data: await this.s.insight.userAccess(await this._conn(), m.userId) }); }
+    catch (e) { this.post({ type: 'userAccess', userId: m.userId, error: String(e.message || e) }); }
+  }
+  async userFields(m) {
+    try { this.post({ type: 'userFields', userId: m.userId, object: m.object, fields: await this.s.insight.userFieldAccess(await this._conn(), m.ids || [], m.object) }); }
+    catch (e) { this.post({ type: 'userFields', userId: m.userId, object: m.object, fields: [], error: String(e.message || e) }); }
+  }
+
+  /** Orgs the Salesforce CLI is signed in to, for comparing across orgs. */
+  async listOrgs() {
+    const orgs = await (this.s.listOrgs ? this.s.listOrgs().catch(() => []) : []);
+    this.post({ type: 'orgs', orgs: orgs.filter(o => o.username !== (this.ctx && this.ctx.org.username)) });
+  }
+  async _otherConn(username) {
+    this._others = this._others || new Map();
+    if (!this._others.has(username)) this._others.set(username, this.s.openConnection({ username, alias: username }, this.ctx.projectDir, null).catch(e => { this._others.delete(username); throw e; }));
+    return this._others.get(username);
+  }
+
+  /**
+   * Compares two items' access: { a: key, b: key } in this org, or { a: key,
+   * other: { org, kind, apiName } } for the same kind of item in another org.
+   */
+  async compare(m) {
+    try {
+      const conn = await this._conn();
+      const a = this.items.get(m.a);
+      if (!a) throw new Error('Pick the first item again.');
+      await this._resolve(a, conn);
+      let b, connB, labelB;
+      if (m.other) {
+        connB = await this._otherConn(m.other.org);
+        const lists = await this.s.catalog.listAll(connB, [m.other.kind]);
+        b = (lists[m.other.kind] || []).find(x => x.apiName === m.other.apiName);
+        if (!b) throw new Error('No ' + { permissionSet: 'permission set', profile: 'profile', group: 'permission set group' }[m.other.kind] + ' named ' + m.other.apiName + ' in ' + m.other.org + '.');
+        if (b.kind === 'group' && !b.permissionSetId) b.permissionSetId = await this.s.catalog.resolveGroupPermissionSet(connB, b.recordId);
+        labelB = b.label + ' (' + m.other.org + ')';
+      } else {
+        b = this.items.get(m.b);
+        if (!b) throw new Error('Pick the second item again.');
+        connB = conn;
+        await this._resolve(b, conn);
+        labelB = b.label;
+      }
+      const namesA = this.s.insight.entityNames(conn);
+      const namesB = connB === conn ? namesA : this.s.insight.entityNames(connB);
+      const [snapA, snapB] = await Promise.all([this.s.insight.accessSnapshot(conn, a.permissionSetId, namesA), this.s.insight.accessSnapshot(connB, b.permissionSetId, namesB)]);
+      const rows = this.s.insight.compareSnapshots(snapA, snapB);
+      const labelA = a.label + (m.other ? ' (' + (this.ctx.org.alias || this.ctx.org.username) + ')' : '');
+      this.post({ type: 'compareResult', labelA, labelB, rows, sizes: [snapA.size, snapB.size], markdown: this.s.insight.compareMarkdown(labelA, labelB, rows) });
+    } catch (e) { this.post({ type: 'compareResult', error: String(e.message || e) }); }
+  }
+
+  // ---------- a full refresh each time the page opens ----------
+
+  /** Lists, the open item and its sections, read again (unsaved changes are kept). */
+  async fullRefresh(reason) {
+    if (!this.ctx || this._saving) return;
+    this._lastFull = Date.now();
+    this.s.log('Full refresh (' + reason + ')');
+    this.cache.delete('accessPolicies');
+    await this.load({ force: true }).catch(e => this.s.log('Full refresh failed: ' + e.message));
+    this.post({ type: 'fullRefresh' });
   }
 
   /** Record type assignments for one object. Needs a Metadata API retrieve, so it is slow and cached. */
@@ -1138,6 +1352,7 @@ class MainPanel {
       const result = await this.s.applyChanges(conn, item, changes, {
         force: !!m.force,
         metadata: this.s.metadata,
+        assignLicenses: !!m.assignLicenses,
         onSnapshot: (snapshot, safety) => this.s.history.saveSnapshot(this.ctx.projectDir, { org: this.ctx.org.username, target: item.apiName, permissionSetId: item.permissionSetId, items: snapshot, safety: safety || undefined }),
         onProgress: (label, done, total) => this.post({ type: 'saveProgress', key: m.key, label, done, total }),
         log: l => this.s.log(l), pollMs: this.s.pollMs
@@ -1187,6 +1402,9 @@ class MainPanel {
     if (cats.has('layoutAssignment') && m.object) await this.openLayouts(m.key, m.object, { force: true });
     if (cats.has('loginHours') || cats.has('loginIpRanges')) await this.openLogin(m.key, { force: true });
     if (cats.has('groupComponent')) { await this.openComponents(m.key, { force: true }); this.pollGroup(m.key).catch(() => {}); }
+    for (const cat of [...cats].filter(c => META_ACCESS.includes(c))) { this.cache.delete('metaAccess:' + m.key); await this.openAccess(m.key, cat, { force: true }); }
+    if (cats.has('mute')) { await this.openMuting(m.key, { force: true }); this.pollGroup(m.key).catch(() => {}); }
+    if (['defaultApp', 'loginFlow', 'dataCategory', 'passwordPolicy', 'sessionSetting'].some(c => cats.has(c))) await this.openProfileSettings(m.key, { force: true });
   }
 }
 

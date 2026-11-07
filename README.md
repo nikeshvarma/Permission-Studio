@@ -34,9 +34,25 @@ It works for system and custom permissions too, such as Modify All Data or Use A
 
 ![Grant object access: a grid of permission sets and profiles by object permission, with what's already granted and what will be added](media/readme/grant-object-access.png)
 
-**Manage permission set groups.** Add or remove a group's member permission sets. Salesforce recalculates the group in the background; the status shows while it runs, and the group's access refreshes when it finishes.
+**Manage permission set groups.** Add or remove a group's member permission sets, and mute permissions in the group: object, field and system permissions its permission sets grant can be turned off for the group's users without changing the permission sets themselves. A group without a muting permission set gets one in a click. Salesforce recalculates the group in the background; the status shows while it runs, and the group's access refreshes when it finishes.
 
 ![A permission set group's members, one being added, with the recalculation in progress](media/readme/groups.png)
+
+![Muted Permissions on a permission set group: the object and system permissions its permission sets grant, with what is muted ticked](media/readme/muting.png)
+
+**Newer kinds of access.** Agent access (Agentforce employee agents), external credential principals, external data sources, Service presence statuses and email routing addresses, for permission sets and profiles. They're read and saved with the Metadata API; a feature the org doesn't have says so.
+
+**Profile settings.** A profile's default app and login flow, data category visibility, and its password and session policies, edited like everything else and reviewed before saving.
+
+**User access policies and licences.** A permission set or group shows the user access policies that assign it automatically, and the review warns before you remove an assignment a policy may give back. Assigning a permission set to users who lack its permission set licence can assign the licence in the same save.
+
+**See everything one user can do.** User access adds up a user's profile, permission sets and groups (with expiry dates), their permission set licences, and the object, field, system and custom permissions those add up to, each with the sources that grant it.
+
+![User access: one user's sources of access, licences, and object and system permissions with where each comes from](media/readme/user-access.png)
+
+**Compare.** Two permission sets, profiles or groups in this org, or the same one in another org the Salesforce CLI is signed in to: every object, field, system, app, Apex, Visualforce, flow, custom permission, custom metadata, custom setting and tab difference, filterable and copyable as Markdown.
+
+![Compare: the same permission set in two orgs, with each difference](media/readme/compare.png)
 
 **Every save in History.** Undo any save, or copy saves as a table for an ADO or Jira ticket, a design document or an Excel workbook.
 

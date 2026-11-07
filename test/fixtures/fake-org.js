@@ -18,6 +18,18 @@ function createOrg(options) {
     layouts: { '0PS0000000000PRAAA': { 'Lead.': 'Lead-Lead Layout', 'Lead.Partner': 'Lead-Partner Layout' } },
     loginHours: { '0PS0000000000PRAAA': { mondayStart: '480', mondayEnd: '1080' } },
     ipRanges: { '0PS0000000000PRAAA': [{ startAddress: '10.0.0.0', endAddress: '10.0.0.255', description: 'Office' }] },
+    // Entries kept inside permission set and profile files: { permissionSetId: { tag: [values] } }.
+    extra: { '0PS000000000001AAA': { agentAccesses: [{ agentName: 'Sales_Coach', enabled: 'true' }] },
+      '0PS0000000000PRAAA': { applicationVisibilities: [{ application: 'standard__Sales', default: 'true', visible: 'true' }, { application: 'standard__Service', default: 'false', visible: 'true' }],
+        categoryGroupVisibilities: [{ dataCategoryGroup: 'Products', visibility: 'ALL' }] } },
+    // Whole files of other types: { type: { name: xml } }.
+    files: {
+      MutingPermissionSet: { Sales_Bundle_Muting: '<?xml version="1.0" encoding="UTF-8"?>\n<MutingPermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">\n    <objectPermissions>\n        <allowCreate>false</allowCreate>\n        <allowDelete>true</allowDelete>\n        <allowEdit>false</allowEdit>\n        <allowRead>false</allowRead>\n        <modifyAllRecords>false</modifyAllRecords>\n        <object>Account</object>\n        <viewAllRecords>false</viewAllRecords>\n    </objectPermissions>\n    <label>Sales Bundle Muting</label>\n</MutingPermissionSet>\n' },
+      ProfilePasswordPolicy: { 'sales_policy_1': '<?xml version="1.0" encoding="UTF-8"?>\n<ProfilePasswordPolicy xmlns="http://soap.sforce.com/2006/04/metadata">\n    <lockoutInterval>15</lockoutInterval>\n    <maxLoginAttempts>5</maxLoginAttempts>\n    <minimumPasswordLength>8</minimumPasswordLength>\n    <passwordComplexity>1</passwordComplexity>\n    <passwordExpiration>90</passwordExpiration>\n    <passwordHistory>3</passwordHistory>\n    <passwordQuestion>0</passwordQuestion>\n    <profile>Custom%3A Sales</profile>\n</ProfilePasswordPolicy>\n' },
+      ProfileSessionSetting: { 'sales_session_1': '<?xml version="1.0" encoding="UTF-8"?>\n<ProfileSessionSetting xmlns="http://soap.sforce.com/2006/04/metadata">\n    <forceLogout>false</forceLogout>\n    <profile>Custom%3A Sales</profile>\n    <requiredSessionLevel>STANDARD</requiredSessionLevel>\n    <sessionPersistence>false</sessionPersistence>\n    <sessionTimeout>120</sessionTimeout>\n    <sessionTimeoutWarning>true</sessionTimeoutWarning>\n</ProfileSessionSetting>\n' },
+      UserAccessPolicy: { Sales_Onboarding: '<?xml version="1.0" encoding="UTF-8"?>\n<UserAccessPolicy xmlns="http://soap.sforce.com/2006/04/metadata">\n    <masterLabel>Sales Onboarding</masterLabel>\n    <status>Active</status>\n    <triggerType>Create</triggerType>\n    <userAccessPolicyActions>\n        <action>Grant</action>\n        <target>Sales_Ops</target>\n        <type>PermissionSet</type>\n    </userAccessPolicyActions>\n    <userAccessPolicyFilters>\n        <operation>equals</operation>\n        <target>Custom: Sales</target>\n        <type>Profile</type>\n    </userAccessPolicyFilters>\n</UserAccessPolicy>\n' },
+      DataCategoryGroup: { Products: '<?xml version="1.0" encoding="UTF-8"?>\n<DataCategoryGroup xmlns="http://soap.sforce.com/2006/04/metadata"><label>Products</label></DataCategoryGroup>\n', Regions: '<?xml version="1.0" encoding="UTF-8"?>\n<DataCategoryGroup xmlns="http://soap.sforce.com/2006/04/metadata"><label>Regions</label></DataCategoryGroup>\n' }
+    },
     ipRangesAdditive: false, gzip: false, composites: 0, noFieldsStandard: false, groupPolls: 0, noObjectPicklist: false,
     lockDuringRecalc: false, noActivationField: false, noAuditAccess: false, recalcPolls: 2, refusedWhileUpdating: 0, compositeLocks: false, noCompositeWrites: false, compositeNoRollback: false, compositeWrites: 0, inComposite: false, pendingRecalc: null
   };
@@ -40,7 +52,7 @@ function createOrg(options) {
     ],
     Profile: [{ Id: '00e000000000001AAA', FullName: 'Admin', UserLicenseId: '100000000000001AAA' }, { Id: '00e000000000002AAA', FullName: 'Custom%3A Sales', UserLicenseId: '100000000000001AAA' }],
     ApexPage: [{ Id: '066000000000001AAA', Name: 'LeadWizard', MasterLabel: 'Lead Wizard', NamespacePrefix: null }],
-    FlowDefinitionView: [{ DurableId: '300000000000001AAA', ApiName: 'Lead_Intake', Label: 'Lead Intake', NamespacePrefix: null }],
+    FlowDefinitionView: [{ DurableId: '300000000000001AAA', ApiName: 'Lead_Intake', Label: 'Lead Intake', NamespacePrefix: null, ProcessType: 'Flow', IsActive: true }],
     AppMenuItem: [{ ApplicationId: '02u000000000001AAA', Name: 'Sales', Label: 'Sales', NamespacePrefix: null, Type: 'TabSet' }, { ApplicationId: '02u000000000002AAA', Name: 'Service', Label: 'Service', NamespacePrefix: null, Type: 'TabSet' }],
     ConnectedApplication: [{ Id: '0H4000000000001AAA', Name: 'Data Loader' }],
     EntityDefinition: [{ DurableId: '01I000000000001AAA', QualifiedApiName: 'Region__mdt', Label: 'Region', NamespacePrefix: null }, { DurableId: '01I000000000002AAA', QualifiedApiName: 'Config__c', Label: 'Config', NamespacePrefix: null },
@@ -74,7 +86,13 @@ function createOrg(options) {
       { Id: '0PU000000000001AAA', PermissionSetGroupId: '0PG000000000001AAA', PermissionSetId: '0PS000000000001AAA' },
       { Id: '0PU000000000002AAA', PermissionSetGroupId: '0PG000000000001AAA', PermissionSetId: '0QM000000000001AAA' }
     ],
-    MutingPermissionSet: [{ Id: '0QM000000000001AAA', DeveloperName: 'Sales_Bundle_Muting', MasterLabel: 'Sales Bundle Muting' }],
+    MutingPermissionSet: [{ Id: '0QM000000000001AAA', DeveloperName: 'Sales_Bundle_Muting', MasterLabel: 'Sales Bundle Muting', NamespacePrefix: null }],
+    // Newer kinds of access. This org has no Omni-Channel, so ServicePresenceStatus isn't here (as in many orgs).
+    BotDefinition: [{ DeveloperName: 'Sales_Coach', MasterLabel: 'Sales Coach', NamespacePrefix: null }, { DeveloperName: 'HR_Helper', MasterLabel: 'HR Helper', NamespacePrefix: null }],
+    ExternalCredentialParameter: [{ ParameterName: 'Integration', ParameterType: 'NamedPrincipal', ExternalCredential: { DeveloperName: 'ERP', MasterLabel: 'ERP' } },
+      { ParameterName: 'Auth', ParameterType: 'AuthProtocol', ExternalCredential: { DeveloperName: 'ERP', MasterLabel: 'ERP' } }],
+    ExternalDataSource: [{ DeveloperName: 'Warehouse', MasterLabel: 'Warehouse', NamespacePrefix: null, PrincipalType: 'PerUser' }],
+    EmailRoutingAddress: [{ Address: 'support@acme.example', DisplayName: 'Acme Support' }],
     ApexClass: [
       { Id: '01p000000000001AAA', Name: 'AccountTriggerHandler', NamespacePrefix: null },
       { Id: '01p000000000002AAA', Name: 'LeadService', NamespacePrefix: null },
@@ -203,7 +221,7 @@ function createOrg(options) {
     const m = /^SELECT (.+?) FROM (\w+)(?: WHERE (.+?))?(?: ORDER BY ([\w.]+(?:, [\w.]+)*))?(?: LIMIT (\d+))?$/.exec(q);
     if (!m) throw bad('unparsed: ' + q);
     const [, colText, table, where, order, limit] = m;
-    if (!T[table]) throw bad('unknown table ' + table);
+    if (!T[table]) throw Object.assign(new Error("sObject type '" + table + "' is not supported."), { code: 'INVALID_TYPE' });
     const cols = colText.split(', ').map(c => c.trim());
     let rows = T[table].slice();
     const val = (r, f) => { const v = get(r, f); return v === undefined ? null : v; };
@@ -335,8 +353,10 @@ function createOrg(options) {
             else if (!T.TabDefinition.some(t => t.Name === fields.Name)) err = 'INVALID_FIELD: no tab named ' + fields.Name;
           }
           if (type === 'PermissionSetGroupComponent') {
-            const p = T.PermissionSet.find(x => x.Id === fields.PermissionSetId && !x.IsOwnedByProfile && !x.PermissionSetGroupId);
+            // A member is a regular permission set, or the group's (one) muting permission set.
+            const p = T.PermissionSet.find(x => x.Id === fields.PermissionSetId && !x.IsOwnedByProfile && !x.PermissionSetGroupId) || T.MutingPermissionSet.find(x => x.Id === fields.PermissionSetId);
             if (!p) err = 'INVALID_CROSS_REFERENCE_KEY: invalid cross reference id';
+            else if (/^0QM/.test(fields.PermissionSetId) && T.PermissionSetGroupComponent.some(x => x.PermissionSetGroupId === fields.PermissionSetGroupId && /^0QM/.test(x.PermissionSetId))) err = 'FIELD_INTEGRITY_EXCEPTION: A permission set group can have only one muting permission set';
             else if (T.PermissionSetGroupComponent.some(x => x.PermissionSetGroupId === fields.PermissionSetGroupId && x.PermissionSetId === fields.PermissionSetId)) err = 'DUPLICATE_VALUE: This permission set is already in the group';
           }
           if (type === 'PermissionSetAssignment') {
@@ -391,8 +411,19 @@ function createOrg(options) {
     if (type === 'Profile') { const pr = T.Profile.find(x => x.FullName === name); return pr && T.PermissionSet.find(x => x.ProfileId === pr.Id); }
     return T.PermissionSet.find(x => !x.IsOwnedByProfile && ((x.NamespacePrefix ? x.NamespacePrefix + '__' : '') + x.Name) === name);
   }
+  const EXTRA_TAGS = { agentAccesses: 'agentName', externalCredentialPrincipalAccesses: 'externalCredentialPrincipal', externalDataSourceAccesses: 'externalDataSource',
+    servicePresenceStatusAccesses: 'servicePresenceStatus', emailRoutingAddressAccesses: 'name', applicationVisibilities: 'application', loginFlows: 'flow', categoryGroupVisibilities: 'dataCategoryGroup' };
+  // What each name must match in this org (as Salesforce checks them on deploy).
+  const EXTRA_NAMES = { agentAccesses: () => T.BotDefinition.map(b => b.DeveloperName), externalCredentialPrincipalAccesses: () => T.ExternalCredentialParameter.map(x => x.ExternalCredential.DeveloperName + '-' + x.ParameterName),
+    externalDataSourceAccesses: () => T.ExternalDataSource.map(x => x.DeveloperName), emailRoutingAddressAccesses: () => T.EmailRoutingAddress.map(x => x.Address),
+    loginFlows: () => T.FlowDefinitionView.map(f => f.ApiName), categoryGroupVisibilities: () => Object.keys(S.files.DataCategoryGroup || {}) };
+  const fileFor = (type, name) => (S.files[type] || {})[name];
   function metaRetrieve(type, name, rts, layouts) {
     S.retrieves++;
+    if (!['PermissionSet', 'Profile'].includes(type)) {
+      const xml = fileFor(type, name);
+      return xml ? { xml } : { error: 'Entity of type \'' + type + '\' named \'' + name + '\' cannot be found' };
+    }
     const p = psFor(type, name);
     if (!p) return { error: 'Entity of type \'' + type + '\' named \'' + name + '\' cannot be found' };
     const vis = S.rtVis[p.Id] || {};
@@ -412,9 +443,24 @@ function createOrg(options) {
       if (hrs && Object.keys(hrs).length) body += '    <loginHours>\n' + Object.keys(hrs).sort().map(k => '        <' + k + '>' + hrs[k] + '</' + k + '>\n').join('') + '    </loginHours>\n';
       for (const r of S.ipRanges[p.Id] || []) body += '    <loginIpRanges>\n' + (r.description ? '        <description>' + r.description + '</description>\n' : '') + '        <endAddress>' + r.endAddress + '</endAddress>\n        <startAddress>' + r.startAddress + '</startAddress>\n    </loginIpRanges>\n';
     }
+    for (const [tag, list] of Object.entries(S.extra[p.Id] || {})) for (const v of list) {
+      if (tag === 'applicationVisibilities' && type !== 'Profile') continue;
+      body += '    <' + tag + '>\n' + Object.keys(v).sort().map(k => '        <' + k + '>' + v[k] + '</' + k + '>\n').join('') + '    </' + tag + '>\n';
+    }
     return { xml: '<?xml version="1.0" encoding="UTF-8"?>\n<' + root + ' xmlns="http://soap.sforce.com/2006/04/metadata">\n' + (type === 'Profile' ? '    <custom>true</custom>\n' : '    <label>' + p.Label + '</label>\n') + body + '</' + root + '>\n' };
   }
+  /** Other types are kept as whole files; a new muting permission set also becomes a record. */
+  function metaDeployFile(type, name, xml) {
+    if (type === 'MutingPermissionSet') {
+      if (!/<label>/.test(xml)) return { error: 'Required field is missing: label' };
+      if (!T.MutingPermissionSet.some(m => m.DeveloperName === name)) T.MutingPermissionSet.push({ Id: '0QM' + String(++S.seq).padStart(15, '0'), DeveloperName: name, MasterLabel: (/<label>(.*?)<\/label>/.exec(xml) || [])[1], NamespacePrefix: null });
+    } else if (!fileFor(type, name)) return { error: 'Entity of type \'' + type + '\' named \'' + name + '\' cannot be found' };
+    (S.files[type] = S.files[type] || {})[name] = xml;
+    S.deploys.push({ type, name, xml });
+    return { id: '0Af' + String(++S.seq).padStart(15, '0') };
+  }
   function metaDeploy(type, name, xml) {
+    if (!['PermissionSet', 'Profile'].includes(type)) return metaDeployFile(type, name, xml);
     const p = psFor(type, name);
     if (!p) return { error: 'Entity of type \'' + type + '\' named \'' + name + '\' cannot be found' };
     if (type === 'PermissionSet' && !/<label>/.test(xml)) return { error: 'Required field is missing: label' };
@@ -440,6 +486,18 @@ function createOrg(options) {
       const v = (/<visibility>(.*?)<\/visibility>/.exec(m[1]) || [])[1];
       T.PermissionSetTabSetting = T.PermissionSetTabSetting.filter(t => !(t.ParentId === p.Id && t.Name === tab));
       if (v !== 'None') T.PermissionSetTabSetting.push({ ParentId: p.Id, Name: tab, Visibility: v === 'Visible' ? 'DefaultOn' : 'DefaultOff' });
+    }
+    for (const [tag, keyField] of Object.entries(EXTRA_TAGS)) {
+      for (const m of xml.matchAll(new RegExp('<' + tag + '>([\\s\\S]*?)</' + tag + '>', 'g'))) {
+        const v = Object.fromEntries([...m[1].matchAll(/<(\w+)>(.*?)<\/\1>/g)].map(x => [x[1], x[2]]));
+        const names = EXTRA_NAMES[tag] && EXTRA_NAMES[tag]();
+        if (names && !names.includes(v[keyField])) return { error: 'In field: ' + keyField + ' - no ' + tag.replace(/Accesses$|Visibilities$|s$/, '') + ' named ' + v[keyField] + ' found' };
+        const list = ((S.extra[p.Id] = S.extra[p.Id] || {})[tag] = (S.extra[p.Id][tag] || []).filter(x => x[keyField] !== v[keyField]));
+        // As in Salesforce, setting one default app unsets the others; a login flow replaces the previous one.
+        if (tag === 'applicationVisibilities' && v.default === 'true') for (const x of list) x.default = 'false';
+        if (tag === 'loginFlows') list.length = 0;
+        list.push(v);
+      }
     }
     if (S.deployWipesFields) T.FieldPermissions = T.FieldPermissions.filter(f => f.ParentId !== p.Id);
     S.deploys.push({ type, name, xml });
@@ -498,6 +556,7 @@ function createOrg(options) {
       if (url.pathname === '/__token') return send(res, 200, { token: S.token });
       if (url.pathname === '/__meta/retrieve') return send(res, 200, metaRetrieve(url.searchParams.get('type'), url.searchParams.get('name'), (url.searchParams.get('rts') || '').split(',').filter(Boolean), JSON.parse(url.searchParams.get('layouts') || '[]')));
       if (url.pathname === '/__meta/deploy') return send(res, 200, metaDeploy(url.searchParams.get('type'), url.searchParams.get('name'), raw));
+      if (url.pathname === '/__meta/list') return send(res, 200, { names: Object.keys(S.files[url.searchParams.get('type')] || {}).concat(url.searchParams.get('type') === 'MutingPermissionSet' ? T.MutingPermissionSet.map(m => m.DeveloperName) : []) });
       const viaCli = req.headers['x-fake-cli'] === '1';
       S.requests.push({ method: req.method, url: req.url, length: req.url.length, viaCli });
       if (req.headers.authorization !== 'Bearer ' + S.token || (S.rejectDirect && !viaCli)) return send(res, 401, [{ errorCode: 'INVALID_SESSION_ID', message: 'Session expired or invalid' }]);

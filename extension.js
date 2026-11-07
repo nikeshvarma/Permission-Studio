@@ -30,7 +30,8 @@ function settings() {
     localFileMode: c.get('localFile.update', 'ask') || 'ask',
     kinds: listKinds(c.get('lists.show', ['permissionSet', 'profile'])),
     autoRefresh: c.get('autoRefresh.enabled', true) !== false,
-    autoRefreshMinutes: Math.min(30, Math.max(1, Math.round(Number(c.get('autoRefresh.minutes', 5)) || 5)))
+    autoRefreshMinutes: Math.min(30, Math.max(1, Math.round(Number(c.get('autoRefresh.minutes', 5)) || 5))),
+    refreshOnOpen: c.get('refreshOnOpen', true) !== false
   };
 }
 
@@ -129,6 +130,17 @@ function activate(context) {
     resolveContext, openConnection, cacheFor, catalog, loader, detectProduction, history, metadata, favorites, toggleFavorite, log,
     localFile, localFileMode: () => settings().localFileMode, kinds: () => settings().kinds, gate,
     summary, clipboard: text => vscode.env.clipboard.writeText(text), memento: context.workspaceState,
+    insight: require('./src/data/insight'),
+    insightSystem: (conn, ids) => require('./src/data/insight').systemPermissionsOf(conn, ids),
+    refreshOnOpen: () => settings().refreshOnOpen,
+    // Orgs the Salesforce CLI is signed in to (for Compare), from its own library.
+    listOrgs: async () => {
+      const s2 = settings();
+      const dir = (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0] && vscode.workspace.workspaceFolders[0].uri.fsPath) || process.cwd();
+      const lib = await sfcore.load(s2.sfPath, dir, context.globalState, log, { installPath: s2.sfInstallPath || undefined });
+      const all = lib && lib.core && lib.core.AuthInfo && lib.core.AuthInfo.listAllAuthorizations ? await lib.core.AuthInfo.listAllAuthorizations() : [];
+      return all.map(a => ({ username: a.username, alias: (a.aliases && a.aliases[0]) || '' })).filter(o => o.username).sort((x, y) => (x.alias || x.username).localeCompare(y.alias || y.username));
+    },
     applyChanges: apply, showLog: () => out.show(true)
   });
 

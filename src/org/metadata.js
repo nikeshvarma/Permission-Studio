@@ -130,6 +130,7 @@ function entriesOf(doc, item) {
  */
 async function readEntries(conn, item, keys) {
   const result = new Map();
+  const extra = [];
   const rts = new Set();
   const layoutObjects = new Set();
   let needRetrieve = false;
@@ -141,8 +142,10 @@ async function readEntries(conn, item, keys) {
     else if (cat === 'layoutAssignment') { layoutObjects.add(name.slice(0, name.indexOf('.'))); if (name.slice(name.indexOf('.') + 1)) rts.add(name); needRetrieve = true; }
     else if (cat === 'loginHours' || cat === 'loginIpRanges') needRetrieve = true;
     else if (cat === 'tab') tabs.push(name);
+    else if (model.META_ACCESS.includes(cat) || ['defaultApp', 'loginFlow', 'dataCategory', 'mute', 'passwordPolicy', 'sessionSetting'].includes(cat)) extra.push(k);
     else throw new Error(cat + ' is not a metadata entry');
   }
+  if (extra.length) for (const [k, v] of await readExtra(conn, item, extra)) result.set(k, v);
   if (needRetrieve) {
     const layouts = (await Promise.all([...layoutObjects].map(o => listLayouts(conn, o)))).flat().map(l => l.name);
     const doc = await retrieveItem(conn, item, { RecordType: [...rts], Layout: layouts });
@@ -194,8 +197,46 @@ async function readLoginSettings(conn, item) {
   return { hours: all.get('loginHours:all'), ranges: all.get('loginIpRanges:all').ranges };
 }
 
-/** Deploys only the given entries ([{ key, after }]) for the item. */
-async function deployEntries(conn, item, changes) {
+/** Current values of the newer metadata entries (access kinds, profile settings, muting, policies). */
+async function readExtra(conn, item, keys) {
+  const out = new Map();
+  const cats = new Set(keys.map(k => k.slice(0, k.indexOf(':'))));
+  if ([...cats].some(c => model.META_ACCESS.includes(c))) {
+    const m = await readMetaAccess(conn, item);
+    for (const k of keys) if (model.META_ACCESS.includes(k.slice(0, k.indexOf(':')))) out.set(k, m.get(k) || { enabled: false });
+  }
+  if (cats.has('defaultApp') || cats.has('loginFlow') || cats.has('dataCategory') || cats.has('passwordPolicy') || cats.has('sessionSetting')) {
+    const ps = await readProfileSettings(conn, item);
+    for (const k of keys) {
+      const cat = k.slice(0, k.indexOf(':'));
+      const name = k.slice(k.indexOf(':') + 1);
+      if (cat === 'defaultApp') out.set(k, { app: ps.defaultApp || '' });
+      if (cat === 'loginFlow') out.set(k, { flow: (ps.loginFlow && ps.loginFlow.flow) || '' });
+      if (cat === 'dataCategory') { const g = ps.dataCategories.find(x => x.group === name); out.set(k, { visibility: g ? g.visibility : 'NONE' }); }
+      if (cat === 'passwordPolicy') out.set(k, ps.passwordPolicy ? pick(ps.passwordPolicy.values, PASSWORD_FIELDS) : null);
+      if (cat === 'sessionSetting') out.set(k, ps.sessionSetting ? pick(ps.sessionSetting.values, SESSION_FIELDS) : null);
+    }
+  }
+  if (cats.has('mute')) {
+    const { entries } = await readMuting(conn, item);
+    for (const k of keys) if (k.startsWith('mute:')) out.set(k, entries.get(k) || {});
+  }
+  return out;
+}
+const pick = (o, fields) => Object.fromEntries(fields.filter(f => o[f] !== undefined).map(f => [f, o[f]]));
+
+/**
+ * Deploys only the given entries ([{ key, after }]) for the item. Muting and
+ * password / session policies are separate components and are written whole;
+ * everything else goes in the item's own file.
+ */
+async function deployEntries(conn, item, allChanges) {
+  const mute = allChanges.filter(c => c.key.startsWith('mute:'));
+  const policies = allChanges.filter(c => /^(passwordPolicy|sessionSetting):/.test(c.key));
+  const changes = allChanges.filter(c => !mute.includes(c) && !policies.includes(c));
+  if (mute.length) await writeMuting(conn, item, mute);
+  for (const c of policies) await writePolicy(conn, c.key.startsWith('passwordPolicy:') ? 'ProfilePasswordPolicy' : 'ProfileSessionSetting', c.key.slice(c.key.indexOf(':') + 1), c.after);
+  if (!changes.length) return { id: null, status: 'Succeeded' };
   const name = await metadataName(conn, item);
   const lines = changes.map(c => model.entryXml(item.kind, c.key, c.after)).filter(Boolean).join('\n');
   const body = item.kind === 'profile'
@@ -212,6 +253,225 @@ async function deployEntries(conn, item, changes) {
     } catch (e) { throw cliError(e, 'The deploy'); }
     return { id: r && r.id, status: r && r.status, body };
   });
+}
+
+// ---------- any metadata type ----------
+
+/** Folder and file suffix of each metadata type this extension reads or writes. */
+const FOLDERS = {
+  PermissionSet: ['permissionsets', 'permissionset'], Profile: ['profiles', 'profile'], MutingPermissionSet: ['mutingpermissionsets', 'mutingpermissionset'],
+  ProfilePasswordPolicy: ['profilePasswordPolicies', 'profilePasswordPolicy'], ProfileSessionSetting: ['profileSessionSettings', 'profileSessionSetting'],
+  UserAccessPolicy: ['userAccessPolicies', 'userAccessPolicy'], DataCategoryGroup: ['datacategorygroups', 'datacategorygroup']
+};
+
+/** Names of every component of a metadata type in the org. */
+async function listMembers(conn, type) {
+  let r;
+  try { r = await sfcli.runResult(conn.sfPath, ['org', 'list', 'metadata', '--metadata-type', type, '--target-org', conn.username], { cwd: conn.cwd }); }
+  catch (e) { throw cliError(e, 'Listing ' + type); }
+  const list = Array.isArray(r) ? r : (r && Array.isArray(r.result) ? r.result : []);
+  return list.map(x => x && x.fullName).filter(Boolean).sort();
+}
+
+/** Retrieves components: { type: [names] } → Map<'Type:name', XML text>. */
+async function retrieveFiles(conn, types) {
+  const wanted = Object.fromEntries(Object.entries(types).filter(([, v]) => v && v.length));
+  if (!Object.keys(wanted).length) return new Map();
+  return withTemp(async dir => {
+    const manifest = path.join(dir, 'package.xml');
+    await fs.promises.writeFile(manifest, packageXml(wanted, conn.apiVersion));
+    const out = path.join(dir, 'out');
+    try {
+      await sfcli.runResult(conn.sfPath, ['project', 'retrieve', 'start', '--manifest', manifest, '--target-metadata-dir', out, '--unzip',
+        '--target-org', conn.username, '--wait', '10'], { cwd: conn.cwd });
+    } catch (e) { throw cliError(e, 'Reading from the Metadata API'); }
+    const files = new Map();
+    const walk = d => { for (const f of fs.existsSync(d) ? fs.readdirSync(d, { withFileTypes: true }) : []) { const p = path.join(d, f.name); if (f.isDirectory()) walk(p); else files.set(f.name, p); } };
+    walk(out);
+    const result = new Map();
+    for (const [type, names] of Object.entries(wanted)) {
+      const [, ext] = FOLDERS[type] || [null, type.toLowerCase()];
+      for (const [fname, p] of files) {
+        const base = fname.slice(0, -ext.length - 1);
+        if (fname.endsWith('.' + ext) && (names.includes('*') || names.includes(base) || names.includes(safeDecode(base)))) result.set(type + ':' + base, await fs.promises.readFile(p, 'utf8'));
+      }
+    }
+    return result;
+  });
+}
+
+/** Deploys whole components: [{ type, name, xml }]. */
+async function deployFiles(conn, files) {
+  return withTemp(async dir => {
+    const types = {};
+    for (const f of files) {
+      const [folder, ext] = FOLDERS[f.type];
+      await fs.promises.mkdir(path.join(dir, folder), { recursive: true });
+      await fs.promises.writeFile(path.join(dir, folder, f.name + '.' + ext), f.xml);
+      (types[f.type] = types[f.type] || []).push(f.name);
+    }
+    await fs.promises.writeFile(path.join(dir, 'package.xml'), packageXml(types, conn.apiVersion));
+    let r;
+    try {
+      r = await sfcli.runResult(conn.sfPath, ['project', 'deploy', 'start', '--metadata-dir', dir, '--target-org', conn.username, '--wait', '30'], { cwd: conn.cwd });
+    } catch (e) { throw cliError(e, 'The deploy'); }
+    return { id: r && r.id, status: r && r.status };
+  });
+}
+
+/** The values of a component's top-level elements (one level deep). */
+function topValues(xml) {
+  const out = {};
+  const body = String(xml).replace(/<\?xml[^>]*\?>/, '').replace(/^\s*<(\w+)[^>]*>/, '').replace(/<\/\w+>\s*$/, '');
+  for (const m of body.matchAll(/<(\w+)>([^<]*)<\/\1>/g)) out[m[1]] = m[2].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  return out;
+}
+/** The same component with some top-level values replaced. */
+function withValues(xml, values) {
+  let s = String(xml);
+  for (const [k, v] of Object.entries(values)) {
+    const re = new RegExp('<' + k + '>[^<]*</' + k + '>');
+    if (re.test(s)) s = s.replace(re, '<' + k + '>' + esc(v) + '</' + k + '>');
+    else s = s.replace(/(\s*)<\/(\w+)>\s*$/, '\n    <' + k + '>' + esc(v) + '</' + k + '>\n</$2>\n');
+  }
+  return s;
+}
+
+// ---------- newer kinds of access (agents, external credentials, ...) ----------
+
+/** Enabled entries of every metadata-only access kind for the item: Map<'agent:Name', { enabled }>. */
+async function readMetaAccess(conn, item) {
+  const doc = await retrieveItem(conn, item);
+  const out = new Map();
+  const byTag = new Map(model.META_ACCESS.map(cat => [model.XML_OUT[cat].tag, cat]));
+  for (const e of (doc && doc.entries) || []) {
+    const cat = byTag.get(e.tag);
+    if (cat) out.set(cat + ':' + e.values[model.XML_OUT[cat].key], { enabled: e.values.enabled === 'true' });
+  }
+  return out;
+}
+
+// ---------- muting in permission set groups ----------
+
+const MUTE_OBJECT = { read: 'allowRead', create: 'allowCreate', edit: 'allowEdit', delete: 'allowDelete', viewAll: 'viewAllRecords', modifyAll: 'modifyAllRecords', viewAllFields: 'viewAllFields' };
+
+/** The group's muting permission set: { id, name, label } or null. */
+async function mutingFor(conn, item) {
+  if (!item.recordId) return null;
+  const c = await conn.query('SELECT PermissionSetId FROM PermissionSetGroupComponent WHERE PermissionSetGroupId = ' + str(item.recordId));
+  const ids = c.records.map(r => r.PermissionSetId).filter(id => /^0QM/.test(id));
+  if (!ids.length) return null;
+  const m = await conn.query('SELECT Id, DeveloperName, MasterLabel, NamespacePrefix FROM MutingPermissionSet WHERE Id = ' + str(ids[0]));
+  const r = m.records[0];
+  return r ? { id: r.Id, name: (r.NamespacePrefix ? r.NamespacePrefix + '__' : '') + r.DeveloperName, label: r.MasterLabel } : null;
+}
+
+/** A muting permission set's XML in the editor's terms: { label, entries: Map<'mute:object:Account', muted flags> }. */
+function parseMuting(xml) {
+  const doc = flatXml.parse(xml);
+  const entries = new Map();
+  for (const e of doc.entries) {
+    const v = e.values;
+    if (e.tag === 'objectPermissions') entries.set('mute:object:' + v.object, Object.fromEntries(Object.entries(MUTE_OBJECT).filter(([, x]) => v[x] !== undefined).map(([k, x]) => [k, v[x] === 'true'])));
+    else if (e.tag === 'fieldPermissions') entries.set('mute:field:' + v.field, { read: v.readable === 'true', edit: v.editable === 'true' });
+    else if (e.tag === 'userPermissions') entries.set('mute:user:' + v.name, { enabled: v.enabled === 'true' });
+  }
+  return { label: topValues(xml).label || '', entries };
+}
+function mutingXml(label, entries) {
+  const lines = [];
+  for (const [k, p] of [...entries].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const rest = k.slice('mute:'.length);
+    const kind = rest.slice(0, rest.indexOf(':'));
+    const name = rest.slice(rest.indexOf(':') + 1);
+    if (kind === 'object' && Object.values(p).some(Boolean)) lines.push(model.block('objectPermissions', Object.entries(MUTE_OBJECT).map(([f, x]) => [x, !!p[f]]).concat([['object', name]]), '    '));
+    if (kind === 'field' && (p.read || p.edit)) lines.push(model.block('fieldPermissions', [['editable', !!p.edit], ['field', name], ['readable', !!p.read]], '    '));
+    if (kind === 'user' && p.enabled) lines.push(model.block('userPermissions', [['enabled', true], ['name', name]], '    '));
+  }
+  return '<?xml version="1.0" encoding="UTF-8"?>\n<MutingPermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">\n' + lines.join('\n') + (lines.length ? '\n' : '') +
+    '    <label>' + esc(label) + '</label>\n</MutingPermissionSet>\n';
+}
+/** What the group's muting permission set mutes now: Map<'mute:...', flags> (empty when the group has none). */
+async function readMuting(conn, item) {
+  const m = await mutingFor(conn, item);
+  if (!m) return { muting: null, entries: new Map() };
+  const files = await retrieveFiles(conn, { MutingPermissionSet: [m.name] });
+  const xml = files.get('MutingPermissionSet:' + m.name);
+  return { muting: m, entries: xml ? parseMuting(xml).entries : new Map() };
+}
+/** Mutes or unmutes entries: the whole muting permission set is written back, so nothing else changes. */
+async function writeMuting(conn, item, changes) {
+  const { muting, entries } = await readMuting(conn, item);
+  if (!muting) throw new Error(item.label + ' has no muting permission set yet. Create one under Muted Permissions first.');
+  for (const c of changes) entries.set(c.key, c.after);
+  return deployFiles(conn, [{ type: 'MutingPermissionSet', name: muting.name, xml: mutingXml(muting.label, entries) }]);
+}
+
+/** A new, empty muting permission set (the caller adds it to its group). */
+async function createMuting(conn, name, label) {
+  return deployFiles(conn, [{ type: 'MutingPermissionSet', name, xml: mutingXml(label, new Map()) }]);
+}
+
+// ---------- profile settings ----------
+
+const PASSWORD_FIELDS = ['forgotPasswordRedirect', 'lockoutInterval', 'maxLoginAttempts', 'minimumPasswordLength', 'minimumPasswordLifetime', 'obscure', 'passwordComplexity', 'passwordExpiration', 'passwordHistory', 'passwordQuestion'];
+const SESSION_FIELDS = ['externalCommunityUserIdentityVerif', 'forceLogout', 'requiredSessionLevel', 'sessionPersistence', 'sessionTimeout', 'sessionTimeoutWarning'];
+
+const safeDecode = t => { try { return decodeURIComponent(t); } catch (e) { return t; } };
+
+/** The component of a policy type that belongs to this profile: { fullName, values } or null. */
+async function policyFor(conn, type, profileName) {
+  const names = await listMembers(conn, type).catch(() => []);
+  if (!names.length) return null;
+  const files = await retrieveFiles(conn, { [type]: names });
+  for (const [k, xml] of files) {
+    const v = topValues(xml);
+    // A policy may name its profile encoded (Custom%3A Sales) or plain (Custom: Sales).
+    const named = String(v.profile || '');
+    if (named === profileName || safeDecode(named) === safeDecode(profileName)) return { fullName: k.slice(type.length + 1), values: v };
+  }
+  return null;
+}
+
+/** Default app, login flow, data category visibility and password and session policies of a profile. */
+async function readProfileSettings(conn, item) {
+  const [doc, password, session] = await Promise.all([
+    retrieveItem(conn, item, { CustomApplication: ['*'], DataCategoryGroup: ['*'] }),
+    policyFor(conn, 'ProfilePasswordPolicy', item.apiName),
+    policyFor(conn, 'ProfileSessionSetting', item.apiName)]);
+  const out = { defaultApp: null, apps: [], loginFlow: null, dataCategories: [], passwordPolicy: password, sessionSetting: session };
+  for (const e of (doc && doc.entries) || []) {
+    const v = e.values;
+    if (e.tag === 'applicationVisibilities') { if (v.visible === 'true') out.apps.push(v.application); if (v.default === 'true') out.defaultApp = v.application; }
+    else if (e.tag === 'loginFlows') out.loginFlow = { flow: v.flow || v.vfFlowPage || '', friendlyname: v.friendlyname || '', type: v.uiLoginFlowType || '' };
+    else if (e.tag === 'categoryGroupVisibilities') out.dataCategories.push({ group: v.dataCategoryGroup, visibility: v.visibility || 'NONE', categories: v.dataCategories ? [v.dataCategories] : [] });
+  }
+  return out;
+}
+
+/** Writes a password or session policy: the component with the changed values. */
+async function writePolicy(conn, type, fullName, values) {
+  const files = await retrieveFiles(conn, { [type]: [fullName] });
+  const xml = files.get(type + ':' + fullName);
+  if (!xml) throw new Error('The ' + (type === 'ProfilePasswordPolicy' ? 'password policy' : 'session settings') + ' ' + fullName + ' no longer exists.');
+  return deployFiles(conn, [{ type, name: fullName, xml: withValues(xml, values) }]);
+}
+
+// ---------- user access policies ----------
+
+/** Every user access policy: [{ name, label, status, triggerType, actions: [{ action, type, target }] }]. */
+async function accessPolicies(conn) {
+  const names = await listMembers(conn, 'UserAccessPolicy');
+  if (!names.length) return [];
+  const files = await retrieveFiles(conn, { UserAccessPolicy: names });
+  const out = [];
+  for (const [k, xml] of files) {
+    const v = topValues(xml);
+    const actions = [...String(xml).matchAll(/<userAccessPolicyActions>([\s\S]*?)<\/userAccessPolicyActions>/g)].map(m => topValues('<x>' + m[1] + '</x>'));
+    out.push({ name: k.slice('UserAccessPolicy:'.length), label: v.masterLabel || k.slice('UserAccessPolicy:'.length), status: v.status || '', triggerType: v.triggerType || '',
+      actions: actions.map(a => ({ action: a.action || '', type: a.type || '', target: a.target || '' })) });
+  }
+  return out.sort((a, b) => a.label.localeCompare(b.label));
 }
 
 // ---------- safety copy around a deploy ----------
@@ -275,5 +535,7 @@ async function restoreSafety(conn, permissionSetId, safety) {
   return lost.count;
 }
 
-module.exports = { metadataName, listLayouts, readEntries, readRecordTypes, readAllRecordTypes, readLayouts, readLoginSettings, deployEntries,
+module.exports = {
+  FOLDERS, listMembers, retrieveFiles, deployFiles, topValues, withValues, readMetaAccess, mutingFor, parseMuting, mutingXml, readMuting, writeMuting, createMuting,
+  readProfileSettings, writePolicy, accessPolicies, PASSWORD_FIELDS, SESSION_FIELDS, metadataName, listLayouts, readEntries, readRecordTypes, readAllRecordTypes, readLayouts, readLoginSettings, deployEntries,
   captureSafety, checkSafety, restoreSafety };
