@@ -2,7 +2,7 @@
   "name": "permission-studio",
   "displayName": "Permission Studio",
   "description": "View and edit Salesforce permission sets, permission set groups and profiles for your project's default org, right inside VS Code.",
-  "version": "2.2.7",
+  "version": "2.3.1",
   "publisher": "nikeshvarma",
   "author": {
     "name": "Nikesh Varma"
@@ -194,6 +194,11 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Folder where the Salesforce CLI is installed, the one containing `node_modules/@salesforce/core` (for example `%LOCALAPPDATA%\\sf\\client\\2.x.y` or `C:\\Program Files\\sf\\client`). Leave empty to find it automatically."
+        },
+        "permStudio.refreshOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Read everything from the org again each time the Permission Studio page opens, or comes back into view after a minute or more. Unsaved changes are kept."
         }
       }
     },

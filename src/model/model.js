@@ -55,8 +55,17 @@ const XML_OUT = {
   customSetting: { tag: 'customSettingAccesses', key: 'name', props: { enabled: 'enabled' } },
   app: { tag: 'applicationVisibilities', key: 'application', props: { enabled: 'visible' } },
   tab: { tag: kind => (kind === 'profile' ? 'tabVisibilities' : 'tabSettings'), key: 'tab', props: { visibility: 'visibility' } },
-  recordType: { tag: 'recordTypeVisibilities', key: 'recordType', props: { visible: 'visible', default: 'default' }, profileOnly: ['default'] }
+  recordType: { tag: 'recordTypeVisibilities', key: 'recordType', props: { visible: 'visible', default: 'default' }, profileOnly: ['default'] },
+  // Newer kinds of access, saved with the Metadata API (field names as in the PermissionSet and Profile types).
+  agent: { tag: 'agentAccesses', key: 'agentName', props: { enabled: 'enabled' } },
+  externalCredential: { tag: 'externalCredentialPrincipalAccesses', key: 'externalCredentialPrincipal', props: { enabled: 'enabled' } },
+  externalDataSource: { tag: 'externalDataSourceAccesses', key: 'externalDataSource', props: { enabled: 'enabled' } },
+  presenceStatus: { tag: 'servicePresenceStatusAccesses', key: 'servicePresenceStatus', props: { enabled: 'enabled' } },
+  emailRouting: { tag: 'emailRoutingAddressAccesses', key: 'name', props: { enabled: 'enabled' } },
+  dataCategory: { tag: 'categoryGroupVisibilities', key: 'dataCategoryGroup', props: { visibility: 'visibility' }, profileOnly: ['visibility'] }
 };
+/** Kinds of access that live only in metadata (read with a retrieve, saved with a deploy). */
+const META_ACCESS = ['agent', 'externalCredential', 'externalDataSource', 'presenceStatus', 'emailRouting'];
 
 const PROFILE_TAB_OUT = { Visible: 'DefaultOn', Available: 'DefaultOff', None: 'Hidden' };
 
@@ -93,6 +102,10 @@ function entryXml(kind, entryKey, props, indent) {
     return block('layoutAssignments', [['layout', p.layout], ['recordType', rt ? name : null]], ind);
   }
   if (cat === 'loginHours') return block('loginHours', Object.entries(p).filter(([, v]) => v !== '' && v != null), ind);
+  // A profile's default app: the new one on, the previous one (if any) still visible but no longer the default.
+  if (cat === 'defaultApp') return [block('applicationVisibilities', [['application', p.app], ['default', true], ['visible', true]], ind)]
+    .concat(p.previous && p.previous !== p.app ? [block('applicationVisibilities', [['application', p.previous], ['default', false], ['visible', true]], ind)] : []).join('\n');
+  if (cat === 'loginFlow') return p.flow ? block('loginFlows', [['flow', p.flow], ['flowtype', 'UI'], ['friendlyname', p.flow], ['uiLoginFlowType', 'VisualWorkflow'], ['useLightningRuntime', true]], ind) : null;
   if (cat === 'loginIpRanges') return (p.ranges || []).map(r => block('loginIpRanges', [['description', r.description], ['endAddress', r.endAddress], ['startAddress', r.startAddress]], ind)).join('\n');
   const o = XML_OUT[cat];
   if (!o) return null;
@@ -109,4 +122,4 @@ function entryXml(kind, entryKey, props, indent) {
   return block(xmlTag(kind, cat), children, ind);
 }
 
-module.exports = { XML_OUT, key, splitKey, emptyModel, grants, entryXml, xmlTag };
+module.exports = { XML_OUT, META_ACCESS, key, splitKey, emptyModel, grants, entryXml, xmlTag, block };

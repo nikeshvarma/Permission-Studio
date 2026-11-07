@@ -29,11 +29,19 @@ const { str, assertId, chunk } = require('../data/soql');
 
 const PROP_TO_FIELD = Object.fromEntries(loader.OBJECT_FIELDS.map(([f, p]) => [p, f]));
 const ENTITY_CATS = Object.keys(loader.ENTITY);
-const META_CATS = ['recordType', 'layoutAssignment', 'loginHours', 'loginIpRanges'];
+const META_CATS = ['recordType', 'layoutAssignment', 'loginHours', 'loginIpRanges',
+  // Newer kinds of access, profile settings, muting and password / session policies: all Metadata API.
+  'agent', 'externalCredential', 'externalDataSource', 'presenceStatus', 'emailRouting', 'defaultApp', 'loginFlow', 'dataCategory', 'passwordPolicy', 'sessionSetting', 'mute'];
+/**
+ * Deploys that change something other than the item's own access, so the safety
+ * copy (which checks the item's access didn't change by accident) doesn't apply:
+ * muting deliberately changes the group's access, and policies aren't access at all.
+ */
+const NO_SAFETY = ['mute', 'passwordPolicy', 'sessionSetting'];
 // Tab visibility as stored in PermissionSetTabSetting.Visibility; a hidden tab has no row.
 const TAB_TO_API = { Visible: 'DefaultOn', Available: 'DefaultOff' };
 const TAB_FROM_API = { DefaultOn: 'Visible', DefaultOff: 'Available' };
-const PROFILE_ONLY = ['layoutAssignment', 'loginHours', 'loginIpRanges'];
+const PROFILE_ONLY = ['layoutAssignment', 'loginHours', 'loginIpRanges', 'defaultApp', 'loginFlow', 'dataCategory', 'passwordPolicy', 'sessionSetting'];
 
 /** Why `cat` can't be changed on `item`, or null. Without `cat`: why nothing at all can be. */
 function editBlocker(item, cat) {
@@ -43,7 +51,8 @@ function editBlocker(item, cat) {
     if (item.kind === 'profile') return 'Users get a profile from their user record, not here.';
     return null;
   }
-  if (item.kind === 'group') return cat ? 'Permission set group access comes from its permission sets and muting. Edit those permission sets instead.'
+  if (cat === 'mute') return item.kind !== 'group' ? 'Only permission set groups have muting.' : item.managed ? 'This group belongs to a managed package and can’t be edited.' : null;
+  if (item.kind === 'group') return cat ? 'Permission set group access comes from its permission sets and muting. Edit those permission sets, or mute permissions under Muted Permissions.'
     : 'A group’s access comes from its permission sets and muting. Change which permission sets it holds under Permission Sets in Group, and its assignments here; edit the permission sets themselves for anything else.';
   if (item.managed) return cat ? 'This permission set belongs to a managed package and can’t be edited.' : 'This permission set belongs to a managed package and can’t be edited; assignments can be changed here.';
   if (cat && PROFILE_ONLY.includes(cat) && item.kind !== 'profile') return 'Only profiles have this.';
@@ -231,7 +240,16 @@ async function apply(conn, item, changes, options) {
   // New assignees must be able to hold the permission set's licence; say so before writing anything.
   const newAssignees = recordChanges.filter(c => c.key.startsWith('assignment:') && c.after.assigned && !(live.props.get(c.key) || {}).assigned);
   if (newAssignees.length && item.kind === 'permissionSet') {
-    const blocked = await loader.assignmentBlockers(conn, item, newAssignees.map(c => refs.get(c.key)));
+    const users = newAssignees.map(c => refs.get(c.key));
+    // When asked, users who only lack the permission set licence get it first.
+    if (o.assignLicenses) {
+      const fix = await loader.licenseFix(conn, item, users);
+      if (fix && fix.users.length) {
+        if (o.onProgress) o.onProgress('Assigning the ' + fix.label + ' permission set licence to ' + fix.users.length + (fix.users.length === 1 ? ' user' : ' users'), 0, 1);
+        await conn.createRecords(fix.users.map(u => ({ attributes: { type: 'PermissionSetLicenseAssign' }, AssigneeId: u, PermissionSetLicenseId: fix.licenseId })));
+      }
+    }
+    const blocked = await loader.assignmentBlockers(conn, item, users);
     for (const c of newAssignees) if (blocked.has(refs.get(c.key))) problems.push((c.label || refs.get(c.key)) + ' ' + blocked.get(refs.get(c.key)));
   }
   if (problems.length) throw new Error('These changes are not valid:\n' + problems.join('\n'));
@@ -242,7 +260,8 @@ async function apply(conn, item, changes, options) {
   if (conflicts.length && !o.force) return { status: 'conflict', conflicts };
 
   // A deploy gets a full copy of the item's access first, so anything it removes by mistake can be put back.
-  const safety = metaChanges.length ? await o.metadata.captureSafety(conn, psId) : null;
+  const needSafety = metaChanges.some(c => !NO_SAFETY.includes(splitKey(c.key).cat));
+  const safety = needSafety ? await o.metadata.captureSafety(conn, psId) : null;
   const snapshot = changes.map(c => ({ key: c.key, ref: c.ref || null, before: live.props.get(c.key), after: c.after }));
   const snapshotId = o.onSnapshot ? await o.onSnapshot(snapshot, safety) : null;
 
@@ -281,7 +300,7 @@ async function apply(conn, item, changes, options) {
   if (metaChanges.length) {
     steps.push(['Deploying ' + describeMeta(metaChanges), async () => {
       await o.metadata.deployEntries(conn, item, metaChanges);
-      const lost = await o.metadata.checkSafety(conn, psId, safety);
+      const lost = safety ? await o.metadata.checkSafety(conn, psId, safety) : { count: 0 };
       if (lost.count) {
         const e = new Error('The deploy removed ' + lost.count + ' other permission' + (lost.count === 1 ? '' : 's') + ' from this item ' +
           '(' + [lost.objects.length && lost.objects.length + ' object', lost.fields.length && lost.fields.length + ' field',

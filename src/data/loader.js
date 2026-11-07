@@ -290,6 +290,30 @@ const ENTITY = {
   customSetting: { type: 'CustomEntityDefinition', entities: g => g.sobjects.filter(s => s.customSetting === true) }
 };
 
+/**
+ * What the org has for each newer kind of access (best effort: a feature the org
+ * doesn't have, or can't be queried, gives an empty list with a reason).
+ */
+const META_LISTS = {
+  agent: { soql: 'SELECT DeveloperName, MasterLabel, NamespacePrefix FROM BotDefinition ORDER BY MasterLabel', name: r => (r.NamespacePrefix ? r.NamespacePrefix + '__' : '') + r.DeveloperName, label: r => r.MasterLabel || r.DeveloperName },
+  externalCredential: { soql: "SELECT ExternalCredential.DeveloperName, ExternalCredential.MasterLabel, ParameterName, ParameterType FROM ExternalCredentialParameter WHERE ParameterType IN ('NamedPrincipal', 'PerUserPrincipal')",
+    name: r => (r.ExternalCredential && r.ExternalCredential.DeveloperName) + '-' + r.ParameterName, label: r => ((r.ExternalCredential && r.ExternalCredential.MasterLabel) || '') + ': ' + r.ParameterName,
+    description: r => r.ParameterType === 'PerUserPrincipal' ? 'Per-user principal' : 'Named principal' },
+  externalDataSource: { soql: 'SELECT DeveloperName, MasterLabel, NamespacePrefix, PrincipalType FROM ExternalDataSource ORDER BY MasterLabel', name: r => (r.NamespacePrefix ? r.NamespacePrefix + '__' : '') + r.DeveloperName, label: r => r.MasterLabel || r.DeveloperName,
+    description: r => r.PrincipalType === 'PerUser' ? 'Per-user identity' : r.PrincipalType ? 'Identity: ' + r.PrincipalType : '' },
+  presenceStatus: { soql: 'SELECT DeveloperName, MasterLabel FROM ServicePresenceStatus ORDER BY MasterLabel', name: r => r.DeveloperName, label: r => r.MasterLabel || r.DeveloperName },
+  emailRouting: { soql: 'SELECT Address, DisplayName FROM EmailRoutingAddress ORDER BY Address', name: r => r.Address, label: r => r.DisplayName ? r.DisplayName + ' <' + r.Address + '>' : r.Address }
+};
+async function listMetaEntities(conn, cat) {
+  const d = META_LISTS[cat];
+  try {
+    const r = await conn.query(d.soql);
+    return { items: r.records.map(x => ({ name: d.name(x), label: d.label(x), description: d.description ? d.description(x) : '', namespace: x.NamespacePrefix || '' })) };
+  } catch (e) {
+    return { items: [], unavailable: /INVALID_TYPE|not supported|is not supported|does not exist/i.test(e.message) ? 'This org doesn’t have this feature, or your user can’t see it.' : String(e.message || e).split('\n')[0] };
+  }
+}
+
 /** Every entity of a category in the org: [{ entityId, name, label, namespace, description }]. */
 async function listEntities(conn, cat) {
   const e = ENTITY[cat];
@@ -636,6 +660,20 @@ async function assignmentBlockers(conn, item, userIds) {
 }
 
 /**
+ * Users who only lack the permission set's licence, and that licence:
+ * { licenseId, label, users } or null (not a permission set licence, or nobody needs it).
+ */
+async function licenseFix(conn, item, userIds) {
+  if (!userIds.length || item.kind !== 'permissionSet') return null;
+  const ps = await conn.query('SELECT LicenseId, License.Name FROM PermissionSet WHERE Id = ' + str(assertId(item.permissionSetId)));
+  const lic = ps.records[0] && ps.records[0].LicenseId;
+  if (!lic || lic.startsWith('100')) return null;
+  const r = await conn.query('SELECT AssigneeId FROM PermissionSetLicenseAssign WHERE PermissionSetLicenseId = ' + str(assertId(lic)) + ' AND AssigneeId IN (' + userIds.map(id => str(assertId(id))).join(', ') + ')');
+  const holders = new Set(r.records.map(x => x.AssigneeId));
+  return { licenseId: lic, label: (ps.records[0].License && ps.records[0].License.Name) || 'permission set', users: userIds.filter(id => !holders.has(id)) };
+}
+
+/**
  * Recent Setup Audit Trail entries about one item (by its label or API name),
  * newest first. Needs View Setup Audit Trail (Winter '27) or View Setup.
  */
@@ -693,4 +731,4 @@ module.exports = { loadDetail, loadObjectDetail, loadObjectPermissions, loadSyst
   listEntities, loadAccessRows, loadEntityAccess, listRecordTypes, loadGroupComponents, groupStatus, listTabs, loadTabSettings,
   loadTabsPage, loadAssignments, expirationField, searchUsers, loadObjectAccessFor, whoHasAccess, TAB_FROM_API, whoHasPermission,
   permissionOptions, permissionDependencies, assignmentBlockers, setupChanges, profilesFiltered, assigneeCounts, fieldAccessAll,
-  objectAccessAll, profilePermissionSets, setupChangesFor };
+  objectAccessAll, profilePermissionSets, setupChangesFor, META_LISTS, listMetaEntities, licenseFix };

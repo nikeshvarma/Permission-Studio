@@ -204,7 +204,7 @@ test('dead refresh token: the message says how to log in again', async () => {
 });
 
 test('API errors carry the Salesforce error code; production comes from the org', async () => {
-  await assert.rejects(conn().query('SELECT Nope FROM Nowhere'), e => e.errorCode === 'MALFORMED_QUERY');
+  await assert.rejects(conn().query('SELECT Nope FROM Nowhere'), e => e.errorCode === 'INVALID_TYPE');
   const c = conn();
   assert.strictEqual(await orgs.detectProduction(c), false);
   S.org.IsSandbox = false;
@@ -367,7 +367,7 @@ test('queries in bulk: Composite batches of 25 over REST, gzip responses, the sa
     const viaCli = await conn({ mode: 'cli' }).queryMany(qs.slice(0, 2));
     assert.deepStrictEqual(viaCli.map(x => x.totalSize), [r[0].totalSize, r[1].totalSize]);
   });
-  await assert.rejects(c.queryMany(['SELECT Nope FROM Nowhere']), e => e.errorCode === 'MALFORMED_QUERY');
+  await assert.rejects(c.queryMany(['SELECT Nope FROM Nowhere']), e => e.errorCode === 'INVALID_TYPE');
 });
 
 test('lists change stamp moves only when something changes', async () => {
@@ -722,6 +722,9 @@ function panelServices(over) {
   const projectDir = path.join(tmp, 'panelproj-' + Math.random().toString(36).slice(2, 7));
   const svc = Object.assign({
     conn: c, logs, projectDir, opens: 0,
+    // Tests ask for the full refresh on open explicitly (see the refresh test), so each one sees only what it does.
+    refreshOnOpen: () => false,
+    insight: require('../src/data/insight'), insightSystem: (cn, ids) => require('../src/data/insight').systemPermissionsOf(cn, ids),
     resolveContext: async () => ({ projectDir, org: { username: 'uat@example.com', alias: 'uat', location: 'Local' } }),
     openConnection: async () => { svc.opens++; if (svc.connectDelay) await new Promise(r => setTimeout(r, svc.connectDelay)); return c; },
     cacheFor: u => { if (!caches.has(u)) caches.set(u, new Cache(path.join(projectDir, 'cache', u))); return caches.get(u); },
@@ -861,7 +864,7 @@ test('main screen: group and standard profile pages are read-only with a reason'
   const lists = posts(p, 'lists').pop().lists;
   await mp.select(lists.group[0].key);
   const g = posts(p, 'detail').pop().data.header;
-  assert.deepStrictEqual([g.editableCats, g.kind], [['assignment', 'groupComponent'], 'Permission Set Group'], 'only assignments and members can change on a group');
+  assert.deepStrictEqual([g.editableCats, g.kind], [['assignment', 'groupComponent', 'mute'], 'Permission Set Group'], 'only assignments, members and muting can change on a group');
   assert.match(g.readOnlyReason, /Permission Sets in Group/);
   await mp.select(lists.profile.find(r => r.standard).key);
   assert.match(posts(p, 'detail').pop().data.header.readOnlyReason, /Standard profiles/);
@@ -1118,7 +1121,7 @@ test('assignments: list, search users, add with expiry, change expiry, remove; g
 
 test('what can be changed where', () => {
   const ed = applyMod.editableCategories;
-  assert.deepStrictEqual(ed({ kind: 'group' }), ['assignment', 'groupComponent']);
+  assert.deepStrictEqual(ed({ kind: 'group' }), ['assignment', 'groupComponent', 'mute']);
   assert.deepStrictEqual(ed({ kind: 'permissionSet', managed: true }), ['assignment']);
   assert.deepStrictEqual(ed({ kind: 'profile', standard: true }), []);
   const ps = ed({ kind: 'permissionSet' });
@@ -1555,7 +1558,7 @@ test('CLI library: works where direct REST is refused (the reported case), renew
       assert.ok(ps.permissionSet.length === 2 && ps.profile.length === 2);
       const r = await applyMod.apply(c, item(), [{ key: 'field:Lead.Rating', before: { read: true, edit: false }, after: { read: true, edit: true } }], saveOpts());
       assert.deepStrictEqual([r.status, r.mismatches], ['saved', []]);
-      await assert.rejects(c.query('SELECT Nope FROM Nowhere'), e => e.errorCode === 'MALFORMED_QUERY');
+      await assert.rejects(c.query('SELECT Nope FROM Nowhere'), e => e.errorCode === 'INVALID_TYPE');
       assert.strictEqual(c.mode, 'library', 'errors never switch away from the library');
     });
   } finally { S.rejectDirect = false; sfcore.reset(); }
@@ -1616,7 +1619,7 @@ test('groups: add and remove member permission sets as records; only groups can'
   assert.strictEqual(F.T.PermissionSetGroup[0].Status, 'Updating', 'Salesforce starts recalculating');
   await assert.rejects(applyMod.apply(c, item(), [{ key: 'groupComponent:x', ref: '0PS000000000002AAA', before: null, after: { included: true } }], saveOpts()), /Only permission set groups/);
   await assert.rejects(applyMod.apply(c, Object.assign(GROUP(), { managed: true }), [{ key: 'groupComponent:x', ref: '0PS000000000002AAA', before: null, after: { included: true } }], saveOpts()), /managed package/);
-  assert.deepStrictEqual(applyMod.editableCategories(GROUP()), ['assignment', 'groupComponent']);
+  assert.deepStrictEqual(applyMod.editableCategories(GROUP()), ['assignment', 'groupComponent', 'mute']);
 });
 
 test('groups on screen: members listed, a change saved, the recalculation watched until it settles', async () => {
@@ -2447,8 +2450,8 @@ test('the stylesheet matches the screen: every class the screen uses has a style
   for (const m of js.matchAll(/class: '([^']*)'/g)) for (const c of m[1].split(/\s+/)) if (c) used.add(c);
   for (const m of js.matchAll(/setAttribute\('class', '([^']*)'\)/g)) for (const c of m[1].split(/\s+/)) if (c) used.add(c);
   for (const m of js.matchAll(/classList\.(?:add|toggle|remove)\('([\w-]+)'/g)) used.add(m[1]);
-  // Markers that deliberately have no style of their own; nav-g- is the start of names built in code.
-  const plain = new Set(['neutral', 'icon-btn', 'org-text', 'si-note', 'nav-g-']);
+  // Markers that deliberately have no style of their own; nav-g- and dot- are the start of names built in code.
+  const plain = new Set(['neutral', 'icon-btn', 'org-text', 'si-note', 'nav-g-', 'dot-']);
   const missing = [...used].filter(c => !styled.has(c) && !plain.has(c)).sort();
   assert.deepStrictEqual(missing, [], 'media/app.css is missing styles for: ' + missing.join(', ') + '. Is media/app.css from an older version than media/app.js?');
 });
@@ -2491,6 +2494,192 @@ test('the README checker reads a real .vsix and tells exactly why an image won\u
   assert.match(r[3].why, /could not reach GitHub \(ENOTFOUND\)/);
 });
 
+test('every time the page opens it reads everything again (unsaved changes are kept), unless switched off', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  let on = true;
+  const svc = panelServices({ refreshOnOpen: () => on });
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, svc);
+  await mp.load();
+  const p = mp.show();
+  const before = posts(p, 'lists').length;
+  p._send({ type: 'ready' });
+  await settle(120);
+  assert.ok(posts(p, 'lists').length >= before + 2, 'cached lists first, then read again');
+  assert.ok(posts(p, 'fullRefresh').length === 1, 'the screen is told to read the open item again');
+  mp.show();
+  await settle(120);
+  assert.strictEqual(posts(p, 'fullRefresh').length, 2, 'opening it again from the Command Palette reads again too');
+  on = false;
+  mp.show();
+  await settle(80);
+  assert.strictEqual(posts(p, 'fullRefresh').length, 2, 'switched off: no refresh');
+});
+
+// ---------- 2.3.0: newer access kinds, muting, profile settings, policies, licences, user access, compare ----------
+async function metaPanel(over) {
+  const vscode = require('vscode');
+  fs.writeFileSync(tokenFile, S.token);
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices(Object.assign({ conn: metaConn() }, over || {})));
+  mp.s.openConnection = async () => mp.s.conn;
+  const p = mp.show();
+  await mp.load();
+  return { mp, p };
+}
+const profileKey = () => 'profile:00e000000000002AAA';
+const groupKey = () => 'group:0PG000000000001AAA';
+
+test('newer access kinds: what the org has, what the item enables, saved with a deploy; a feature the org lacks says so', async () => {
+  resetOrg();
+  await withEnv({ FAKE_SF_TOKEN: tokenFile, FAKE_SF_INSTANCE: INSTANCE }, async () => {
+    const { mp, p } = await metaPanel();
+    const key = 'permissionSet:' + PS1;
+    await mp.select(key);
+    await mp.openAccess(key, 'agent');
+    let a = posts(p, 'accessDetail').filter(x => x.category === 'agent').pop().data;
+    assert.deepStrictEqual(a.items.map(x => [x.name, x.enabled]), [['HR_Helper', false], ['Sales_Coach', true]], 'by label, as Setup lists them');
+    await mp.openAccess(key, 'externalCredential');
+    a = posts(p, 'accessDetail').filter(x => x.category === 'externalCredential').pop().data;
+    assert.deepStrictEqual(a.items.map(x => x.name), ['ERP-Integration'], 'principals only, not the auth protocol');
+    await mp.openAccess(key, 'presenceStatus');
+    a = posts(p, 'accessDetail').filter(x => x.category === 'presenceStatus').pop().data;
+    assert.ok(a.items.length === 0 && /doesn’t have this feature/.test(a.unavailable), JSON.stringify(a));
+    await mp.save({ key, changes: [{ key: 'agent:HR_Helper', label: 'HR Helper', before: { enabled: false }, after: { enabled: true } }] });
+    assert.strictEqual(posts(p, 'saveResult').pop().status, 'saved', JSON.stringify(posts(p, 'saveResult').pop()));
+    assert.ok(/<agentAccesses>[\s\S]*<agentName>HR_Helper<\/agentName>/.test(S.deploys.pop().xml), 'deployed in the permission set file');
+    await mp.openAccess(key, 'agent', { force: true });
+    a = posts(p, 'accessDetail').filter(x => x.category === 'agent').pop().data;
+    assert.deepStrictEqual(a.items.map(x => [x.name, x.enabled]), [['HR_Helper', true], ['Sales_Coach', true]]);
+    await mp.save({ key, changes: [{ key: 'agent:No_Such_Agent', label: 'X', before: { enabled: false }, after: { enabled: true } }] });
+    assert.match(posts(p, 'saveResult').pop().message, /no agent named No_Such_Agent/, 'the org’s own reason');
+  });
+});
+
+test('muting: what the members grant and what is muted; muting more keeps what was muted; field muting; a group without muting gets one', async () => {
+  resetOrg();
+  await withEnv({ FAKE_SF_TOKEN: tokenFile, FAKE_SF_INSTANCE: INSTANCE }, async () => {
+    const { mp, p } = await metaPanel();
+    const key = groupKey();
+    await mp.select(key);
+    await mp.openMuting(key);
+    const d = posts(p, 'mutingDetail').pop().data;
+    assert.strictEqual(d.muting.name, 'Sales_Bundle_Muting');
+    assert.ok(d.objects.some(o => o.name === 'Account' && o.props.read), 'what the member permission sets grant');
+    assert.deepStrictEqual(new Map(d.muted).get('mute:object:Account'), { read: false, create: false, edit: false, delete: true, viewAll: false, modifyAll: false });
+    await mp.save({ key, changes: [{ key: 'mute:object:Account', label: 'Account', before: { read: false, create: false, edit: false, delete: true, viewAll: false, modifyAll: false }, after: { read: false, create: false, edit: true, delete: true, viewAll: false, modifyAll: false } },
+      { key: 'mute:user:ApiEnabled', label: 'API Enabled', before: {}, after: { enabled: true } }] });
+    const r = posts(p, 'saveResult').pop();
+    assert.strictEqual(r.status, 'saved', JSON.stringify(r));
+    const xml = S.files.MutingPermissionSet.Sales_Bundle_Muting;
+    assert.ok(/<allowEdit>true<\/allowEdit>/.test(xml) && /<allowDelete>true<\/allowDelete>/.test(xml) && /<name>ApiEnabled<\/name>/.test(xml) && /<label>Sales Bundle Muting<\/label>/.test(xml), xml);
+    assert.ok(!S.deploys.some(x => x.type === 'PermissionSet'), 'muting is its own file; the group’s permission sets are untouched');
+    await mp.mutingFields({ key, object: 'Lead' });
+    assert.ok(Array.isArray(posts(p, 'mutingFields').pop().fields));
+    await mp.createMuting({ key, label: 'Again', name: 'Again' });
+    assert.match(posts(p, 'mutingCreated').pop().error, /already has a muting permission set/);
+    F.T.PermissionSetGroupComponent = F.T.PermissionSetGroupComponent.filter(c => !/^0QM/.test(c.PermissionSetId));
+    mp.cache.delete('muting:' + key);
+    await mp.openMuting(key, { force: true });
+    assert.strictEqual(posts(p, 'mutingDetail').pop().data.muting, null, 'no muting yet');
+    await mp.createMuting({ key, label: 'Bundle Muting', name: 'Bundle_Muting' });
+    assert.ok(!posts(p, 'mutingCreated').pop().error, JSON.stringify(posts(p, 'mutingCreated').pop()));
+    const made = F.T.MutingPermissionSet.find(m => m.DeveloperName === 'Bundle_Muting');
+    assert.ok(made && F.T.PermissionSetGroupComponent.some(c => c.PermissionSetGroupId === '0PG000000000001AAA' && c.PermissionSetId === made.Id), 'created and added to the group');
+    assert.strictEqual(posts(p, 'mutingDetail').pop().data.muting.name, 'Bundle_Muting');
+  });
+});
+
+test('profile settings: default app, login flow, data categories, password and session policies, each saved with a deploy', async () => {
+  resetOrg();
+  await withEnv({ FAKE_SF_TOKEN: tokenFile, FAKE_SF_INSTANCE: INSTANCE }, async () => {
+    const { mp, p } = await metaPanel();
+    const key = profileKey();
+    await mp.select(key);
+    await mp.openProfileSettings(key);
+    const d = posts(p, 'profileSettings').pop().data;
+    assert.strictEqual(d.defaultApp, 'standard__Sales');
+    assert.deepStrictEqual(d.dataCategories.map(c => [c.group, c.visibility]), [['Products', 'ALL']]);
+    assert.deepStrictEqual(d.groupList, ['Products', 'Regions']);
+    assert.strictEqual(d.passwordPolicy.fullName, 'sales_policy_1');
+    assert.strictEqual(d.passwordPolicy.values.minimumPasswordLength, '8');
+    assert.strictEqual(d.sessionSetting.values.sessionTimeout, '120');
+    assert.ok(d.flowList.some(f => f.name === 'Lead_Intake'));
+    await mp.save({ key, changes: [
+      { key: 'defaultApp:all', label: 'Default app', before: { app: 'standard__Sales' }, after: { app: 'standard__Service', previous: 'standard__Sales' } },
+      { key: 'dataCategory:Regions', label: 'Regions', before: { visibility: 'NONE' }, after: { visibility: 'ALL' } },
+      { key: 'loginFlow:all', label: 'Login flow', before: { flow: '' }, after: { flow: 'Lead_Intake' } },
+      { key: 'passwordPolicy:sales_policy_1', label: 'Password policy', before: d.passwordPolicy.values ? Object.fromEntries(Object.entries(d.passwordPolicy.values).filter(([k]) => k !== 'profile')) : null, after: Object.assign(Object.fromEntries(Object.entries(d.passwordPolicy.values).filter(([k]) => k !== 'profile')), { minimumPasswordLength: '10' }) }] });
+    const r = posts(p, 'saveResult').pop();
+    assert.strictEqual(r.status, 'saved', JSON.stringify(r));
+    assert.match(S.files.ProfilePasswordPolicy.sales_policy_1, /<minimumPasswordLength>10<\/minimumPasswordLength>/);
+    const ex = S.extra['0PS0000000000PRAAA'];
+    assert.deepStrictEqual(ex.applicationVisibilities.filter(a => a.default === 'true').map(a => a.application), ['standard__Service'], 'one default app');
+    assert.deepStrictEqual(ex.loginFlows.map(f => f.flow), ['Lead_Intake']);
+    assert.ok(ex.categoryGroupVisibilities.some(c => c.dataCategoryGroup === 'Regions' && c.visibility === 'ALL'));
+    assert.ok(posts(p, 'profileSettings').pop().data.defaultApp === 'standard__Service', 'read again after saving');
+  });
+});
+
+test('user access policies: which ones grant a permission set; licences assigned first when asked', async () => {
+  resetOrg();
+  await withEnv({ FAKE_SF_TOKEN: tokenFile, FAKE_SF_INSTANCE: INSTANCE }, async () => {
+    const { mp, p } = await metaPanel();
+    const key = 'permissionSet:' + PS1;
+    await mp.postPolicies(key);
+    assert.deepStrictEqual(posts(p, 'policies').pop().list.map(x => [x.label, x.status, x.grants]), [['Sales Onboarding', 'Active', true]]);
+    await mp.postPolicies(groupKey());
+    assert.deepStrictEqual(posts(p, 'policies').pop().list, []);
+    const ps = F.T.PermissionSet.find(x => x.Id === PS1);
+    Object.assign(ps, { LicenseId: '0PL000000000001AAA', License: { Name: 'Sales Cloud Einstein' } });
+    const cara = F.T.User.find(u => u.Name === 'Cara Diaz');
+    await mp.select(key);
+    await mp.checkAssignees({ key, userIds: [cara.Id] });
+    assert.deepStrictEqual(posts(p, 'assigneeChecks').pop().licenseFix, { label: 'Sales Cloud Einstein', users: [cara.Id] });
+    const change = [{ key: 'assignment:' + cara.Id, ref: cara.Id, label: 'Cara Diaz', before: { assigned: false, expires: null }, after: { assigned: true, expires: null } }];
+    await mp.save({ key, changes: change });
+    assert.match(posts(p, 'saveResult').pop().message, /needs the Sales Cloud Einstein permission set license/);
+    await mp.save({ key, changes: change, assignLicenses: true });
+    assert.strictEqual(posts(p, 'saveResult').pop().status, 'saved', JSON.stringify(posts(p, 'saveResult').pop()));
+    assert.ok(F.T.PermissionSetLicenseAssign.some(a => a.AssigneeId === cara.Id) && F.T.PermissionSetAssignment.some(a => a.AssigneeId === cara.Id && a.PermissionSetId === PS1));
+  });
+});
+
+test('user access: one user’s profile, permission sets, licences and combined permissions, each with its sources', async () => {
+  resetOrg();
+  const { mp, p } = await qaPanel();
+  const ana = F.T.User.find(u => u.Name === 'Ana Lima');
+  F.T.PermissionSetAssignment.push({ Id: '0Pa000000000081AAA', AssigneeId: ana.Id, PermissionSetId: PS1 }, { Id: '0Pa000000000082AAA', AssigneeId: ana.Id, PermissionSetId: '0PS0000000000PRAAA' });
+  F.T.PermissionSet.find(x => x.Id === '0PS0000000000PRAAA').ProfileId = ana.ProfileId;
+  await mp.userAccess({ userId: ana.Id });
+  const d = posts(p, 'userAccess').pop().data;
+  assert.ok(d, JSON.stringify(posts(p, 'userAccess').pop()));
+  assert.deepStrictEqual(d.sources.map(x => x.kind), ['profile', 'permissionSet']);
+  const acct = d.objects.find(o => o.name === 'Account');
+  assert.ok(acct && acct.flags.read.includes(1), 'Account Read comes from the permission set (source 1)');
+  await mp.userFields({ userId: ana.Id, ids: d.sources.map(x => x.permissionSetId), object: 'Lead' });
+  assert.ok(Array.isArray(posts(p, 'userFields').pop().fields));
+  await mp.userAccess({ userId: '005000000000999AAA' });
+  assert.match(posts(p, 'userAccess').pop().error, /no longer exists/);
+});
+
+test('compare: two permission sets in this org, and the same one across two orgs', async () => {
+  resetOrg();
+  const { mp, p } = await qaPanel();
+  await mp.compare({ a: 'permissionSet:' + PS1, b: 'permissionSet:0PS000000000002AAA' });
+  const r = posts(p, 'compareResult').pop();
+  assert.ok(!r.error && r.rows.length > 0, JSON.stringify(r).slice(0, 300));
+  assert.ok(r.rows.some(x => x.area === 'Object Permissions' && x.entry === 'Account'), JSON.stringify(r.rows.slice(0, 5)));
+  assert.match(r.markdown, /^### Sales Ops compared with /);
+  // The other org here is the same test org under another username: nothing differs.
+  mp.s.openConnection = async () => conn();
+  await mp.compare({ a: 'permissionSet:' + PS1, other: { org: 'other@example.com', kind: 'permissionSet', apiName: 'Sales_Ops' } });
+  const x = posts(p, 'compareResult').pop();
+  assert.ok(!x.error, x.error);
+  assert.deepStrictEqual([x.rows.length, x.labelB], [0, 'Sales Ops (other@example.com)']);
+  await mp.compare({ a: 'permissionSet:' + PS1, other: { org: 'other@example.com', kind: 'permissionSet', apiName: 'Nope' } });
+  assert.match(posts(p, 'compareResult').pop().error, /No permission set named Nope in other@example.com/);
+});
+
 // ---------- extension wiring ----------
 test('activation: commands and settings match package.json; status bar; version and author', async () => {
   const vscode = require('vscode');
@@ -2501,7 +2690,7 @@ test('activation: commands and settings match package.json; status bar; version 
   assert.deepStrictEqual([...code.matchAll(/c\.get\('([\w.]+)'/g)].map(m => 'permStudio.' + m[1]).sort(), Object.keys(pkg.contributes.configuration.properties).sort());
   assert.ok(vscode.__statusItems[0].shown && vscode.__statusItems[0].command === 'permStudio.open');
   for (const f of ['media/app.js', 'media/app.css', 'media/tab-light.svg', 'media/tab-dark.svg', 'src/model/dependencies.js', pkg.icon]) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
-  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.2.7', 'nikeshvarma', 'Nikesh Varma']);
+  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.3.1', 'nikeshvarma', 'Nikesh Varma']);
   const png = fs.readFileSync(path.join(ROOT, pkg.icon));
   assert.deepStrictEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [256, 256], 'Marketplace icon is 256 px');
   for (const t of ['light', 'dark']) assert.match(fs.readFileSync(path.join(ROOT, 'media', 'tab-' + t + '.svg'), 'utf8'), /fill="#[0-9A-F]{6}"/i, 'tab icon has an explicit colour');

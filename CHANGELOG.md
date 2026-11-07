@@ -2,6 +2,29 @@
 
 All notable changes to Permission Studio. Versions follow `major.minor.patch`; every delivered change raises the patch number.
 
+## 2.3.1
+
+Laptop screens. Checked at the sizes a 14-inch laptop gives the page in VS Code (about 970 × 620 with VS Code's sidebar open, up to 1480 × 760), every screen fits with nothing cut off.
+
+- The layout follows the width the page actually has (VS Code's sidebar, a split editor and zoom all change it), not the window.
+- The section menu shows icons only when the page is narrow, instead of a block of links above the content; a toggle shows the names at any width, and the choice is remembered.
+- The item list can be hidden to a thin rail for more room; an item picker then sits at the top of the page. In a narrow window it starts hidden once an item is open.
+- The top bar stays on one row: shorter tool names when space is tight, labels that never wrap, and "Updated …" moves into the Refresh button's tooltip.
+- In short windows the page header is tighter (the description takes one line) and the review leaves more room for its list of changes.
+- Card headers wrap instead of cutting off a button; permission tags in a narrow table wrap onto a second line.
+
+## 2.3.0
+
+- **Muting in permission set groups**: a group's Muted Permissions section shows the object, field and system permissions its permission sets grant, with what is muted ticked. Muting follows Setup's rules (muting Read mutes what needs it; unmuting Delete unmutes Edit and Read). The whole muting permission set is written back, so existing mutes are kept. A group without a muting permission set gets one in a click.
+- **Newer kinds of access**, for permission sets and profiles: Agent Access, External Credential Principal Access, External Data Source Access, Service Presence Statuses Access and Email Routing Address Access. Read and saved with the Metadata API; a feature the org doesn't have says so.
+- **Profile settings**: default app, login flow, data category visibility, password policy and session settings.
+- **User access policies**: permission sets and groups show the policies that assign or remove them automatically, and the review warns before you remove an assignment a policy may give back.
+- **Permission set licences**: assigning a permission set to users who lack its licence can assign the licence in the same save.
+- **User access**: everything one user can do, added up across their profile, permission sets and groups, with where each permission comes from.
+- **Compare**: two items in this org, or the same item in another org the Salesforce CLI is signed in to. Differences filterable by area and copyable as Markdown.
+- **A full refresh each time the page opens**, or comes back into view after a minute or more; unsaved changes are kept. Setting: `permStudio.refreshOnOpen` (on by default).
+- **Animated loaders**: bouncing dots, a progress bar at the top while anything loads, and a gentle pulse on loading text; all still when the system asks for reduced motion.
+
 ## 2.2.7
 
 - README image addresses now use the same form as Microsoft's packager (`https://github.com/<owner>/<repo>/raw/HEAD/<path>`).

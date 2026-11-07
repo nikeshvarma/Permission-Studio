@@ -104,30 +104,58 @@ async function apiOrFail(path, token) {
     if (!res.success) reply(1, { name: res.errors[0].statusCode, message: res.errors[0].message });
     reply(0, { result: { id: res.id, success: true, errors: [] } });
   }
+  const FOLDERS = { PermissionSet: ['permissionsets', 'permissionset'], Profile: ['profiles', 'profile'], MutingPermissionSet: ['mutingpermissionsets', 'mutingpermissionset'],
+    ProfilePasswordPolicy: ['profilePasswordPolicies', 'profilePasswordPolicy'], ProfileSessionSetting: ['profileSessionSettings', 'profileSessionSetting'],
+    UserAccessPolicy: ['userAccessPolicies', 'userAccessPolicy'], DataCategoryGroup: ['datacategorygroups', 'datacategorygroup'] };
+  if (a0 === 'org' && a1 === 'list' && args[2] === 'metadata') {
+    await renewed();
+    const r = await get('/__meta/list?type=' + encodeURIComponent(val('--metadata-type')), '');
+    reply(0, { result: r.json.names.map(n => ({ fullName: n, type: val('--metadata-type') })) });
+  }
   if (a0 === 'project' && a1 === 'retrieve') {
     await renewed();
     const xml = fs.readFileSync(val('--manifest'), 'utf8');
     const types = {};
     for (const m of xml.matchAll(/<types>([\s\S]*?)<\/types>/g)) types[(/<name>(.*?)<\/name>/.exec(m[1]) || [])[1]] = [...m[1].matchAll(/<members>(.*?)<\/members>/g)].map(x => x[1]);
-    const type = types.Profile ? 'Profile' : 'PermissionSet';
-    const name = types[type][0];
-    const r = await get('/__meta/retrieve?type=' + type + '&name=' + encodeURIComponent(name) + '&rts=' + encodeURIComponent((types.RecordType || []).join(',')) + '&layouts=' + encodeURIComponent(JSON.stringify(types.Layout || [])), '');
-    if (r.json.error) reply(1, { name: 'RetrieveFailed', message: r.json.error });
-    const dir = require('path').join(val('--target-metadata-dir'), 'unpackaged', type === 'Profile' ? 'profiles' : 'permissionsets');
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(require('path').join(dir, name + (type === 'Profile' ? '.profile' : '.permissionset')), r.json.xml);
+    const main = types.Profile ? 'Profile' : types.PermissionSet ? 'PermissionSet' : null;
+    const write = (type, name, text) => {
+      const [folder, ext] = FOLDERS[type];
+      const dir = require('path').join(val('--target-metadata-dir'), 'unpackaged', folder);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(require('path').join(dir, name + '.' + ext), text);
+    };
+    if (main) {
+      const name = types[main][0];
+      const r = await get('/__meta/retrieve?type=' + main + '&name=' + encodeURIComponent(name) + '&rts=' + encodeURIComponent((types.RecordType || []).join(',')) + '&layouts=' + encodeURIComponent(JSON.stringify(types.Layout || [])), '');
+      if (r.json.error) reply(1, { name: 'RetrieveFailed', message: r.json.error });
+      write(main, name, r.json.xml);
+    }
+    for (const type of Object.keys(types).filter(t => FOLDERS[t] && t !== 'Profile' && t !== 'PermissionSet' && !(main && t === 'DataCategoryGroup'))) {
+      let names = types[type];
+      if (names.includes('*')) names = (await get('/__meta/list?type=' + type, '')).json.names;
+      for (const name of names) {
+        const r = await get('/__meta/retrieve?type=' + type + '&name=' + encodeURIComponent(name), '');
+        if (r.json.error) reply(1, { name: 'RetrieveFailed', message: r.json.error });
+        write(type, name, r.json.xml);
+      }
+    }
     reply(0, { result: { status: 'Succeeded', success: true, fileProperties: [] } });
   }
   if (a0 === 'project' && a1 === 'deploy') {
     await renewed();
     const root = val('--metadata-dir');
-    const folder = fs.existsSync(require('path').join(root, 'profiles')) ? 'profiles' : 'permissionsets';
-    const file = fs.readdirSync(require('path').join(root, folder))[0];
-    const type = folder === 'profiles' ? 'Profile' : 'PermissionSet';
-    const name = file.replace(/\.(profile|permissionset)$/, '');
-    const r = await send('POST', '/__meta/deploy?type=' + type + '&name=' + encodeURIComponent(name), fs.readFileSync(require('path').join(root, folder, file), 'utf8'), '');
-    if (r.json.error) reply(1, { name: 'FailedDeploy', message: 'Deploy failed.', result: { status: 'Failed', success: false, details: { componentFailures: [{ fullName: name, problem: r.json.error }] } } });
-    reply(0, { result: { id: r.json.id, status: 'Succeeded', success: true } });
+    let id = null;
+    for (const [type, [folder, ext]] of Object.entries(FOLDERS)) {
+      const dir = require('path').join(root, folder);
+      if (!fs.existsSync(dir)) continue;
+      for (const file of fs.readdirSync(dir).filter(f => f.endsWith('.' + ext))) {
+        const name = file.slice(0, -ext.length - 1);
+        const r = await send('POST', '/__meta/deploy?type=' + type + '&name=' + encodeURIComponent(name), fs.readFileSync(require('path').join(dir, file), 'utf8'), '');
+        if (r.json.error) reply(1, { name: 'FailedDeploy', message: 'Deploy failed.', result: { status: 'Failed', success: false, details: { componentFailures: [{ fullName: name, problem: r.json.error }] } } });
+        id = r.json.id;
+      }
+    }
+    reply(0, { result: { id, status: 'Succeeded', success: true } });
   }
   reply(1, { name: 'UnknownCommand', message: 'Unknown command: ' + args.join(' ') });
 })();
