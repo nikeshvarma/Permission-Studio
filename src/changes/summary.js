@@ -79,12 +79,5 @@ function toMarkdown(entries, options) {
   return head.join('\n') + '\n\n' + lines.join('\n') + '\n';
 }
 
-function toTsv(entries, options) {
-  const o = options || {};
-  const t = s => String(s == null ? '' : s).replace(/[\t\r\n]+/g, ' ');
-  const lines = [['Item', 'Area', 'Entry', 'Before', 'After', 'Saved', 'Org', 'Result', 'Ticket'].join('\t')];
-  for (const r of rows(entries)) lines.push([r.item, r.area, r.entry, r.before, r.after, r.saved, o.org || '', r.result, r.ticket].map(t).join('\t'));
-  return lines.join('\n') + '\n';
-}
 
-module.exports = { toMarkdown, toTsv, rows };
+module.exports = { toMarkdown, rows };

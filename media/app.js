@@ -477,7 +477,7 @@
       [h('span', { class: 'tl', text: label }), h('span', { class: 'ts', 'aria-hidden': 'true', text: short })]);
     top.append(left, h('div', { class: 'actions' }, [status,
       h('div', { class: 'btn-group' }, [tool('lookup', 'Find access', 'Find'), tool('wizard', 'Grant field access', 'Grant fields'), tool('objwizard', 'Grant object access', 'Grant objects'),
-        tool('useraccess', 'User access', 'User access'), tool('compare', 'Compare', 'Compare'), tool('history', 'History', 'History')]),
+        tool('useraccess', 'User access', 'User access'), tool('compare', 'Compare', 'Compare'), tool('health', 'Health', 'Health'), tool('history', 'History', 'History')]),
       h('button', { class: 'btn neutral', onclick: () => send({ type: 'showLog' }), text: 'Log' }),
       h('button', { class: 'btn neutral icon-btn', title: 'Refresh everything from the org' + (listsMeta.savedAt && !listsMeta.refreshing ? ' (updated ' + ago(listsMeta.savedAt) + ')' : ''), 'aria-label': 'Refresh', disabled: ctx.status === 'loading',
         onclick: () => guard(() => send({ type: 'refresh' })) }, [svg(ICONS.refresh), h('span', { text: 'Refresh' })])
@@ -557,8 +557,39 @@
   }
 
   // ---------- record page ----------
+  /**
+   * Every box that scrolls inside `root` (a field list, the "Grant to" table, the object grid,
+   * the section menu, the review's list, and any added later) keeps its place across a redraw.
+   * Boxes are matched by kind (data-scroll-key, or tag and class) and their order on the page.
+   */
+  function scrollKey(e) { return e.getAttribute('data-scroll-key') || e.tagName + '.' + (typeof e.className === 'string' ? e.className : ''); }
+  function saveScrolls(root) {
+    const saved = [];
+    const seen = new Map();
+    for (const e of root.querySelectorAll('*')) {
+      const k = scrollKey(e);
+      const i = seen.get(k) || 0;
+      seen.set(k, i + 1);
+      if (e.scrollTop || e.scrollLeft) saved.push([k, i, e.scrollTop, e.scrollLeft]);
+    }
+    return saved;
+  }
+  function restoreScrolls(root, saved) {
+    if (!saved.length) return;
+    const want = new Map(saved.map(([k, i, t, l]) => [k + '#' + i, [t, l]]));
+    const seen = new Map();
+    for (const e of root.querySelectorAll('*')) {
+      const k = scrollKey(e);
+      const i = seen.get(k) || 0;
+      seen.set(k, i + 1);
+      const w = want.get(k + '#' + i);
+      if (w) { e.scrollTop = w[0]; e.scrollLeft = w[1]; }
+    }
+  }
+
   function renderMain() {
     const scroll = main.scrollTop;
+    const inner = saveScrolls(main);
     // Keep focus (and the caret) in whatever had it, e.g. a search box being typed in.
     const act = document.activeElement;
     const keepFid = act && main.contains(act) ? act.getAttribute('data-fid') : null;
@@ -566,6 +597,7 @@
     main.textContent = '';
     try { drawMain(); } finally {
       main.scrollTop = scroll;
+      restoreScrolls(main, inner);
       const fid = keepFid || lastFocus;
       const el = fid ? main.querySelector('[data-fid="' + CSS.escape(fid) + '"]') : null;
       if (el) { el.focus({ preventScroll: true }); if (caret && el.setSelectionRange) { try { el.setSelectionRange(caret[0], caret[1]); } catch (e) { /* not a text field */ } } }
@@ -1031,6 +1063,97 @@
       h('td', { class: 'muted' }, cat === 'customPermission' ? (x.description || '') : x.namespace ? h('span', { class: 'pill', text: x.namespace }) : '')]);
   }
 
+  // ---------- The health check ----------
+  let hc = { data: null, busy: false, error: null, days: '30', sel: new Set(), extendDays: '90', fix: null, showManaged: false, showStandard: false, open: new Set(), limits: {} };
+  // ---- health check
+  function runHealth() { hc.busy = true; hc.error = null; hc.sel = new Set(); renderMain(); send({ type: 'healthCheck', expiringDays: Number(hc.days) }); }
+  function healthPage() {
+    if (hc.fix && (hc.fix.plan || hc.fix.results || hc.fix.busy)) {
+      if (hc.fix.busy) return [skeletonBlock('Working out the changes…', 3)];
+      const back = () => { hc.fix = null; runHealth(); };
+      return [h('h2', { class: 'sub-title', text: hc.fix.action === 'extend' ? 'Extend assignments' : 'Remove assignments of inactive users' })]
+        .concat(planView(hc.fix, 'healthApply', {}, { target: 'health', onDone: back, onBack: () => { hc.fix = null; renderMain(); }, saveLabel: hc.fix.action === 'extend' ? 'Extend' : 'Remove' }));
+    }
+    const d = hc.data;
+    const bar = h('div', { class: 'lk-bar hc-bar' }, [
+      h('div', { class: 'fld' }, [h('span', { text: 'Expiring within' }), select([['7', '7 days'], ['14', '14 days'], ['30', '30 days'], ['60', '60 days'], ['90', '90 days']], hc.days, v => { hc.days = v; }, hc.busy, 'hc.days', 'Expiring within')]),
+      h('button', { class: 'btn brand', disabled: hc.busy, onclick: runHealth, text: hc.busy ? 'Checking…' : d ? 'Check again' : 'Check now' }),
+      h('div', { class: 'grow' }),
+      d ? h('span', { class: 'muted small', text: 'Checked ' + ago(Date.parse(d.generatedAt)) }) : null,
+      d ? h('button', { class: 'btn neutral', title: 'An Excel workbook: a summary and one sheet per finding', onclick: () => send({ type: 'export', what: 'health' }), text: 'Export' }) : null]);
+    if (hc.busy) return [bar, skeletonBlock('Checking assignments, users and permissions across the org…', 6)];
+    if (hc.error) return [bar, alertBox('error', hc.error)];
+    if (!d) return [bar, h('div', { class: 'card' }, h('div', { class: 'card-body' }, [h('p', { class: 'flat', text: 'The health check reads the org’s permission sets, groups, profiles, assignments and users, and lists what needs cleaning up or a second look:' }),
+      h('ul', { class: 'hc-list' }, ['Integration users with admin access, and who holds high-impact permissions such as Modify All Data', 'Assignments to inactive users (remove them in one reviewed save)',
+        'Assignments that expire soon (extend them)', 'Permission sets, permission set groups and profiles nobody uses', 'Permission sets that grant nothing'].map(t => h('li', { text: t }))),
+      h('p', { class: 'muted small flat', text: 'Nothing is changed until you choose a fix and save it after the usual review.' })]))];
+    const S = d.summary;
+    const card = (id, n, label, tone) => h('button', { class: 'hc-card ' + (n ? tone : 'ok'), onclick: () => { hc.open.add(id); renderMain(); const el = document.getElementById('hc-' + id); if (el) main.scrollTo({ top: el.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop - 12, behavior: 'smooth' }); } },
+      [h('b', { text: String(n) }), h('span', { text: label })]);
+    const out = [bar, h('div', { class: 'hc-cards' }, [
+      card('integration', S.integrationAdmins, 'integration users with admin access', 'risk'), card('high', S.highImpactUsers, 'users with high-impact permissions', 'risk'),
+      card('inactive', S.inactiveAssignments, 'assignments to inactive users', 'warn'), card('expiring', S.expiring, 'assignments expiring within ' + d.expiringDays + ' days', 'warn'),
+      card('unusedPs', S.unusedPermissionSets, 'unused permission sets', 'info'), card('unusedGroups', S.unusedGroups, 'unused permission set groups', 'info'),
+      card('unusedProfiles', S.unusedProfiles, 'unused custom profiles', 'info'), card('empty', S.emptyPermissionSets, 'permission sets that grant nothing', 'info')])];
+    for (const n of d.notes) out.push(alertBox('info', n));
+    const openItem = key => h('button', { class: 'btn neutral small', disabled: !key, onclick: () => { ui.tool = null; renderTop(); guard(() => choose(key)); }, text: 'Open' });
+    const userLink = u => h('button', { class: 'link strong', title: 'See everything this user can do', onclick: () => { Object.assign(ua, { userId: u.userId, picked: true, q: u.name, data: null, error: null, busy: true }); ui.tool = 'useraccess'; send({ type: 'userAccess', userId: u.userId }); renderTop(); renderMain(); }, text: u.name });
+    let current = null; // the section being built: its table's "Show more" belongs to it
+    const section = (id, title, n, tone, body, tools) => h('section', { class: 'card hc-sec', id: 'hc-' + id }, [h('div', { class: 'card-head' }, [h('h2', {}, [title + ' ', h('span', { class: 'count ' + (n ? tone : ''), text: n.toLocaleString() })]), tools ? h('div', { class: 'card-tools' }, tools) : null]),
+      n ? (current = id, body()) : h('div', { class: 'card-body' }, h('p', { class: 'muted flat', text: 'Nothing found.' }))]);
+    // A column is a heading's text, or a ready-made header cell (such as the select-all checkbox).
+    // A finding's table scrolls with the page (no box inside a box) and starts with 50 rows; "Show more" adds 100.
+    const table = (cols, rows, id) => {
+      id = id || current;
+      const limit = hc.limits[id] || 50;
+      const more = rows.length - limit;
+      return h('div', { class: 'card-body flush' }, [h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, cols.map(c => typeof c === 'string' ? h('th', { text: c }) : c))), h('tbody', {}, rows.slice(0, limit))]),
+        more > 0 ? h('div', { class: 'hc-more' }, [h('span', { class: 'muted small', text: 'Showing ' + limit.toLocaleString() + ' of ' + rows.length.toLocaleString() }),
+          h('button', { class: 'btn neutral small', onclick: () => { hc.limits[id] = limit + 100; renderMain(); }, text: 'Show ' + Math.min(100, more) + ' more' }),
+          rows.length <= 1000 ? h('button', { class: 'btn neutral small', onclick: () => { hc.limits[id] = rows.length; renderMain(); }, text: 'Show all' }) : null]) : null]);
+    };
+    out.push(section('integration', 'Integration users with admin access', d.integrationAdmins.length, 'risk', () => table(['User', 'Profile', 'Integration because', 'Admin permissions', 'Granted by'],
+      d.integrationAdmins.map(u => h('tr', {}, [h('td', {}, [userLink(u), h('div', { class: 'cur', text: u.username })]), h('td', { class: 'muted wrap', text: u.profile }), h('td', { text: u.why }),
+        h('td', { class: 'wrap' }, u.permissions.map(x => h('span', { class: 'rv-risk', text: x }))), h('td', { class: 'wrap muted', text: u.sources.join(', ') })])), 'integration')));
+    out.push(section('high', 'High-impact permissions', S.highImpactUsers, 'risk', () => h('div', { class: 'card-body flush' }, d.highImpact.filter(x => x.users.length).map(p2 => {
+      const open = hc.open.has('perm:' + p2.name);
+      return h('div', { class: 'hc-perm' }, [h('div', { class: 'hc-perm-head' }, [h('button', { class: 'link strong', onclick: () => { if (open) hc.open.delete('perm:' + p2.name); else hc.open.add('perm:' + p2.name); renderMain(); }, text: (open ? '▾ ' : '▸ ') + p2.label }),
+        h('span', { class: 'count', text: p2.users.length + (p2.users.length === 1 ? ' user' : ' users') }), h('div', { class: 'grow' }),
+        h('button', { class: 'btn neutral small', onclick: () => { lookup.mode = 'system'; lookup.sysName = p2.name; lookup.busy = true; lookup.result = null; if (!lookupOptions) { lookupOptions = 'loading'; send({ type: 'lookupOptions' }); } ui.tool = 'lookup'; send({ type: 'lookupPermission', kind: 'system', name: p2.name, label: p2.label }); renderTop(); renderMain(); }, text: 'Find access' })]),
+        open ? table([h('th', { text: 'User' }), h('th', { text: 'Profile' }), h('th', { text: 'Granted by' })],
+          p2.users.map(u => h('tr', {}, [h('td', {}, [userLink(u), h('div', { class: 'cur', text: u.username })]), h('td', { class: 'muted', text: u.profile }), h('td', { class: 'wrap muted', text: u.sources.join(', ') })])), 'perm:' + p2.name) : null]);
+    }))));
+    const selectable = (id, rows, fixLabel, act, extra) => {
+      const ids = rows.map(r => r.assignmentId);
+      const chosen = ids.filter(x => hc.sel.has(x));
+      const all = chosen.length === ids.length && ids.length > 0;
+      return section(id, id === 'inactive' ? 'Assignments to inactive users' : 'Assignments expiring within ' + d.expiringDays + ' days', rows.length, 'warn', () => table([
+        h('th', { class: 'c narrow' }, checkbox({ checked: all, indeterminate: !all && chosen.length > 0, fid: 'hc.all.' + id, aria: 'Select all', title: 'Select all ' + ids.length.toLocaleString() + ', including those not shown', onChange: v => { for (const x of ids) { if (v) hc.sel.add(x); else hc.sel.delete(x); } renderMain(); } })),
+        'User', 'Assigned', id === 'inactive' ? 'Last login' : 'Expires'],
+        rows.map(r => h('tr', { class: hc.sel.has(r.assignmentId) ? 'row-edited' : '' }, [h('td', { class: 'c narrow' }, checkbox({ checked: hc.sel.has(r.assignmentId), fid: 'hc.' + r.assignmentId, aria: 'Select ' + r.name + ' – ' + r.itemLabel, onChange: v => { if (v) hc.sel.add(r.assignmentId); else hc.sel.delete(r.assignmentId); renderMain(); } })),
+          h('td', {}, [h('b', { text: r.name }), h('div', { class: 'cur', text: r.username })]), h('td', {}, [srcChip({ kind: r.kind, label: r.itemLabel, key: r.key })]),
+          h('td', { class: 'muted', text: id === 'inactive' ? r.lastLogin || 'Never' : r.expires + ' (' + (r.daysLeft === 0 ? 'today' : r.daysLeft + (r.daysLeft === 1 ? ' day' : ' days')) + ')' })]))),
+        [extra, h('button', { class: 'btn ' + (chosen.length ? 'brand' : 'neutral') + ' small', disabled: !chosen.length, onclick: () => { hc.fix = { busy: true, action: act }; applyTarget = 'health'; renderMain(); send({ type: 'healthPlan', action: act, assignmentIds: chosen, days: Number(hc.extendDays) }); },
+          text: fixLabel + (chosen.length ? ' ' + chosen.length : '') + '…' })]);
+    };
+    out.push(selectable('inactive', d.inactiveAssignments, 'Remove', 'remove'));
+    out.push(selectable('expiring', d.expiring, 'Extend', 'extend', select([['30', 'by 30 days'], ['90', 'by 90 days'], ['180', 'by 180 days']], hc.extendDays, v => { hc.extendDays = v; renderMain(); }, false, 'hc.extend', 'Extend by')));
+    const ups = d.unusedPermissionSets.filter(x => hc.showManaged || !x.managed);
+    out.push(section('unusedPs', 'Unused permission sets', ups.length, 'info', () => table(['Permission set', 'API name', 'Inactive users assigned', ''],
+      ups.map(x => h('tr', {}, [h('td', { class: 'strong' }, [x.label, x.managed ? h('span', { class: 'pill', text: 'Managed' }) : null]), h('td', { class: 'mono muted', text: x.apiName }), h('td', { class: 'muted', text: String(x.inactiveUsers) }), h('td', { class: 'c narrow' }, openItem(x.key))]))),
+      [toggle('Include managed packages', hc.showManaged, v => { hc.showManaged = v; renderMain(); }), h('span', { class: 'muted small', text: 'No active users and in no group. Delete in Setup if no longer needed.' })]));
+    out.push(section('unusedGroups', 'Unused permission set groups', d.unusedGroups.length, 'info', () => table(['Group', 'API name', 'Member permission sets', 'Inactive users assigned', ''],
+      d.unusedGroups.map(x => h('tr', {}, [h('td', { class: 'strong', text: x.label }), h('td', { class: 'mono muted', text: x.apiName }), h('td', { class: 'muted', text: String(x.members) }), h('td', { class: 'muted', text: String(x.inactiveUsers) }), h('td', { class: 'c narrow' }, openItem(x.key))])))));
+    const upr = d.unusedProfiles.filter(x => hc.showStandard || !x.standard);
+    out.push(section('unusedProfiles', 'Unused profiles', upr.length, 'info', () => table(['Profile', 'Inactive users', ''],
+      upr.map(x => h('tr', {}, [h('td', { class: 'strong' }, [x.label, x.standard ? h('span', { class: 'pill', text: 'Standard' }) : null]), h('td', { class: 'muted', text: String(x.inactiveUsers) }), h('td', { class: 'c narrow' }, openItem(x.key))]))),
+      [toggle('Include standard profiles', hc.showStandard, v => { hc.showStandard = v; renderMain(); }), h('span', { class: 'muted small', text: 'No active users.' })]));
+    out.push(section('empty', 'Permission sets that grant nothing', d.emptyPermissionSets.length, 'info', () => table(['Permission set', 'API name', 'Active users', ''],
+      d.emptyPermissionSets.map(x => h('tr', {}, [h('td', { class: 'strong', text: x.label }), h('td', { class: 'mono muted', text: x.apiName }), h('td', { class: 'muted', text: String(x.activeUsers) }), h('td', { class: 'c narrow' }, openItem(x.key))]))),
+      [h('span', { class: 'muted small', text: 'No object, field, system, tab, app, Apex or other record-based access. They may still assign record types or other metadata-only settings.' })]));
+    return out;
+  }
+
   // ---------- User access: one user's combined access ----------
   let ua = { q: '', results: null, userId: null, data: null, busy: false, error: null, objQ: '', sysQ: '', openObj: null, fields: null };
   const srcDots = (d, ids) => h('span', { class: 'src-dots', title: 'Granted by: ' + ids.map(i => d.sources[i] ? d.sources[i].label : '?').join(', ') },
@@ -1047,7 +1170,8 @@
     if (!d) { out.push(h('p', { class: 'empty-line', text: 'Pick a user to see everything they can do, and why.' })); return out; }
     const u = d.user;
     out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, [u.name, u.active ? null : h('span', { class: 'pill', text: 'Inactive' })]),
-      h('div', { class: 'card-tools' }, h('button', { class: 'btn neutral small', onclick: () => { ua.busy = true; send({ type: 'userAccess', userId: u.id }); renderMain(); }, text: 'Read again' }))]),
+      h('div', { class: 'card-tools' }, [h('button', { class: 'btn neutral small', onclick: () => { ua.busy = true; send({ type: 'userAccess', userId: u.id }); renderMain(); }, text: 'Read again' }),
+        h('button', { class: 'btn neutral small', title: 'An Excel workbook: summary, sources, object, field, system and custom permissions', onclick: () => send({ type: 'export', what: 'userAccess' }), text: 'Export' })])]),
       h('div', { class: 'card-body ua-head' }, [
         h('div', {}, [h('span', { class: 'k', text: 'Username' }), h('span', { class: 'mono', text: u.username })]),
         h('div', {}, [h('span', { class: 'k', text: 'Profile' }), h('span', { text: u.profile || '—' })]),
@@ -1125,7 +1249,8 @@
     const q = cmp.q.trim().toLowerCase();
     const rows = r.rows.filter(x => (!cmp.area || x.area === cmp.area) && (!q || (x.entry + ' ' + x.a + ' ' + x.b).toLowerCase().includes(q)));
     out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, [r.rows.length ? r.rows.length + (r.rows.length === 1 ? ' difference' : ' differences') : 'No differences']),
-      h('div', { class: 'card-tools' }, [r.rows.length ? h('button', { class: 'btn neutral small', onclick: () => send({ type: 'copy', text: r.markdown }), text: 'Copy as Markdown' }) : null])]),
+      h('div', { class: 'card-tools' }, [r.rows.length ? h('button', { class: 'btn neutral small', onclick: () => send({ type: 'copy', text: r.markdown }), text: 'Copy as Markdown' }) : null,
+        h('button', { class: 'btn neutral small', title: 'An Excel workbook: the differences, and everything each side grants', onclick: () => send({ type: 'export', what: 'compare' }), text: 'Export' })])]),
       h('div', { class: 'card-body' }, [h('p', { class: 'flat' }, [h('b', { text: r.labelA }), ' compared with ', h('b', { text: r.labelB }), '. ', h('span', { class: 'muted', text: 'Object, field, system, app, Apex, Visualforce, flow, custom permission, custom metadata, custom setting and tab access. Record types, layouts and the Metadata-only settings aren’t compared.' })]),
         areas.length ? h('div', { class: 'filters' }, [filterChip('Area', cmp.area, [['', 'All']].concat(areas.map(a => [a, a + ' (' + r.rows.filter(x => x.area === a).length + ')'])), v => { cmp.area = v; renderMain(); }, ''),
           h('div', { class: 'grow' }), searchBox(cmp.q, 'Search entries', v => { cmp.q = v; renderMain(); }, 'cmp.q', true)]) : null]),
@@ -1551,16 +1676,17 @@
       if ((t === 'lookup' || t === 'wizard' || t === 'objwizard') && catalog === null) { catalog = 'loading'; send({ type: 'objectCatalog' }); }
       applyLayout(); renderMain(); renderTop(); main.scrollTop = 0;
     };
-    if (['lookup', 'history', 'useraccess', 'compare'].includes(t)) go(); else guard(go);
+    if (['lookup', 'history', 'useraccess', 'compare', 'health'].includes(t)) go(); else guard(go);
   }
   function closeTool() { ui.tool = null; renderMain(); renderTop(); }
   function toolPage() {
     const back = h('button', { class: 'link', onclick: closeTool, text: ui.selected ? '‹ Back to the record' : '‹ Back' });
-    const body = ui.tool === 'lookup' ? lookupPage() : ui.tool === 'wizard' ? wizardPage() : ui.tool === 'objwizard' ? objWizardPage() : ui.tool === 'useraccess' ? userAccessPage() : ui.tool === 'compare' ? comparePage() : historyPage();
+    const body = ui.tool === 'lookup' ? lookupPage() : ui.tool === 'wizard' ? wizardPage() : ui.tool === 'objwizard' ? objWizardPage() : ui.tool === 'useraccess' ? userAccessPage() : ui.tool === 'compare' ? comparePage() : ui.tool === 'health' ? healthPage() : historyPage();
     const titles = { lookup: ['Find access', 'Who can see or change an object or field, and through what.'], wizard: ['Grant field access', 'Give one or more fields Read or Edit access across several permission sets and profiles at once.'],
       objwizard: ['Grant object access', 'Give object permissions and record types to several permission sets and profiles at once.'],
       useraccess: ['User access', 'Everything one user can do, added up across their profile, permission sets and groups, and where each permission comes from.'],
       compare: ['Compare', 'How two permission sets, profiles or groups differ, in this org or across two orgs.'],
+      health: ['Health check', 'What needs cleaning up or a second look across the org: admin access, high-impact permissions, inactive and expiring assignments, and unused items.'],
       history: ['Save history', 'Every save made with Permission Studio in this project, newest first.'] };
     return h('div', { class: 'tool' }, [h('div', { class: 'page-header' }, [back, h('div', { class: 'ph-title tool-title' }, [h('h1', { text: titles[ui.tool][0] })]), h('p', { class: 'muted flat', text: titles[ui.tool][1] })]),
       h('div', { class: 'tab-body' }, body)]);
@@ -1597,7 +1723,7 @@
     const input = h('input', { type: 'text', class: 'text', value: o.value || '', placeholder: o.placeholder || '', 'data-fid': o.fid, 'aria-label': o.aria, role: 'combobox',
       'aria-autocomplete': 'list', 'aria-expanded': 'false', 'aria-controls': listId, autocomplete: 'off', spellcheck: 'false' });
     const list = h('ul', { class: 'combo-list', id: listId, role: 'listbox', 'aria-label': o.aria, hidden: true });
-    const wrap = h('div', { class: 'combo' }, [input, list]);
+    const wrap = h('div', { class: 'combo' }, [searchIcon(), input, list]);
     let shown = [];
     let active = -1;
     const isOpen = () => !list.hidden;
@@ -1605,7 +1731,12 @@
     const mark = () => {
       [...list.children].forEach((li, i) => { li.classList.toggle('on', i === active); if (li.getAttribute('role') === 'option') li.setAttribute('aria-selected', String(i === active)); });
       const li = active >= 0 ? list.children[active] : null;
-      if (li) { input.setAttribute('aria-activedescendant', li.id); li.scrollIntoView({ block: 'nearest' }); } else input.removeAttribute('aria-activedescendant');
+      if (li) {
+        input.setAttribute('aria-activedescendant', li.id);
+        // Scroll the list itself (scrollIntoView would also scroll everything around it).
+        if (li.offsetTop < list.scrollTop) list.scrollTop = li.offsetTop;
+        else if (li.offsetTop + li.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = li.offsetTop + li.offsetHeight - list.clientHeight;
+      } else input.removeAttribute('aria-activedescendant');
     };
     const draw = () => {
       const q = input.value.trim().toLowerCase();
@@ -1664,6 +1795,7 @@
   // An open list closes when anything scrolls (other than the list itself) or the window resizes.
   const closeCombos = e => { for (const l of document.querySelectorAll('.combo-list:not([hidden])')) if (!e || !l.contains(e.target)) { l.hidden = true; const i = l.parentElement.querySelector('input'); if (i) i.setAttribute('aria-expanded', 'false'); } };
   document.addEventListener('scroll', closeCombos, true);
+  window.addEventListener('scroll', () => { if (window.scrollX || window.scrollY) window.scrollTo(0, 0); });
   window.addEventListener('resize', () => closeCombos());
   /** Picks an object for the grant screens. */
   function objectPicker(value, onPick, fid, objectPermsOnly) {
@@ -1856,7 +1988,8 @@
       if (open) rows.push(h('tr', { class: 'why' }, h('td', { colspan: String(cols.length) }, pathFor(u))));
     }
     const usersCard = h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, ['Users ', h('span', { class: 'count', text: users.length === base.length ? String(users.length) : users.length + ' of ' + base.length })]),
-      h('div', { class: 'card-tools' }, h('button', { class: 'btn neutral small', disabled: !users.length, onclick: () => send({ type: 'copy', text: users.map(u => [u.name, u.username, u.profile].join('\t')).join('\n') }), text: 'Copy list' }))]),
+      h('div', { class: 'card-tools' }, [h('button', { class: 'btn neutral small', disabled: !users.length, onclick: () => send({ type: 'copy', text: users.map(u => [u.name, u.username, u.profile].join('\t')).join('\n') }), text: 'Copy list' }),
+        h('button', { class: 'btn neutral small', title: 'An Excel workbook: users, sources, half access and inactive users', onclick: () => send({ type: 'export', what: 'findAccess' }), text: 'Export' })])]),
       h('div', { class: 'card-body flush' }, users.length ? h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, cols.map(c => h('th', { text: c })))), h('tbody', {}, rows)])
         : h('p', { class: 'empty-line', text: base.length ? 'No users match these filters.' : 'No ' + (f.users === 'inactive' ? 'inactive' : 'active') + ' user has this.' })),
       !perm && r.partial && r.partial.length && f.show !== 'partial' ? h('div', { class: 'card-body' }, h('button', { class: 'link', onclick: () => set('show', 'partial'), text: '▸ ' + r.partial.length + (r.partial.length === 1 ? ' more user has' : ' more users have') + ' only half of it (object or field access, not both)' })) : null]);
@@ -2135,9 +2268,12 @@
       filterChip('Item', hf.item, [['', 'Any']].concat(items), v => { hf.item = v; renderMain(); }, ''),
       filterChip('Result', hf.result, [['', 'Any'], ['saved', 'Saved'], ['failed', 'Failed']], v => { hf.result = v; renderMain(); }, ''),
       toggle('Include changes made in Setup', hf.setup, v => { hf.setup = v; if (!v) historySetupData = null; renderMain(); })])];
+    // Nothing selected: Export covers every save shown.
+    if (!picked.length && mine.length) out.push(h('div', { class: 'selbar' }, [h('span', { class: 'muted small', text: mine.length + (mine.length === 1 ? ' save shown' : ' saves shown') }),
+      h('button', { class: 'btn neutral', title: 'Every save shown as an Excel workbook: saves and every change', onclick: () => send({ type: 'export', what: 'history', snapshotIds: mine.map(r => r.e.snapshot).filter(Boolean) }), text: 'Export' })]));
     if (picked.length) out.push(h('div', { class: 'selbar' }, [h('span', { class: 'muted small', text: picked.length + ' selected' }),
       h('button', { class: 'btn neutral', onclick: () => copy(picked, 'markdown'), text: 'Copy summary' }),
-      h('button', { class: 'btn neutral', title: 'Tab-separated, pastes into Excel as cells', onclick: () => copy(picked, 'tsv'), text: 'Copy for Excel' }),
+      h('button', { class: 'btn neutral', title: 'The selected saves as an Excel workbook: saves and every change', onclick: () => send({ type: 'export', what: 'history', snapshotIds: picked }), text: 'Export' }),
       h('button', { class: 'btn neutral', onclick: () => { historyPicked.clear(); renderMain(); }, text: 'Clear' })]));
     if (hf.setup && historySetupData && historySetupData.denied) out.push(alertBox('info', 'Changes made in Setup need the View Setup Audit Trail permission (from Winter ’27; View Setup before that).'));
     if (!all.length) { out.push(h('p', { class: 'empty-line', text: historyData.length ? 'Nothing matches these filters.' : 'No saves yet. Every save from this screen is recorded here.' })); return out; }
@@ -2389,6 +2525,7 @@
   function openModal(m) { modal = m; renderModal(); }
   function closeModal() { modal = null; renderModal(); }
   function renderModal() {
+    const inner = saveScrolls(overlay);
     overlay.textContent = '';
     overlay.hidden = !modal;
     if (!modal) return;
@@ -2439,7 +2576,8 @@
     updateSaveBtn();
     if (modal.kind === 'psForm') updatePsBtn();
     const first = box.querySelector('#confirm') || box.querySelector('[data-fid="ps.label"]') || box.querySelector('footer .btn.brand, footer .btn.destructive');
-    if (first && document.activeElement && !box.contains(document.activeElement)) first.focus();
+    if (first && document.activeElement && !box.contains(document.activeElement)) first.focus({ preventScroll: true });
+    restoreScrolls(overlay, inner);
   }
   function updateSaveBtn() {
     const b = document.getElementById('saveBtn');
@@ -2586,6 +2724,14 @@
       case 'userAccess': if (m.userId === ua.userId) { ua.busy = false; ua.data = m.data || null; ua.error = m.error || null; if (ui.tool === 'useraccess') renderMain(); } break;
       case 'userFields': if (m.userId === ua.userId && m.object === ua.openObj) { ua.fields = m.fields || []; if (ui.tool === 'useraccess') renderMain(); } break;
       case 'orgs': cmp.orgs = m.orgs || []; if (ui.tool === 'compare') renderMain(); break;
+      case 'exported': {
+        const file = m.path;
+        toast('success', 'Saved ' + file.split(/[\\/]/).pop() + (m.sheets ? ' (' + m.sheets + (m.sheets === 1 ? ' sheet)' : ' sheets)') : '') + '.', { title: 'Exported',
+          actions: [{ label: 'Open', run: () => send({ type: 'openFile', path: file }) }, { label: 'Show in folder', run: () => send({ type: 'revealFile', path: file }) }] });
+        break;
+      }
+      case 'health': hc.busy = false; hc.data = m.data || null; hc.error = m.error || null; hc.open = new Set(); hc.limits = {}; if (ui.tool === 'health') renderMain(); break;
+      case 'healthPlan': hc.fix = { action: m.action, plan: m.error ? { error: m.error } : { plan: m.plan, skipped: m.skipped }, confirm: '', progress: null, results: null }; if (ui.tool === 'health') renderMain(); break;
       case 'compareResult': cmp.busy = false; cmp.result = m; cmp.q = ''; cmp.area = ''; if (ui.tool === 'compare') renderMain(); break;
       case 'tabsLoading': if (m.key === ui.selected) { if (tabsPage && tabsPage.data) tabsPage.refreshing = true; else tabsPage = { key: m.key, state: 'loading' }; renderMain(); } break;
       case 'tabsDetail': if (m.key === ui.selected) { tabsPage = { key: m.key, data: m.data, refreshing: m.refreshing, state: 'ready' }; reconcile(m.data.items.map(t => ['tab:' + t.name, { visibility: t.visibility }])); renderMain(); renderFooter(); } break;
@@ -2627,9 +2773,9 @@
         if (ui.tool === 'lookup' || ui.tool === 'wizard') renderMain();
         break;
       case 'wizardPlan': wizard.busy = false; wizard.plan = m; if (ui.tool === 'wizard') renderMain(); break;
-      case 'wizardProgress': { const w = applyTarget === 'revoke' && lookup.revoke ? lookup.revoke : wizard; w.progress = { label: m.label, done: m.done, total: m.total }; renderMain(); break; }
+      case 'wizardProgress': { const w = applyTarget === 'revoke' && lookup.revoke ? lookup.revoke : applyTarget === 'health' && hc.fix ? hc.fix : wizard; w.progress = { label: m.label, done: m.done, total: m.total }; renderMain(); break; }
       case 'wizardResult': {
-        const w = applyTarget === 'revoke' && lookup.revoke ? lookup.revoke : wizard;
+        const w = applyTarget === 'revoke' && lookup.revoke ? lookup.revoke : applyTarget === 'health' && hc.fix ? hc.fix : wizard;
         w.progress = null;
         if (m.error) w.applyError = m.error; else { w.results = m.results; w.plan = null; if (ui.selected && m.results.some(r => r.key === ui.selected)) detail = null; }
         applyTarget = 'wizard';

@@ -206,6 +206,14 @@ function createOrg(options) {
       for (const a of T.PermissionSetAssignment) { const u = T.User.find(x => x.Id === a.AssigneeId); if (u && u.IsActive) counts.set(a.PermissionSetId, (counts.get(a.PermissionSetId) || 0) + 1); }
       return { totalSize: counts.size, done: true, records: [...counts].map(([id, n]) => ({ attributes: { type: 'AggregateResult' }, PermissionSetId: id, [perPs[1]]: n })) };
     }
+    // Any single-field GROUP BY with a COUNT (no WHERE), e.g. SELECT ParentId, COUNT(Id) n FROM ObjectPermissions GROUP BY ParentId
+    const groupAny = /^SELECT (\w+), COUNT\(Id\) (\w+) FROM (\w+) GROUP BY \1$/.exec(q);
+    if (groupAny) {
+      if (!T[groupAny[3]]) throw Object.assign(new Error("sObject type '" + groupAny[3] + "' is not supported."), { code: 'INVALID_TYPE' });
+      const counts = new Map();
+      for (const r of T[groupAny[3]]) counts.set(r[groupAny[1]], (counts.get(r[groupAny[1]]) || 0) + 1);
+      return { totalSize: counts.size, done: true, records: [...counts].map(([k, n]) => ({ attributes: { type: 'AggregateResult' }, [groupAny[1]]: k, [groupAny[2]]: n })) };
+    }
     const grouped = /^SELECT SobjectType, COUNT\(Id\) (\w+) FROM FieldPermissions WHERE ParentId = '(\w+)' GROUP BY SobjectType$/.exec(q);
     if (grouped) {
       const counts = new Map();

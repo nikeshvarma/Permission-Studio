@@ -2,6 +2,48 @@
 
 All notable changes to Permission Studio. Versions follow `major.minor.patch`; every delivered change raises the patch number.
 
+## 2.5.4
+
+- README brought up to date: the Health button and how the health check handles large orgs (summary cards, 50 rows at a time with Show more, Select all across the whole finding), lists that keep their place while you work, and every screenshot taken from the current screen.
+- No change to how the extension works.
+
+## 2.5.3
+
+- Fixed: ticking a checkbox in a list that scrolls on its own (Grant field access's field list and "Grant to" table, Grant object access's grid) jumped the list back to the top. Every box that scrolls inside the page, and inside the review, now keeps its place when the screen redraws, including any added later.
+- Fixed: choosing a section near the bottom of the section menu (Apps) scrolled the menu back to the top. The menu now scrolls on its own and keeps its place.
+- Fixed: removing a change in the review jumped its list back to the top.
+- A new click-through finds every box that scrolls on these screens, ticks something inside it, and checks it stayed where it was.
+
+## 2.5.2
+
+- Fixed: the health check could leave the whole page scrolled, with blank space under it and the top bar out of view. A toggle's hidden input was positioned against the frame around the scrolling area, so a toggle far down the page (the health check's "Include managed packages" and "Include standard profiles") stretched the page itself to thousands of pixels; clicking a summary card then scrolled the page, not just the health check. Toggles now contain their input, the page itself can never scroll, and summary cards scroll only the health check.
+- The layout audit now checks, on every screen at every laptop size, that the page is exactly the window's height and never scrolled.
+
+## 2.5.1
+
+- **The access matrix is removed**, and the **Reports** button is now **Health**: it opens the health check directly.
+- Health check: a long finding shows its first 50 rows, with **Show 100 more** and **Show all**; the page scrolls as one, with no scrolling boxes inside it. With thousands of rows (5,345 assignments to inactive users, say) the page was slow to draw and showed blank space. **Select all** still selects every row in the finding.
+- Toggles: centred on their label, and green when on, everywhere.
+- Dropdown arrows: drawn in the text colour, 12 px in from the edge, the same in every dropdown and filter.
+- Compare: the "In this org / In another org" switch fits its buttons (no empty end).
+- Find access, Grant field access and Grant object access: the object and field pickers show the magnifier. Every dropdown, search box, picker and text field is the same height.
+- Fixed: hovering a table row made it flicker (its size changed on hover, which moved it out from under the pointer). New stylesheet tests catch a rule joined to the wrong selectors, and any hover style that changes size.
+
+## 2.5.0
+
+- **Exports are Excel only, and richer.** Every export is one workbook with as many sheets as the subject needs. Each sheet starts with what it is, the org, when and the filters; the data is a real Excel table (banded rows, filter buttons, sortable) with the header frozen; cells are coloured like the screen; permission sets, profiles, groups and users link to Setup; very large results are split across sheets. After saving: **Open** or **Show in folder**. Buttons simply say **Export**.
+- **New exports:** User access (summary, sources, object, field, system and custom permissions), Compare (differences, then each side in full), Find access (users, sources, half access, inactive users), History (saves and every change, for the selected saves or everything shown), and **Export everything** for the access matrix (object, field per object, system and other access in one workbook).
+- **Removed:** CSV exports, and History's "Copy for Excel" (replaced by Export). Copy summary is Markdown only.
+- **One consistent look:** tags (Managed, High impact, Saved, Failed, tickets, sources, counts, field types) share one pill size; checkboxes and radio buttons share one size and colours (radio buttons are no longer the system's own); every table has the same header, spacing, dividers and hover; cards, dialogs, bars, tiles and notices share 8 px corners; switches and tabs match buttons; secondary text uses one size. A new design check measures all of this on ten screens.
+
+## 2.4.0
+
+- **Reports › Health check**: integration users with admin access; who holds high-impact permissions and through what; assignments to inactive users (remove them in one reviewed save); assignments expiring soon (extend them by 30, 90 or 180 days); unused permission sets, permission set groups and profiles; permission sets that grant nothing. Export to Excel (a summary and one sheet per finding) or CSV.
+- **Reports › Access matrix**: permission sets, groups and profiles against object permissions, field permissions, system permissions or other access (apps, Apex, Visualforce, flows, connected apps, custom permissions, custom metadata, custom settings). Filters: kinds, managed packages, standard profiles, only items with active users, favorites, name, and hiding items without access. Preview, then export to Excel (with an About sheet of filters and legend) or CSV.
+- Consistent controls: every button is a rectangle with the same corners; every dropdown and search box (including the object and field pickers) is a pill.
+- Fixed: a bulk save that failed (Grant screens, Find access's "Remove from selected") showed "ticket is not defined" instead of the org's error, and the failure wasn't recorded in History.
+- Fixed: bulk saves dropped each change's record reference, which assignment changes need.
+
 ## 2.3.5
 
 - README completed: contents, commands, every key feature (including Changes in Setup, a profile's users, copying API names, offline screens and the org badges), the six steps of a save, limitations, a fuller FAQ and troubleshooting, the project structure and a link to the changelog.

@@ -143,6 +143,20 @@ function activate(context) {
     localFile, localFileMode: () => settings().localFileMode, kinds: () => settings().kinds, gate,
     summary, clipboard: text => vscode.env.clipboard.writeText(text), memento: context.workspaceState,
     insight: require('./src/data/insight'),
+    health: require('./src/data/health'),
+    exports: require('./src/data/exports'),
+    openFile: async file => { if (file) await vscode.env.openExternal(vscode.Uri.file(file)); },
+    revealFile: async file => { if (file) await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(file)); },
+    xlsx: require('./src/util/xlsx'),
+    // Exports: VS Code's Save dialog, starting in the project folder.
+    saveFile: async (name, data, kind) => {
+      const folder = (panel.ctx && panel.ctx.projectDir) || (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0] && vscode.workspace.workspaceFolders[0].uri.fsPath) || os.homedir();
+      const uri = await vscode.window.showSaveDialog({ defaultUri: vscode.Uri.file(path.join(folder, name)), saveLabel: 'Export',
+        filters: { 'Excel workbook': ['xlsx'] } });
+      if (!uri) return null;
+      await fs.promises.writeFile(uri.fsPath, data);
+      return uri.fsPath;
+    },
     insightSystem: (conn, ids) => require('./src/data/insight').systemPermissionsOf(conn, ids),
     refreshOnOpen: () => settings().refreshOnOpen,
     uiDefaults: () => { const s3 = settings(); return { onlyEnabledAccess: s3.onlyEnabledAccess, onlyEnabledSystemPermissions: s3.onlyEnabledSystemPermissions, showAllObjects: s3.showAllObjects }; },
