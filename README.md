@@ -51,9 +51,10 @@ Access is where Salesforce work slows down. In Setup, every question and every c
 | See everything one user can do | Open the user, then each profile, permission set and group they hold | **User access**: one view, with the source of every permission |
 | Compare a permission set in a sandbox with production | Two browser windows, compared by eye | **Compare**: every difference, filterable and copyable as a table |
 | Turn off one permission for a group's users | Find or create the muting permission set, edit it, save | **Muted Permissions**: tick it, review, save |
-| Record a change for an ADO or Jira ticket | Screenshots, or retyping | **Copy summary**: a Markdown or Excel table, with the ticket number |
+| Record a change for an ADO or Jira ticket | Screenshots, or retyping | **Copy summary** as a Markdown table, or **Export** to Excel, with the ticket number |
 | Undo a mistake | Redo it by hand, from memory | **Undo** from History, or from the notice after saving |
 | Check what changed on a permission set recently | Setup Audit Trail, filtered by hand | **Changes in Setup**, on the item itself |
+| Find what to clean up: unused permission sets, inactive users' assignments, admin access on integration users | Reports and SOQL, one question at a time | **Health**: every finding on one page, with fixes saved after a review |
 
 ## Key features
 
@@ -63,7 +64,9 @@ Every section of a permission set or profile is on one screen: object, field, re
 
 ![An object's page with object permissions, record type assignments and field permissions, three changes waiting to be saved](media/readme/editing.png)
 
-**Every save is checked first.** Save opens a review that starts with the impact: how many users are affected, which high-impact permissions are granted and what access is removed. Then every change on one line, where you can drop any single change. Add a ticket such as an JIRA story and it follows the save into History and copied summaries. On a production org you type the org's name to confirm. Ctrl/Cmd+S opens the review and saves from it.
+### Review before anything is saved
+
+Save opens a review that starts with the impact: how many changes, how many users they reach, which high-impact permissions are being granted (Modify All Data, View All Data, Use Any API Client and others are spelled out in plain words), and what access is being removed. Then every change on one line, where any one can be dropped. Add a ticket number and it follows the save into History and copied summaries. On a production org you type the org's name to confirm.
 
 ![The review: changes, users affected, high-impact permissions and removals first, then each change on one line with granted chips and a button to remove it](media/readme/review.png)
 
@@ -109,9 +112,38 @@ Add or remove a group's member permission sets while Salesforce recalculates the
 - **User access policies:** a permission set or group shows the policies that assign it automatically, and the review warns before you remove an assignment a policy may give back.
 - **Rename and clone** permission sets, or **copy a profile to a new permission set**, Salesforce's recommended permission-set-led model.
 
+### Access health check
+
+The **Health** button in the top bar reads the whole org and lists what needs cleaning up or a second look:
+
+- **Integration users with admin access:** API Only users, and users on an integration licence, who hold Modify All Data, View All Data, Manage Users or other admin permissions.
+- **High-impact permissions:** everyone who holds Modify All Data, View All Data, Manage Users, Author Apex and the other org-wide permissions, and through which profile, permission set or group.
+- **Assignments to inactive users:** remove them in one reviewed save.
+- **Assignments that expire soon** (within 7 to 90 days): extend them by 30, 90 or 180 days.
+- **Unused permission sets, permission set groups and profiles:** no active users (and, for permission sets, in no group).
+- **Permission sets that grant nothing:** no object, field, system, tab, app, Apex or other record-based access.
+
+Summary cards give the counts at a glance; click one to jump to its finding. Built for large orgs: a long finding shows 50 rows at a time (**Show more** adds 100), and **Select all** takes the whole finding, including rows not shown, so thousands of inactive users' assignments can be removed in one go. Fixes go through the same review, snapshot and undo as every other save. **Export** the findings as one Excel workbook: a summary and one sheet per finding.
+
+![The access health check: summary cards, integration users with admin access, and who holds Modify All Data and through what](media/readme/health-check.png)
+
+### Exports
+
+Every analysis screen has an **Export** button that saves one Excel workbook, with as many sheets as the subject needs:
+
+| Screen | Sheets in the workbook |
+| --- | --- |
+| Health check | Summary, then one sheet per finding |
+| User access | Summary, Sources, Object, Field, System and Custom permissions, each with the sources that grant them |
+| Compare | Differences, then everything each side grants |
+| Find access | Users, Sources, Half access, Inactive users |
+| History | Saves, and every change (the selected saves, or everything shown) |
+
+Each sheet starts with what it is, the org, when it was exported and the filters used, so a sheet forwarded on its own still makes sense. The data is a real Excel table (banded rows, filter buttons, sortable) with the header frozen, cells are coloured like the screen (Read, Edit, Delete, View All and Modify All; high-impact permissions in red), and permission sets, profiles, groups and users link to their pages in Setup. Very large results are split across sheets to stay within Excel's limits. After saving, **Open** or **Show in folder**.
+
 ### History, undo and paperwork
 
-Every save is kept in History with its changes, ticket and result, alongside changes made in Setup (from Setup Audit Trail). Undo any save, or copy saves as a Markdown or Excel table for a ticket, a design document or a release note. Each item also has a **Changes in Setup** section: who changed it in Setup recently, and what.
+Every save is kept in History with its changes, ticket and result, alongside changes made in Setup (from Setup Audit Trail). Undo any save, copy saves as a Markdown table for a ticket, or export them to Excel for a design document or a release note. Each item also has a **Changes in Setup** section: who changed it in Setup recently, and what.
 
 ![History grouped by day: saves with their changes and tickets, a failed save, and a change made in Setup](media/readme/history.png)
 
@@ -120,8 +152,10 @@ Every save is kept in History with its changes, ticket and result, alongside cha
 - **Always current:** each time the page opens, everything is read from the org again; a background refresh keeps it current while you work. Unsaved changes are kept.
 - **Fast:** screens open at once from what you saw last time and refresh in the background, using the Salesforce CLI's own connection inside VS Code. Long lists load progressively; the last screens stay readable offline.
 - **Easy to read:** colour-coded permissions, **High impact** tags on org-wide system permissions, **Managed** and **Session-based** tags, and **Sandbox** and **Production** badges on the org.
+- **Steady while you work:** ticking a checkbox, choosing a section or removing a change in the review never moves a list or the menu; everything stays where you left it.
 - **Fits a laptop screen:** the layout follows the space the page has. When it's narrow, the section menu shows icons only and the item list can be hidden to a rail.
 - **Keeps your source in step:** optionally update the project's `.permissionset-meta.xml` or `.profile-meta.xml` after a save, ready to commit.
+- **One consistent look:** buttons are rectangles; dropdowns, search boxes, filters and tags are pills; cards, dialogs and notices share the same corners; every checkbox, radio button and table follows one style.
 - **Small things that add up:** favorites that load first, copy any API name with one click, keyboard shortcuts, **Open in Permission Studio** from any permission set, profile or group file, and light and dark themes.
 
 ![The same permission set in a light theme](media/readme/light-theme.png)
@@ -177,6 +211,7 @@ Permission Studio always works on the project's default org. Change it the usual
 | Member permission sets | — | — | records (groups only) |
 | Muted permissions: object, field and system | — | — | Metadata API deploy (groups only, the group's muting permission set) |
 | Changes in Setup (Setup Audit Trail) | Read-only | Read-only | — |
+| Health check fixes: remove assignments of inactive users, extend expiring assignments | Yes, and groups | — | records (reviewed, like every save) |
 
 A group's access comes from its member permission sets, so on a group you change its members, assignments and muting, and edit the permission sets themselves for anything else. Managed-package permission sets and groups are read-only apart from their assignments. Standard profiles are read-only.
 
@@ -239,7 +274,8 @@ A group's access comes from its member permission sets, so on a group you change
 
 Permission Studio deliberately leaves a few things to Setup:
 
-- **Creating and deleting** permission sets, permission set groups and profiles. You can rename and clone permission sets, copy a profile to a new permission set, and create a group's muting permission set.
+- **Creating and deleting** permission sets, permission set groups and profiles. You can rename and clone permission sets, copy a profile to a new permission set, and create a group's muting permission set. The health check lists unused items; delete them in Setup.
+- **The health check doesn't look for permission sets that duplicate a profile:** doing that reliably means reading every field, Apex and other access row in the org, which is slow in large orgs and easy to get wrong.
 - **Managed-package permission sets and standard profiles** can't be changed, as in Setup; their assignments can.
 - **Compare** covers records-based access (object, field, system, app, Apex, Visualforce, flow, custom permission, custom metadata, custom setting and tab). Record types, layouts and metadata-only settings aren't compared.
 - **Login flows** can be set or changed on a profile but not removed; remove one in Setup › Login Flows.

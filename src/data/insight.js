@@ -84,11 +84,11 @@ async function userAccess(conn, userId) {
   };
 }
 
-/** One object's field access for a user, by source: [{ field, read: [sourceIdx], edit: [sourceIdx] }]. */
+/** One object's field access for a user (or every object's, without one), by source: [{ field, read: [sourceIdx], edit: [sourceIdx] }]. */
 async function userFieldAccess(conn, permissionSetIds, sobject) {
   if (!permissionSetIds.length) return [];
   const idx = new Map(permissionSetIds.map((id, i) => [id, i]));
-  const rows = await queryIn(conn, permissionSetIds, list => 'SELECT ParentId, Field, PermissionsRead, PermissionsEdit FROM FieldPermissions WHERE SobjectType = ' + str(sobject) + ' AND ParentId IN ' + list);
+  const rows = await queryIn(conn, permissionSetIds, list => 'SELECT ParentId, Field, PermissionsRead, PermissionsEdit FROM FieldPermissions WHERE ' + (sobject ? 'SobjectType = ' + str(sobject) + ' AND ' : '') + 'ParentId IN ' + list);
   const out = new Map();
   for (const r of rows) {
     const f = out.get(r.Field) || { field: r.Field, read: [], edit: [] };
@@ -182,4 +182,12 @@ function compareMarkdown(labelA, labelB, rows) {
     .concat(rows.map(r => '| ' + [r.area, r.entry, r.a, r.b].map(cell).join(' | ') + ' |')).join('\n');
 }
 
-module.exports = { systemPermissionsOf, userAccess, userFieldAccess, accessSnapshot, entityNames, compareSnapshots, compareMarkdown, describe };
+/** A snapshot as rows, for the Compare export: [{ area, entry, value }]. */
+function snapshotRows(snap) {
+  const order = Object.keys(AREAS);
+  return [...snap].map(([k, p]) => { const cat = k.slice(0, k.indexOf(':')); return { cat, area: AREAS[cat] || cat, entry: k.slice(k.indexOf(':') + 1), value: describe(cat, p) }; })
+    .filter(r => !/^(No access|Off|Hidden)$/.test(r.value))
+    .sort((a, b) => order.indexOf(a.cat) - order.indexOf(b.cat) || a.entry.localeCompare(b.entry)).map(({ area, entry, value }) => ({ area, entry, value }));
+}
+
+module.exports = { snapshotRows, systemPermissionsOf, userAccess, userFieldAccess, accessSnapshot, entityNames, compareSnapshots, compareMarkdown, describe };

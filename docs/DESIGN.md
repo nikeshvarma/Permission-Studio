@@ -93,6 +93,9 @@ The core idea is the **canonical model**. Live org data and local XML are both c
 | `src/data/loader.js` | Reads permissions live into the model, in parallel | Built for object, field and system permissions |
 | `src/model/model.js` | Canonical model and XML-to-model conversion for all categories | Built |
 | `src/model/dependencies.js` | Object and field dependency rules | Built |
+| `src/data/exports.js` | Every export as an Excel workbook: title block, real tables, colours, links to Setup | Built |
+| `src/data/health.js` | The access health check (Health): unused items, empty permission sets, inactive and expiring assignments, high-impact holders, integration admins | Built |
+| `src/util/xlsx.js`, `src/util/zip.js` | Excel export and the zip writer (also used for packaging); no dependencies | Built |
 | `src/data/insight.js` | One user's combined access (User access) and comparing two items, in one org or across two (Compare) | Built |
 | `src/model/diff.js` | Which flags of an entry differ (conflict checks and read-back after a save) | Built |
 | `src/changes/changeSet.js` | Removed in 2.2.1: staging lives in the screen; conflict checks, snapshots and undo in the save path (`apply.js`) | Removed |

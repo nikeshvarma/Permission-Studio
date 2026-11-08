@@ -1643,7 +1643,7 @@ test('groups on screen: members listed, a change saved, the recalculation watche
   assert.strictEqual(posts(p, 'components').pop().data.components.length, 3);
 });
 
-test('change summary: Markdown table for tickets, tab-separated for Excel, plain words for every kind of change', () => {
+test('change summary: Markdown table for tickets, plain words for every kind of change', () => {
   const entries = [
     { at: '2026-10-31T09:15:00.000Z', target: 'Sales_Ops', result: 'saved', snapshot: 's1', changes: [
       { key: 'object:Lead', label: 'Lead', from: { read: true }, to: { read: true, edit: true } },
@@ -1668,10 +1668,6 @@ test('change summary: Markdown table for tickets, tab-separated for Excel, plain
   assert.ok(one.includes('Pipe\\|Class'), 'pipes escaped');
   const both = summaryMod.toMarkdown(entries, { org: 'uat' });
   assert.ok(both.includes('| Item | Area | Entry | Before | After | Saved |') && both.includes('| Sales_Bundle | Permission Sets in Group | Reader | Not included | Included |'));
-  const tsv = summaryMod.toTsv(entries, { org: 'uat' }).split('\n');
-  assert.strictEqual(tsv[0], 'Item\tArea\tEntry\tBefore\tAfter\tSaved\tOrg\tResult\tTicket');
-  assert.strictEqual(tsv[1].split('\t').slice(0, 5).join('|'), 'Sales_Ops|Object Permissions|Lead|Read|Read, Edit');
-  assert.strictEqual(tsv.filter(Boolean).length, 9);
 });
 
 test('copy summary from the screen: real saves, labels kept, straight to the clipboard', async () => {
@@ -1691,7 +1687,7 @@ test('copy summary from the screen: real saves, labels kept, straight to the cli
   assert.ok(clip.includes('| Field Permissions | Lead.Rating | Read | Read, Edit |') && clip.includes('| Apex Class Access | AccountTriggerHandler | Disabled | Enabled |'), clip);
   assert.match(posts(p, 'toast').pop().message, /Summary of 2 changes as a Markdown table/);
   await mp.copySummary({ snapshotIds: [ids[0]], format: 'tsv' });
-  assert.ok(clip.startsWith('Item\tArea'));
+  assert.ok(clip.startsWith('### '), 'always Markdown now (the tab-separated copy was replaced by Export)');
   await mp.copySummary({ snapshotIds: ['nope'] });
   assert.match(posts(p, 'toast').pop().message, /not in this project/);
 });
@@ -2763,6 +2759,148 @@ test('upgrading clears the screens cached by the older version; the toggles star
   assert.deepStrictEqual(['permStudio.defaults.onlyEnabledAccess', 'permStudio.defaults.onlyEnabledSystemPermissions', 'permStudio.defaults.showAllObjects'].map(k => pkg[k] && pkg[k].default), [true, false, false], 'today’s behaviour by default');
 });
 
+test('a bulk save that fails reports the org’s error and records it in History (was masked by "ticket is not defined")', async () => {
+  resetOrg();
+  const { mp, p, svc } = await qaPanel();
+  const plan = [{ key: 'permissionSet:' + PS1, label: 'Sales Ops', kind: 'permissionSet', changes: [{ key: 'field:Lead.Industry', label: 'Industry', before: null, after: { read: true, edit: false } }] }];
+  F.T.PermissionSet = F.T.PermissionSet.filter(x => x.Id !== PS1); // deleted in Setup meanwhile
+  await mp._applyPlan({ plan }, 'wizardProgress', 'wizardResult', 'field access wizard');
+  const r = posts(p, 'wizardResult').pop().results[0];
+  assert.strictEqual(r.status, 'error', JSON.stringify(r));
+  assert.ok(!/ticket is not defined/.test(r.message || ''), r.message);
+  const log = await history.readLog(svc.projectDir, {});
+  assert.ok(log.some(e => e.result === 'failed'), 'the failure is in History');
+});
+
+test('no two methods of a class share a name (a later one silently replaces the earlier)', () => {
+  for (const f of ['src/views/mainPanel.js', 'src/org/connection.js', 'src/data/cache.js']) {
+    const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
+    const names = [...s.matchAll(/^  (?:async )?(_?\w+)\([^)]*\) \{/gm)].map(m => m[1]).filter(n => !['if', 'for', 'while', 'switch', 'catch'].includes(n));
+    const dups = [...new Set(names.filter((n, i) => names.indexOf(n) !== i))];
+    assert.deepStrictEqual(dups, [], f);
+  }
+});
+
+// ---------- 2.4.0: health check and access matrix ----------
+function reportPanel(over) {
+  const saved = [];
+  const svc = panelServices(Object.assign({ health: require('../src/data/health'), xlsx: require('../src/util/xlsx'), exports: require('../src/data/exports'),
+    saveFile: async (name, data, kind) => { saved.push({ name, data, kind }); return '/tmp/' + name; } }, over || {}));
+  svc.saved = saved;
+  return { svc, saved };
+}
+
+test('health check: unused items, empty permission sets, inactive and expiring assignments, high-impact holders, integration admins', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  const { svc } = reportPanel();
+  // The org's story: Cara left, an empty permission set nobody uses, an integration user with Modify All Data, an assignment ending in 5 days.
+  const cara = F.T.User.find(u => u.Name === 'Cara Diaz');
+  cara.IsActive = false;
+  F.T.PermissionSetAssignment.push({ Id: '0Pa000000000091AAA', AssigneeId: cara.Id, Assignee: cara, PermissionSetId: PS1, PermissionSetGroupId: null, ExpirationDate: null });
+  F.T.PermissionSet.push({ Id: '0PS0000000000EMAAA', Name: 'Empty_One', Label: 'Empty One', IsOwnedByProfile: false, NamespacePrefix: null, PermissionSetGroupId: null, Type: 'Regular', LicenseId: null });
+  const ana = F.T.User.find(u => u.Name === 'Ana Lima');
+  const soon = new Date(Date.now() + 5 * 86400e3).toISOString().slice(0, 10) + 'T00:00:00.000+0000';
+  F.T.PermissionSetAssignment.push({ Id: '0Pa000000000092AAA', AssigneeId: ana.Id, Assignee: ana, PermissionSetId: '0PS000000000002AAA', PermissionSetGroupId: null, ExpirationDate: soon });
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, svc);
+  const p = mp.show();
+  await mp.load();
+  await mp.runHealth({ expiringDays: 30 });
+  const h = posts(p, 'health').pop();
+  assert.ok(!h.error, h.error);
+  const d = h.data;
+  assert.ok(d.unusedPermissionSets.some(x => x.apiName === 'Empty_One'), 'Empty One has no users');
+  assert.ok(!d.unusedPermissionSets.some(x => x.key === 'permissionSet:' + PS1), 'Sales Ops is used');
+  assert.ok(d.emptyPermissionSets.some(x => x.apiName === 'Empty_One') && !d.emptyPermissionSets.some(x => x.key === 'permissionSet:' + PS1), 'only the permission set that grants nothing');
+  assert.ok(d.inactiveAssignments.some(x => x.userId === cara.Id && x.key === 'permissionSet:' + PS1), JSON.stringify(d.inactiveAssignments));
+  const exp = d.expiring.find(x => x.assignmentId === '0Pa000000000092AAA');
+  assert.ok(exp && exp.daysLeft >= 4 && exp.daysLeft <= 5, JSON.stringify(d.expiring));
+  const mad = d.highImpact.find(x => x.name === 'ModifyAllData');
+  assert.ok(mad && mad.users.length && mad.users.every(u => u.sources.length), 'who holds Modify All Data, and through what');
+  assert.deepStrictEqual(Object.keys(d.summary).sort(), ['emptyPermissionSets', 'expiring', 'highImpactUsers', 'inactiveAssignments', 'integrationAdmins', 'unusedGroups', 'unusedPermissionSets', 'unusedProfiles'].sort());
+  // Fix: remove Cara's assignment, through the usual bulk save
+  await mp.healthPlan({ action: 'remove', assignmentIds: ['0Pa000000000091AAA'] });
+  const plan = posts(p, 'healthPlan').pop();
+  assert.deepStrictEqual(plan.plan.map(x => [x.key, x.changes.map(c => [c.key, c.after.assigned])]), [['permissionSet:' + PS1, [['assignment:' + cara.Id, false]]]]);
+  await mp._applyPlan({ plan: plan.plan }, 'wizardProgress', 'wizardResult', 'Health check');
+  assert.deepStrictEqual(posts(p, 'wizardResult').pop().results.map(r => r.status + (r.message ? ': ' + r.message : '')), ['saved']);
+  assert.ok(!F.T.PermissionSetAssignment.some(a => a.Id === '0Pa000000000091AAA' || (a.AssigneeId === cara.Id && a.PermissionSetId === PS1)));
+  // Fix: extend Ana's by 90 days
+  await mp.runHealth({ expiringDays: 30 });
+  await mp.healthPlan({ action: 'extend', assignmentIds: ['0Pa000000000092AAA'], days: 90 });
+  const ext = posts(p, 'healthPlan').pop().plan[0].changes[0];
+  assert.strictEqual(ext.after.expires, new Date(Date.now() + 90 * 86400e3).toISOString().slice(0, 10));
+  // Export: a real workbook with a summary and one sheet per finding
+  await mp.exportWorkbook({ what: 'health' });
+  const file = svc.saved.pop();
+  assert.ok(/^access-health-uat-\d{4}-\d{2}-\d{2}\.xlsx$/.test(file.name) && Buffer.isBuffer(file.data), file.name);
+  assert.deepStrictEqual(posts(p, 'exported').pop(), { type: 'exported', path: '/tmp/' + file.name, sheets: 9 });
+  fs.writeFileSync(path.join(tmp, 'health.xlsx'), file.data);
+  const zipList = require('child_process').execFileSync('unzip', ['-Z1', path.join(tmp, 'health.xlsx')]).toString();
+  assert.ok(/xl\/worksheets\/sheet9\.xml/.test(zipList), zipList);
+});
+
+test('exports from User access, Compare, Find access and History: one workbook each, sheets as described, items linked to Setup', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  const { svc } = reportPanel();
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, svc);
+  const p = mp.show();
+  await mp.load();
+  const sheetsOf = async (what, extra) => {
+    await mp.exportWorkbook(Object.assign({ what }, extra || {}));
+    const f = svc.saved.pop();
+    assert.ok(f, what + ': ' + JSON.stringify(posts(p, 'toast').pop()));
+    const file = path.join(tmp, what + '.xlsx');
+    fs.writeFileSync(file, f.data);
+    const py = require('child_process').spawnSync('python3', ['-c', 'import openpyxl,sys,json; wb=openpyxl.load_workbook(sys.argv[1]); print(json.dumps([[ws.title, ws.max_row, len(ws.tables), next((c.hyperlink.target for row in ws.iter_rows() for c in row if c.hyperlink), None)] for ws in wb.worksheets]))', file]);
+    return py.status === 0 ? JSON.parse(py.stdout.toString()) : null;
+  };
+  const ana = F.T.User.find(u => u.Name === 'Ana Lima');
+  await mp.userAccess({ userId: ana.Id });
+  let s = await sheetsOf('userAccess');
+  if (s) assert.deepStrictEqual(s.map(x => x[0]), ['Summary', 'Sources', 'Object permissions', 'Field permissions', 'System permissions', 'Custom permissions']);
+  await mp.compare({ a: 'permissionSet:' + PS1, b: 'permissionSet:0PS000000000002AAA' });
+  s = await sheetsOf('compare');
+  if (s) assert.deepStrictEqual([s.length, s[0][0]], [3, 'Differences']);
+  await mp.lookup({ object: 'Account', field: null, level: 'read' });
+  s = await sheetsOf('findAccess');
+  if (s) {
+    assert.deepStrictEqual(s.map(x => x[0]), ['Users', 'Sources', 'Half access', 'Inactive users']);
+    assert.ok(s.some(x => x[3] && /\/lightning\/setup\/(PermSets|EnhancedProfiles|ManageUsers)\/page\?address=%2F/.test(x[3])), 'items and users link to Setup: ' + JSON.stringify(s));
+  }
+  await mp.select('permissionSet:' + PS1);
+  await mp.save({ key: 'permissionSet:' + PS1, ticket: 'ADO 1', changes: [{ key: 'field:Lead.Industry', label: 'Industry', before: null, after: { read: true, edit: false } }] });
+  s = await sheetsOf('history', { snapshotIds: [] });
+  if (s) assert.deepStrictEqual(s.map(x => x[0]), ['Saves', 'Changes']);
+  await mp.exportWorkbook({ what: 'compare' });
+  mp._compare = null;
+  await mp.exportWorkbook({ what: 'compare' });
+  assert.match(posts(p, 'toast').pop().message, /Compare two items first/);
+});
+
+test('Excel writer: real tables, a title block, colours, links, and sheets split when too big', () => {
+  const x = require('../src/util/xlsx');
+  const parts = x.split({ name: 'Big', header: ['Item'].concat(Array.from({ length: 20000 }, (_, i) => 'c' + i)), rows: [['a']], freezeCols: 1 });
+  assert.deepStrictEqual([parts.length, parts[0].header.length <= x.MAX_COLS, parts[0].header[0]], [2, true, 'Item'], 'columns split, the first column kept on each');
+  const b = x.writeXlsx([{ name: 'S', title: 'T', info: ['Org: x'], header: ['A', 'A', ''], rows: [[{ v: 'n', link: 'https://x.example/a?b=1&c=2' }, { v: 'RCED', style: 'delete' }, 1]] }]);
+  const file = path.join(tmp, 'writer.xlsx');
+  fs.writeFileSync(file, b);
+  const py = require('child_process').spawnSync('python3', ['-c', 'import openpyxl,sys,json; ws=openpyxl.load_workbook(sys.argv[1]).worksheets[0]; print(json.dumps([ws["A1"].value, ws["A2"].value, [c.value for c in ws[4]], dict(ws.tables.items()), ws["A5"].hyperlink.target, ws["B5"].fill.fgColor.rgb, ws.freeze_panes]))', file]);
+  if (py.status === 0) assert.deepStrictEqual(JSON.parse(py.stdout.toString()), ['T', 'Org: x', ['A', 'A (2)', 'Column 3'], { Table1: 'A4:C5' }, 'https://x.example/a?b=1&c=2', 'FFFEE2E2', 'A5'], py.stdout.toString());
+});
+
+test('stylesheet: no selector group left dangling, and hovering never changes an element’s size (it would flicker)', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'media', 'app.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const dangling = [...css.matchAll(/,\s*\n\s*\n/g)].map(m => css.slice(Math.max(0, m.index - 80), m.index + 1).split('\n').pop());
+  assert.deepStrictEqual(dangling, [], 'a selector group ends in a comma, so the browser joins it to the next rule');
+  const sizing = [];
+  for (const m of css.matchAll(/([^{}]*:hover[^{}]*)\{([^}]*)\}/g)) {
+    if (/(^|;)\s*(padding|margin|font-size|font-weight|width|height|line-height|border-width|border(?![-\w]*color)(?=\s*:))/.test(m[2])) sizing.push(m[1].trim().slice(0, 80));
+  }
+  assert.deepStrictEqual(sizing, [], 'hover rules may change colour, not size');
+});
+
 // ---------- extension wiring ----------
 test('activation: commands and settings match package.json; status bar; version and author', async () => {
   const vscode = require('vscode');
@@ -2773,7 +2911,7 @@ test('activation: commands and settings match package.json; status bar; version 
   assert.deepStrictEqual([...code.matchAll(/c\.get\('([\w.]+)'/g)].map(m => 'permStudio.' + m[1]).sort(), Object.keys(pkg.contributes.configuration.properties).sort());
   assert.ok(vscode.__statusItems[0].shown && vscode.__statusItems[0].command === 'permStudio.open');
   for (const f of ['media/app.js', 'media/app.css', 'media/tab-light.svg', 'media/tab-dark.svg', 'src/model/dependencies.js', pkg.icon]) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
-  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.3.5', 'nikeshvarma', 'Nikesh Varma']);
+  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.5.4', 'nikeshvarma', 'Nikesh Varma']);
   const png = fs.readFileSync(path.join(ROOT, pkg.icon));
   assert.deepStrictEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [256, 256], 'Marketplace icon is 256 px');
   for (const t of ['light', 'dark']) assert.match(fs.readFileSync(path.join(ROOT, 'media', 'tab-' + t + '.svg'), 'utf8'), /fill="#[0-9A-F]{6}"/i, 'tab icon has an explicit colour');
@@ -2789,7 +2927,9 @@ test('webview and panel agree on every message type', () => {
   const posted = new Set([...panel.matchAll(/(?<!attributes: \{ )type: '(\w+)'/g)].map(m => m[1]));
   for (const t of ['loading', 'error']) posted.delete(t);
   for (const t of ['detailLoading', 'objectLoading', 'accessLoading', 'rtLoading', 'tabsLoading', 'assignLoading', 'layoutsLoading', 'loginLoading', 'componentsLoading']) posted.add(t);
-  assert.ok(!sent.includes('export') && !sent.includes('createPs') && !sent.includes('licenses'), 'removed features stay removed');
+  // 'export' is back in 2.5.0 (Excel workbooks, asked for); the other removed features stay removed.
+  assert.ok(!sent.includes('createPs') && !sent.includes('licenses'), 'removed features stay removed');
+  assert.ok(!/'tsv'|toTsv|toCsv|Export CSV|Copy for Excel/.test(js), 'CSV and tab-separated exports stay removed');
   const webHandles = new Set([...js.matchAll(/case '(\w+)':/g)].map(m => m[1]));
   assert.deepStrictEqual([...posted].filter(t => !webHandles.has(t)).sort(), [], 'panel posts something the webview ignores');
 });

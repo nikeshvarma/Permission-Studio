@@ -133,7 +133,7 @@ async function loadFieldRows(conn, permissionSetId, opts) {
   return pages.flatMap(p => p.records);
 }
 
-/** Field permissions for one object across many permission sets (the matrix view). */
+/** Field permissions for one object across many permission sets. */
 async function loadFieldPermissions(conn, permissionSetIds, sobject) {
   const ids = permissionSetIds.map(assertId);
   const byParent = new Map(ids.map(id => [id, new Map()]));

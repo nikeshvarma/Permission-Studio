@@ -108,6 +108,12 @@ class MainPanel {
       case 'permDeps': await this.postDependencies(); break;
       case 'wizardCurrent': await this.wizardCurrent(m); break;
       case 'loadMuting': await this.openMuting(m.key, { force: m.force }); break;
+      case 'healthCheck': await this.runHealth(m); break;
+      case 'healthPlan': await this.healthPlan(m); break;
+      case 'healthApply': await this._applyPlan(m, 'wizardProgress', 'wizardResult', 'Health check'); break;
+      case 'export': await this.exportWorkbook(m); break;
+      case 'openFile': if (this.s.openFile) await this.s.openFile(String(m.path || '')); break;
+      case 'revealFile': if (this.s.revealFile) await this.s.revealFile(String(m.path || '')); break;
       case 'mutingFields': await this.mutingFields(m); break;
       case 'createMuting': await this.createMuting(m); break;
       case 'loadProfileSettings': await this.openProfileSettings(m.key, { force: m.force }); break;
@@ -449,6 +455,7 @@ class MainPanel {
     try {
       const r = await this.s.loader.whoHasPermission(await this._conn(), m);
       for (const src of r.sources) src.key = this._keyForSource(src);
+      this._lookup = r;
       this.post({ type: 'lookupResult', result: r });
     } catch (e) { this.post({ type: 'lookupResult', result: { error: String(e.message || e) } }); }
   }
@@ -603,10 +610,10 @@ class MainPanel {
       const entries = all.filter(e => e.snapshot && ids.has(e.snapshot));
       if (!entries.length) throw new Error('Those saves are not in this project’s change log.');
       const org = this.ctx.org.alias || this.ctx.org.username;
-      const text = m.format === 'tsv' ? this.s.summary.toTsv(entries, { org }) : this.s.summary.toMarkdown(entries, { org });
+      const text = this.s.summary.toMarkdown(entries, { org });
       await this.s.clipboard(text);
       const n = this.s.summary.rows(entries).length;
-      this.post({ type: 'toast', variant: 'success', title: 'Copied', message: 'Summary of ' + n + (n === 1 ? ' change' : ' changes') + (m.format === 'tsv' ? ', ready to paste into Excel.' : ' as a Markdown table.') });
+      this.post({ type: 'toast', variant: 'success', title: 'Copied', message: 'Summary of ' + n + (n === 1 ? ' change' : ' changes') + ' as a Markdown table.' });
       return text;
     } catch (e) {
       this.post({ type: 'toast', variant: 'error', title: 'Could not copy the summary', message: String(e.message || e) });
@@ -704,6 +711,7 @@ class MainPanel {
       const r = await this.s.loader.whoHasAccess(await this._conn(), { object: m.object, field: m.field || null, level: m.level });
       const keyOf = src => src.kind === 'group' ? 'group:' + src.groupId : src.kind === 'profile' ? 'profile:' + src.profileId : 'permissionSet:' + src.permissionSetId;
       for (const src of r.sources) src.key = this.items.has(keyOf(src)) ? keyOf(src) : null;
+      this._lookup = r;
       this.post({ type: 'lookupResult', result: r });
     } catch (e) {
       this.s.log('Lookup failed: ' + (e.stack || e));
@@ -785,7 +793,7 @@ class MainPanel {
         const item = this.items.get(t.key);
         this.post({ type: progressType, done: i, total: m.plan.length, label: t.label });
         if (!item) { results.push({ key: t.key, label: t.label, status: 'error', message: 'No longer in the list.' }); continue; }
-        const r = await this._applyAndLog(conn, item, t.changes.map(c => ({ key: c.key, before: c.before, after: c.after, label: c.label })), { path });
+        const r = await this._applyAndLog(conn, item, t.changes.map(c => ({ key: c.key, ref: c.ref || null, before: c.before, after: c.after, label: c.label })), { path });
         results.push(Object.assign({ key: t.key, label: t.label }, r));
         this.cache.set('saved:' + t.key, Date.now());
         this.cache.delete('detail:' + t.key);
@@ -908,7 +916,7 @@ class MainPanel {
     } catch (e) {
       this.s.log('Save to ' + item.apiName + ' failed' + (e.failedStep ? ' at "' + e.failedStep + '"' : '') + ': ' + (e.stack || e));
       await this.s.history.appendLog(this.ctx.projectDir, Object.assign(logBase, { result: 'failed', error: String(e.message || e), failedStep: e.failedStep || null,
-        completedSteps: e.completedSteps || [], snapshot: e.snapshotId || null, changes: changes.map(c => ({ key: c.key, label: c.label, from: c.before, to: c.after })), ticket })).catch(() => {});
+        completedSteps: e.completedSteps || [], snapshot: e.snapshotId || null, changes: changes.map(c => ({ key: c.key, label: c.label, from: c.before, to: c.after })), ticket: (extra && extra.ticket) || undefined })).catch(() => {});
       return { status: 'error', message: String(e.message || e), partial: !!(e.completedSteps && e.completedSteps.length), snapshotId: e.snapshotId || null, restorable: !!e.restorable };
     }
   }
@@ -1179,7 +1187,7 @@ class MainPanel {
   // ---------- user access and compare ----------
 
   async userAccess(m) {
-    try { this.post({ type: 'userAccess', userId: m.userId, data: await this.s.insight.userAccess(await this._conn(), m.userId) }); }
+    try { const data = await this.s.insight.userAccess(await this._conn(), m.userId); this._userAccess = data; this.post({ type: 'userAccess', userId: m.userId, data }); }
     catch (e) { this.post({ type: 'userAccess', userId: m.userId, error: String(e.message || e) }); }
   }
   async userFields(m) {
@@ -1228,9 +1236,101 @@ class MainPanel {
       const [snapA, snapB] = await Promise.all([this.s.insight.accessSnapshot(conn, a.permissionSetId, namesA), this.s.insight.accessSnapshot(connB, b.permissionSetId, namesB)]);
       const rows = this.s.insight.compareSnapshots(snapA, snapB);
       const labelA = a.label + (m.other ? ' (' + (this.ctx.org.alias || this.ctx.org.username) + ')' : '');
+      this._compare = { labelA, labelB, rows, allA: this.s.insight.snapshotRows(snapA), allB: this.s.insight.snapshotRows(snapB) };
       this.post({ type: 'compareResult', labelA, labelB, rows, sizes: [snapA.size, snapB.size], markdown: this.s.insight.compareMarkdown(labelA, labelB, rows) });
     } catch (e) { this.post({ type: 'compareResult', error: String(e.message || e) }); }
   }
+
+  // ---------- the health check ----------
+
+  /** Every item with its own permission set Id and active users (profiles and groups resolved in one query each). */
+  async _allResolved(conn) {
+    const [profilePs, groupPs, counts] = await Promise.all([
+      this.s.loader.profilePermissionSets(conn),
+      conn.query('SELECT Id, PermissionSetGroupId FROM PermissionSet WHERE PermissionSetGroupId != null').then(r => new Map(r.records.map(x => [x.PermissionSetGroupId, x.Id]))).catch(() => new Map()),
+      this.s.loader.assigneeCounts(conn).catch(() => new Map())]);
+    const profileToPs = new Map([...profilePs].map(([ps, profile]) => [profile, ps]));
+    return [...this.items.entries()].map(([key, i]) => {
+      const psId = i.permissionSetId || (i.kind === 'profile' ? profileToPs.get(i.recordId) : i.kind === 'group' ? groupPs.get(i.recordId) : null);
+      return { key, kind: i.kind, label: i.label, apiName: i.apiName, recordId: i.recordId, permissionSetId: psId || null, managed: !!i.managed, standard: !!i.standard, users: psId ? counts.get(psId) || 0 : 0 };
+    });
+  }
+  _orgName() { return this.ctx ? this.ctx.org.alias || this.ctx.org.username : ''; }
+  async _saveFile(name, data, kind) {
+    if (!this.s.saveFile) throw new Error('Saving files isn’t available here.');
+    return this.s.saveFile(name, data, kind);
+  }
+  _stamp() { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  _safe(t) { return String(t || 'org').replace(/[^\w.@-]+/g, '-'); }
+
+  async runHealth(m) {
+    try {
+      const conn = await this._conn();
+      this._health = await this.s.health.healthCheck(conn, await this._allResolved(conn), { expiringDays: m.expiringDays });
+      this.post({ type: 'health', data: this._health });
+    } catch (e) { this.post({ type: 'health', error: this.s.loader.sfReason ? this.s.loader.sfReason(e) : String(e.message || e) }); }
+  }
+
+  /**
+   * Fixes from the health check, as a plan saved like the bulk screens:
+   * remove assignments to inactive users, or extend assignments that expire soon.
+   */
+  async healthPlan(m) {
+    try {
+      const h = this._health;
+      if (!h) throw new Error('Run the health check first.');
+      const ids = new Set(m.assignmentIds || []);
+      const rows = (m.action === 'extend' ? h.expiring : h.inactiveAssignments).filter(r => ids.has(r.assignmentId));
+      const until = m.action === 'extend' ? new Date(Date.now() + Math.max(1, Number(m.days) || 30) * 86400e3) : null;
+      const newDate = until ? until.getFullYear() + '-' + String(until.getMonth() + 1).padStart(2, '0') + '-' + String(until.getDate()).padStart(2, '0') : null;
+      const byItem = new Map();
+      const skipped = [];
+      for (const r of rows) {
+        const it = r.key && this.items.get(r.key);
+        if (!it) { skipped.push({ label: r.itemLabel, reason: 'Not in the lists shown (turn it on in permStudio.lists.show).' }); continue; }
+        const p = byItem.get(r.key) || { key: r.key, label: it.label, kind: it.kind, changes: [] };
+        const before = { assigned: true, expires: r.expires || null };
+        p.changes.push({ key: 'assignment:' + r.userId, ref: r.userId, label: r.name, before, after: m.action === 'extend' ? { assigned: true, expires: newDate } : { assigned: false, expires: null } });
+        byItem.set(r.key, p);
+      }
+      this.post({ type: 'healthPlan', action: m.action, plan: [...byItem.values()], skipped });
+    } catch (e) { this.post({ type: 'healthPlan', error: String(e.message || e) }); }
+  }
+
+  /**
+   * Every export: { what: 'health' | 'userAccess' | 'compare' | 'findAccess' | 'history', ... }.
+   * Builds the workbook from what the screen last showed and asks where to save it.
+   */
+  async exportWorkbook(m) {
+    try {
+      const meta = { org: this._orgName(), instanceUrl: this.conn && this.conn.instanceUrl, filters: [] };
+      const X = this.s.exports;
+      let sheets, name;
+      if (m.what === 'health') {
+        if (!this._health) throw new Error('Run the health check first.');
+        sheets = X.healthWorkbook(this._health, meta); name = 'access-health';
+      } else if (m.what === 'userAccess') {
+        if (!this._userAccess) throw new Error('Pick a user first.');
+        const d = this._userAccess;
+        const fields = await this.s.insight.userFieldAccess(await this._conn(), d.sources.map(x => x.permissionSetId), null);
+        sheets = X.userAccessWorkbook(d, fields, meta); name = 'user-access-' + this._safe(d.user.username);
+      } else if (m.what === 'compare') {
+        if (!this._compare) throw new Error('Compare two items first.');
+        sheets = X.compareWorkbook(this._compare, meta); name = 'compare-' + this._safe(this._compare.labelA) + '-vs-' + this._safe(this._compare.labelB);
+      } else if (m.what === 'findAccess') {
+        if (!this._lookup) throw new Error('Look something up first.');
+        sheets = X.findAccessWorkbook(this._lookup, meta); name = 'find-access-' + this._safe(this._lookup.permission ? this._lookup.permission.name : this._lookup.field || this._lookup.object);
+      } else if (m.what === 'history') {
+        const ids = new Set(m.snapshotIds || []);
+        const entries = (await this.s.history.readLog(this.ctx.projectDir, {})).filter(e => !ids.size || ids.has(e.snapshot));
+        if (!entries.length) throw new Error('Nothing to export.');
+        sheets = X.historyWorkbook(entries, meta); name = 'save-history';
+      } else throw new Error('Unknown export.');
+      const file = await this._saveFile(name + '-' + this._safe(this._orgName()) + '-' + this._stamp() + '.xlsx', this.s.xlsx.writeXlsx(sheets));
+      if (file) this.post({ type: 'exported', path: file, sheets: sheets.length });
+    } catch (e) { this.post({ type: 'toast', variant: 'error', title: 'Export failed', message: String(e.message || e) }); }
+  }
+
 
   // ---------- a full refresh each time the page opens ----------
 

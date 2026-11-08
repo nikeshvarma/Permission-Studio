@@ -644,3 +644,121 @@ main.nav-compact .nav-toggle { align-self: center; padding: 6px; }
 main.nav-compact .psk-body, main.stack .psk-body { grid-template-columns: 44px minmax(0, 1fr); }
 main.nav-compact .psk-nav .sk-bar, main.stack .psk-nav .sk-bar { width: 22px !important; height: 18px; }
 .skeleton .sk-text { margin-top: 10px; }
+
+/* ---------- 2.4.0 ---------- */
+/* Consistent controls: every button is a rectangle with the same corners; every dropdown and every
+   search box (including the object and field pickers) is a pill. Plain text fields stay rectangles. */
+.btn, .rail-btn, .nav-toggle, .col-set, .gc, .results .result, .rv-x, .seg { border-radius: var(--radius); }
+.select, select.select { border-radius: 999px; padding: 4px 28px 4px 12px; min-height: 28px; }
+.search input, input[type="search"].text, .combo > input { border-radius: 999px; }
+.search input { padding-left: 30px; padding-right: 12px; }
+.search-icon { left: 11px; }
+input[type="search"].text, .combo > input { padding-left: 12px; padding-right: 12px; }
+.flt { border-radius: 999px; }
+
+/* Reports */
+.hc-bar { align-items: center; }
+.hc-bar .fld { flex-direction: row; align-items: center; gap: 8px; }
+.hc-list { margin: 8px 0 10px 18px; padding: 0; line-height: 1.6; }
+.hc-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin: 0 0 14px; }
+.hc-card { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface);
+  color: var(--vscode-foreground); font: inherit; text-align: left; cursor: pointer; }
+.hc-card:hover, .hc-card:focus-visible { border-color: var(--vscode-focusBorder); }
+.hc-card b { font-size: 22px; line-height: 1.1; }
+.hc-card span { font-size: 12px; color: var(--muted); }
+.hc-card.risk { border-color: color-mix(in srgb, var(--p-modifyall) 55%, transparent); background: color-mix(in srgb, var(--p-modifyall) 9%, transparent); }
+.hc-card.warn { border-color: color-mix(in srgb, var(--p-edit) 55%, transparent); background: color-mix(in srgb, var(--p-edit) 8%, transparent); }
+.hc-card.info b { color: var(--p-read); }
+.hc-card.ok b { color: var(--p-create); }
+.count.risk { background: color-mix(in srgb, var(--p-modifyall) 20%, transparent); }
+.count.warn { background: color-mix(in srgb, var(--p-edit) 20%, transparent); }
+.count.info { background: color-mix(in srgb, var(--p-read) 18%, transparent); }
+.hc-sec { scroll-margin-top: 12px; }
+.hc-perm { border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent); padding: 8px 14px; }
+.hc-perm:last-child { border-bottom: 0; }
+.hc-perm-head { display: flex; align-items: center; gap: 10px; }
+
+/* ---------- 2.5.0: one set of rules for every element ----------
+   Buttons: rectangles, 4 px corners. Dropdowns, search boxes, filter chips and tags: pills.
+   Containers (cards, dialogs, bars, tiles, notices, lists): 8 px corners. Checkboxes and radios: 14 px.
+   Text: 13 px body, 12 px secondary, 11 px only for tiny labels. */
+:root { --radius-lg: 8px; --tag-h: 20px; }
+
+.card, .modal, .lk-bar, .hc-card, .rv-stat, .ev, .steps, .alert, .rv-call, .policy-note, .restored, .rv-license,
+.psk-card, .rv-scroll, .combo-list, .toast, .page-skeleton .psk-card { border-radius: var(--radius-lg); }
+.alert, .rv-call, .policy-note, .restored, .rv-license { padding: 10px 14px; border-width: 1px; border-style: solid; }
+
+/* Tags: one pill shape and size; the colour says what it means. */
+.pill, .badge, .rv-chip, .src, .rv-risk, .rv-auto, .ticket, .st, .type, .count {
+  display: inline-flex; align-items: center; box-sizing: border-box; height: var(--tag-h); padding: 0 8px; border-radius: 999px;
+  font-size: 12px; line-height: 1; white-space: nowrap; vertical-align: middle; }
+.rv-risk, .rv-auto, .ticket, .st, .pill, .badge, .type { margin-left: 6px; }
+td > .rv-risk:first-child, .ev .t > .st, .ev .t > .ticket { margin-left: 0; }
+.count { min-width: var(--tag-h); justify-content: center; padding: 0 6px; }
+
+/* Checkboxes and radio buttons: the same 14 px size, corners and colours. */
+.cb .box { width: 14px; height: 14px; border-radius: 3px; box-sizing: border-box; }
+input[type="radio"] { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; margin: 0; box-sizing: border-box; flex: none;
+  border: 1px solid var(--vscode-checkbox-border, var(--muted)); border-radius: 50%; background: var(--vscode-checkbox-background, transparent);
+  display: inline-grid; place-content: center; vertical-align: middle; cursor: pointer; }
+input[type="radio"]::before { content: ""; width: 6px; height: 6px; border-radius: 50%; transform: scale(0); transition: transform .1s; background: var(--brand-fg); }
+input[type="radio"]:checked { background: var(--brand); border-color: var(--brand); }
+input[type="radio"]:checked::before { transform: scale(1); }
+input[type="radio"]:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+input[type="radio"]:disabled { opacity: .5; cursor: default; }
+.radio-line, label.radio { display: inline-flex; align-items: center; gap: 8px; }
+
+/* Tables: one header, one row height, one hover. */
+.datatable th, .rv-table th { font-size: 12px; font-weight: 600; color: var(--muted); padding: 7px 10px; }
+.datatable td, .rv-table td { padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
+.datatable tbody tr:not(.row-edited):not(.why):not(.muted-row):hover > td,
+.rv-table tbody tr:not(.rv-grp):hover > td { background: var(--vscode-list-hoverBackground); }
+
+/* Segmented switches and tabs: the same height as buttons. */
+.seg button, .kinds .kind { font-size: 13px; line-height: 1.4; padding-top: 5px; padding-bottom: 5px; }
+
+/* Secondary text: one size. */
+.flt, .policy-note, .path, .lk-recent, .hc-card span, .ev .meta, .cur, .small, .rule-note, .combo-list .cl, .combo-list .combo-note { font-size: 12px; }
+/* The section menu's counts follow the tag rule too. */
+.section-nav .nav-item .count { font-size: 12px; border-radius: 999px; height: var(--tag-h); }
+
+/* ---------- 2.5.1 ---------- */
+/* Toggles: the track and its knob centred on the label; on is green, everywhere. */
+:root { --toggle-on: #2ea043; }
+.toggle .track { box-sizing: border-box; width: 32px; height: 18px; border-radius: 9px; flex: none; }
+.toggle .track::after { top: 50%; left: 3px; width: 12px; height: 12px; margin-top: -6px; }
+.toggle input:checked + .track { background: var(--toggle-on); border-color: var(--toggle-on); }
+.toggle input:checked + .track::after { transform: translateX(13px); background: #fff; }
+.toggle > span:last-child { line-height: 18px; }
+
+/* Dropdown arrows: drawn in the text colour, 12 px from the edge, the same in every dropdown. */
+select.select, .flt select { appearance: none; -webkit-appearance: none; background-repeat: no-repeat;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-size: 5px 5px, 5px 5px; background-position: calc(100% - 17px) 55%, calc(100% - 12px) 55%; }
+select.select { padding-right: 32px; }
+.flt select { padding-right: 18px; background-position: calc(100% - 9px) 55%, calc(100% - 4px) 55%; }
+
+/* Segmented switches fit their buttons (no empty end). */
+.seg { width: fit-content; max-width: 100%; }
+
+/* One height for every dropdown, search box, picker and text field. */
+select.select, .search input, .combo > input, input.text { height: 30px; box-sizing: border-box; }
+
+/* Object and field pickers show the magnifier, like the search boxes. */
+.combo .search-icon { position: absolute; left: 11px; top: 15px; transform: translateY(-50%); width: 14px; height: 14px; color: var(--muted); pointer-events: none; z-index: 1; }
+.combo > input { padding-left: 30px; }
+
+/* Health check: "Show more" under a long finding. */
+.hc-more { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
+
+/* ---------- 2.5.2 ---------- */
+/* The page itself never scrolls; only its areas do. An absolutely positioned element (such as a
+   toggle's hidden input) is contained by its toggle and by the main area, so it can't stretch the page. */
+html, body { overflow: hidden; }
+.toggle { position: relative; }
+main { position: relative; }
+
+/* ---------- 2.5.3 ---------- */
+/* The section menu scrolls on its own (at most the window's height), so choosing a section near
+   the bottom doesn't move it, and its place is kept across redraws. */
+.section-nav { max-height: calc(100vh - 120px); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; scrollbar-width: thin; }
