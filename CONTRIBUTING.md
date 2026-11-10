@@ -34,7 +34,7 @@ npm run test:ui                      all of them (about two minutes)
 python3 test/ui/run_all.py run17     just one
 ```
 
-Set `CHROME=/path/to/chrome` to use a Chrome you already have. GitHub Actions runs them on every pull request too. Run them, and `npm run screenshots` if the screen changed, before sending a change to the screen.
+Set `CHROME=/path/to/chrome` to use a Chrome you already have, and `UI_SLOW=4` to run every page with its CPU slowed four times, like a busy CI machine. The tests hand the page its messages synchronously (see `DELIVER` in `test/ui/common.py`), so a check never runs before the page has handled what it was sent. When they fail on GitHub, their screenshots are attached to the run as `ui-screenshots`. GitHub Actions runs them on every pull request too. Run them, and `npm run screenshots` if the screen changed, before sending a change to the screen.
 
 ## How the code is organised
 

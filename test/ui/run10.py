@@ -11,7 +11,7 @@ async def main():
     pg=await b.new_page(viewport={"width":1400,"height":800})
     errs=[]; pg.on("pageerror",lambda e: errs.append(str(e)))
     await pg.goto(DARK)
-    post=lambda m: pg.evaluate("m=>window.postMessage(m,'*')",m)
+    post=lambda m: pg.evaluate(DELIVER, m)
     sent=lambda t: pg.evaluate("t=>window.sent.filter(m=>m.type===t)", t)
     shownList=lambda: pg.evaluate("()=>{const l=document.querySelector('.combo-list:not([hidden])');return l?[...l.querySelectorAll('.cv')].map(x=>x.textContent):null}")
     note=lambda: pg.evaluate("()=>{const n=document.querySelector('.combo-list:not([hidden]) .combo-note');return n?n.textContent:''}")

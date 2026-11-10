@@ -13,7 +13,7 @@ async def main():
     pg=await b.new_page(viewport={"width":1400,"height":860})
     errs=[]; pg.on("pageerror",lambda e: errs.append(str(e)))
     await pg.goto(DARK)
-    post=lambda m: pg.evaluate("m=>window.postMessage(m,'*')",m)
+    post=lambda m: pg.evaluate(DELIVER, m)
     sent=lambda t: pg.evaluate("t=>window.sent.filter(m=>m.type===t)", t)
     L=json.loads(json.dumps(lists)); L["group"]=[row("group:1","group","Sales Team Bundle","Sales_Team_Bundle")]; L["profile"]=[row("profile:1","profile","Custom: Sales","Custom: Sales")]
     await post(dict(ctx,production=False,sandbox=True)); await post({"type":"lists","lists":L,"kinds":["permissionSet","group","profile"],"savedAt":now,"refreshing":False}); await pg.wait_for_timeout(40)

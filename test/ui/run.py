@@ -9,7 +9,7 @@ async def main():
       pg=await b.new_page(viewport={"width":1360,"height":760})
       errs=[]; pg.on("pageerror",lambda e: errs.append(str(e))); pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
       await pg.goto(DARK if theme == "dark" else LIGHT)
-      post=lambda m: pg.evaluate("m=>window.postMessage(m,'*')",m)
+      post=lambda m: pg.evaluate(DELIVER, m)
       sent=lambda: pg.evaluate("window.sent")
       await post(ctx); await post({"type":"lists","lists":lists,"kinds":["permissionSet","group","profile"],"savedAt":now,"refreshing":False}); await pg.wait_for_timeout(50)
       await pg.click("text=Sales Operations"); assert (await sent())[-1]=={"type":"select","key":"permissionSet:1"}

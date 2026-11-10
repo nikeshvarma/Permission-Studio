@@ -8,7 +8,7 @@ async def main():
     pg=await b.new_page(viewport={"width":1400,"height":800})
     errs=[]; pg.on("pageerror",lambda e: errs.append(str(e)))
     await pg.goto(DARK)
-    post=lambda m: pg.evaluate("m=>window.postMessage(m,'*')",m)
+    post=lambda m: pg.evaluate(DELIVER, m)
     sent=lambda t: pg.evaluate("t=>window.sent.filter(m=>m.type===t)", t)
     await post(dict(ctx,production=False)); await post({"type":"lists","lists":lists,"kinds":["permissionSet","profile"],"savedAt":now,"refreshing":False}); await pg.wait_for_timeout(40)
     # 2. kept changes for an item that no longer exists are dropped, and never block keeping new ones

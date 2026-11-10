@@ -16,7 +16,7 @@ async def main():
     pg=await b.new_page(viewport={"width":1500,"height":760})
     errs=[]; pg.on("pageerror",lambda e: errs.append(str(e)))
     await pg.goto(DARK)
-    post=lambda m: pg.evaluate("m=>window.postMessage(m,'*')",m)
+    post=lambda m: pg.evaluate(DELIVER, m)
     L={"permissionSet":many("permissionSet",60,"Sales PS"),"profile":many("profile",20,"Custom")}
     await post(dict(ctx,production=False)); await post({"type":"lists","lists":L,"kinds":["permissionSet","profile"],"savedAt":now,"refreshing":False}); await pg.wait_for_timeout(40)
     d=json.loads(json.dumps(detail)); d["key"]="permissionSet:1"

@@ -7,7 +7,7 @@ async def main():
     pg=await b.new_page(viewport={"width":1400,"height":760})
     errs=[]; pg.on("pageerror",lambda e: errs.append(str(e))); pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     await pg.goto(DARK)
-    post=lambda m: pg.evaluate("m=>window.postMessage(m,'*')",m)
+    post=lambda m: pg.evaluate(DELIVER, m)
     sent=lambda t: pg.evaluate("t=>window.sent.filter(m=>m.type===t).length", t)
     await post(dict(ctx,production=False)); await post({"type":"lists","lists":lists,"kinds":["permissionSet","profile"],"savedAt":now,"refreshing":False})
     await pg.click(".split-item:has-text('Sales Operations')")

@@ -9,7 +9,7 @@ async def main():
     pg=await b.new_page(viewport={"width":1400,"height":780})
     errs=[]; pg.on("pageerror",lambda e: errs.append(str(e))); pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     await pg.goto(DARK)
-    post=lambda m: pg.evaluate("m=>window.postMessage(m,'*')",m)
+    post=lambda m: pg.evaluate(DELIVER, m)
     last=lambda t: pg.evaluate("t=>[...window.sent].reverse().find(m=>m.type===t)", t)
     await post(dict(ctx,production=False)); await post({"type":"lists","lists":lists,"kinds":["permissionSet","group","profile"],"savedAt":now,"refreshing":False}); await pg.wait_for_timeout(40)
     # the extension asks to open a group (as from a file): the page opens on its members

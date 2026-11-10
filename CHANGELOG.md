@@ -2,6 +2,14 @@
 
 All notable changes to Permission Studio. Versions follow `major.minor.patch`; every delivered change raises the patch number.
 
+## 2.6.1
+
+Tests only; the extension is unchanged.
+
+- Fixed: a browser test (Find access, `run3.py`) failed on GitHub Actions and passed locally. The tests handed the page its messages with `window.postMessage`, which delivers them later as a separate task, and a check that followed straight away could run first, depending on the browser's scheduling (GitHub's newer Chromium ran it first). The tests now deliver messages synchronously, so the page has always handled a message before the test looks; this applies to all 19 places tests send messages.
+- `UI_SLOW=4` runs the browser tests with the CPU slowed four times, like a busy CI machine; all 17 pass that way too.
+- When the browser tests fail on GitHub, their screenshots are attached to the run (`ui-screenshots`).
+
 ## 2.6.0
 
 Every issue found in the 2.5 review, fixed and covered by a test.

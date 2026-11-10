@@ -17,7 +17,7 @@ async def toggles():
     pg = await b.new_page(viewport={"width": 970, "height": 620})
     errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
     await pg.goto(DARK)
-    post = lambda m: pg.evaluate("m=>window.postMessage(m,'*')", m)
+    post = lambda m: pg.evaluate(DELIVER, m)
     await post(dict(ctx, production=False)); await post({"type":"lists","lists":lists,"kinds":["permissionSet","profile"],"savedAt":now,"refreshing":False}); await pg.wait_for_timeout(40)
     ok = []
     ok.append(("list shows while nothing is open", not await pg.evaluate("()=>document.querySelector('.body').classList.contains('list-collapsed')")))

@@ -13,6 +13,28 @@ DATA = HERE / 'data'
 OUT = pathlib.Path(os.environ.get('UI_OUT') or os.path.join(tempfile.gettempdir(), 'permission-studio-ui'))
 OUT.mkdir(parents=True, exist_ok=True)
 CHROME = os.environ.get('CHROME') or None
+# UI_SLOW=6 runs every page with its CPU slowed six times (like a busy CI machine), to catch
+# a test that only passes because the page happens to be quick.
+try:
+    from playwright.async_api import Browser as _Browser
+    _new_page = _Browser.new_page
+    async def _slow_new_page(self, *a, **k):
+        page = await _new_page(self, *a, **k)
+        rate = float(os.environ.get('UI_SLOW') or 0)
+        if rate > 1:
+            cdp = await page.context.new_cdp_session(page)
+            await cdp.send('Emulation.setCPUThrottlingRate', {'rate': rate})
+        return page
+    _Browser.new_page = _slow_new_page
+except ImportError:
+    pass
+
+# How the tests hand the page a message from the extension. dispatchEvent runs the page's
+# handler before it returns, so the page has finished with the message (and sent anything it
+# sends in reply) before the test looks. window.postMessage would deliver it later, as a separate
+# task: whether that comes before the test's next check depends on the browser's scheduling.
+DELIVER = "m => window.dispatchEvent(new MessageEvent('message', { data: m }))"
+
 def launch_args():
     """Arguments for p.chromium.launch(): the Chrome in CHROME, or Playwright's own."""
     return dict(executable_path=CHROME, args=['--no-sandbox']) if CHROME else dict(args=['--no-sandbox'])

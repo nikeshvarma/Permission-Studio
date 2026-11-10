@@ -10,7 +10,7 @@ async def main():
     pg=await b.new_page(viewport={"width":1400,"height":800})
     errs=[]; pg.on("pageerror",lambda e: errs.append(str(e)+" @ "+(e.stack or "").split("\n")[1].strip() if e.stack else str(e)))
     await pg.goto(DARK)
-    post=lambda m: pg.evaluate("m=>window.postMessage(m,'*')",m)
+    post=lambda m: pg.evaluate(DELIVER, m)
     sent=lambda t: pg.evaluate("t=>window.sent.filter(m=>m.type===t)", t)
     HOSTILE='<img src=x onerror="window.__xss=1">Sales & "Ops"'
     L=json.loads(json.dumps(lists)); L["permissionSet"][0]["label"]=HOSTILE

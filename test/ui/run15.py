@@ -29,7 +29,7 @@ async def main():
     pg=await b.new_page(viewport={"width":1400,"height":860})
     errs=[]; pg.on("pageerror",lambda e: errs.append(str(e)))
     await pg.goto(DARK)
-    post=lambda m: pg.evaluate("m=>window.postMessage(m,'*')",m)
+    post=lambda m: pg.evaluate(DELIVER, m)
     seen={}; fails=[]
     async def m(name):
       await pg.wait_for_timeout(60)

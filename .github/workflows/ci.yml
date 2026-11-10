@@ -35,3 +35,11 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Browser tests
         run: python test/ui/run_all.py
+        env:
+          UI_OUT: ${{ runner.temp }}/ui
+      - name: Screenshots from the browser tests (when they fail)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots
+          path: ${{ runner.temp }}/ui

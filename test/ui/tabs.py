@@ -9,7 +9,7 @@ async def main():
     for W in (970, 1230, 1480):
       pg=await b.new_page(viewport={"width":W,"height":700})
       await pg.goto(DARK)
-      post=lambda m: pg.evaluate("m=>window.postMessage(m,'*')",m)
+      post=lambda m: pg.evaluate(DELIVER, m)
       L={"permissionSet":many("permissionSet",605,"Sales Ops"),"group":many("group",61,"Bundle"),"profile":many("profile",98,"Custom")}
       await post(dict(ctx,production=False,sandbox=True)); await post({"type":"lists","lists":L,"kinds":["permissionSet","group","profile"],"savedAt":now,"refreshing":False}); await pg.wait_for_timeout(80)
       r=await pg.evaluate("""()=>{const head=document.querySelector('.kinds-row').getBoundingClientRect();

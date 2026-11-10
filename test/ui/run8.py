@@ -9,7 +9,7 @@ async def main():
     pg=await b.new_page(viewport={"width":1400,"height":800})
     errs=[]; pg.on("pageerror",lambda e: errs.append(str(e))); pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     await pg.goto(DARK)
-    post=lambda m: pg.evaluate("m=>window.postMessage(m,'*')",m)
+    post=lambda m: pg.evaluate(DELIVER, m)
     last=lambda t: pg.evaluate("t=>[...window.sent].reverse().find(m=>m.type===t)", t)
     L=json.loads(json.dumps(lists)); L["permissionSet"][0]["sessionBased"]=True
     L["profile"]=[{"key":"profile:1","kind":"profile","label":"Custom: Sales","apiName":"Custom: Sales","managed":False,"standard":False,"status":"","license":"Salesforce"},

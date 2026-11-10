@@ -7,7 +7,7 @@ async def main():
     pg=await b.new_page(viewport={"width":1360,"height":800})
     errs=[]; pg.on("pageerror",lambda e: errs.append(str(e))); pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     await pg.goto(DARK)
-    post=lambda m: pg.evaluate("m=>window.postMessage(m,'*')",m)
+    post=lambda m: pg.evaluate(DELIVER, m)
     sent=lambda: pg.evaluate("window.sent")
     c=dict(ctx, production=False)
     await post(c)
