@@ -445,3 +445,9 @@ Other known risks and how the design handles them:
 - **API request limits.** A matrix load costs about one request per 2,000 rows. The heaviest flows at the target scale stay in the low hundreds of requests. The request count per action is logged so it can be watched.
 - **Concurrent Setup edits.** These are handled by the re-read before apply (5.3, step 1).
 - **Read-only items.** Editing standard profiles or managed-package permission sets is blocked in the UI rather than left to fail at deploy.
+
+## Tests
+
+- **`test/smoke.js`** (`npm test`): the backend, saving and the screen's logic, against a stand-in Salesforce CLI and an in-memory org (`test/fixtures`). The in-memory org answers the SOQL the extension sends, including semi-joins, relationship filters and grouped counts, and fails the way Salesforce fails (a column the org doesn't have, a compound field's part as a field permission).
+- **`test/ui`** (`npm run test:ui`): the real screen in Chromium. Page harnesses load `media/app.js` and `media/app.css` with a stand-in for VS Code's webview API that records every message the page sends. The checks include a layout audit at four laptop sizes, a design check that measures every element's style on ten screens, and a check that every scrolling box keeps its place across a redraw.
+- **`tools/screenshots`** (`npm run screenshots`): the README screenshots, from the same real screen in a mock VS Code window.

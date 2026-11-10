@@ -1253,7 +1253,9 @@ test('field access wizard: a plan per item, skipping what can’t or needn’t c
   const res = posts(p, 'wizardResult').pop();
   assert.deepStrictEqual(res.results.map(r => [r.label, r.status]), [['Sales Ops', 'saved'], ['Custom: Sales', 'saved']]);
   assert.ok(F.T.FieldPermissions.some(f => f.ParentId === '0PS0000000000PRAAA' && f.Field === 'Lead.Industry' && f.PermissionsEdit));
-  assert.strictEqual(posts(p, 'wizardProgress').length, 2);
+  // One "starting this item" message per item, then the save's own steps (so a big save shows progress).
+  assert.strictEqual(posts(p, 'wizardProgress').filter(x => !x.step).length, 2);
+  assert.ok(posts(p, 'wizardProgress').some(x => x.step && typeof x.stepTotal === 'number'), 'the save’s steps are reported');
 });
 
 test('rename and clone permission sets; clones carry every kind of access', async () => {
@@ -2829,7 +2831,10 @@ test('health check: unused items, empty permission sets, inactive and expiring a
   await mp.runHealth({ expiringDays: 30 });
   await mp.healthPlan({ action: 'extend', assignmentIds: ['0Pa000000000092AAA'], days: 90 });
   const ext = posts(p, 'healthPlan').pop().plan[0].changes[0];
-  assert.strictEqual(ext.after.expires, new Date(Date.now() + 90 * 86400e3).toISOString().slice(0, 10));
+  // From the current expiry date (5 days away), not from today
+  const from = new Date(soon.slice(0, 10) + 'T00:00:00');
+  const want = new Date(from.getTime() + 90 * 86400e3);
+  assert.strictEqual(ext.after.expires, want.getFullYear() + '-' + String(want.getMonth() + 1).padStart(2, '0') + '-' + String(want.getDate()).padStart(2, '0'));
   // Export: a real workbook with a summary and one sheet per finding
   await mp.exportWorkbook({ what: 'health' });
   const file = svc.saved.pop();
@@ -2871,7 +2876,8 @@ test('exports from User access, Compare, Find access and History: one workbook e
   }
   await mp.select('permissionSet:' + PS1);
   await mp.save({ key: 'permissionSet:' + PS1, ticket: 'ADO 1', changes: [{ key: 'field:Lead.Industry', label: 'Industry', before: null, after: { read: true, edit: false } }] });
-  s = await sheetsOf('history', { snapshotIds: [] });
+  const shown = (await history.readLog(svc.projectDir, {})).map(e => [e.at, e.target, e.path].join('|'));
+  s = await sheetsOf('history', { entryIds: shown });
   if (s) assert.deepStrictEqual(s.map(x => x[0]), ['Saves', 'Changes']);
   await mp.exportWorkbook({ what: 'compare' });
   mp._compare = null;
@@ -2901,6 +2907,153 @@ test('stylesheet: no selector group left dangling, and hovering never changes an
   assert.deepStrictEqual(sizing, [], 'hover rules may change colour, not size');
 });
 
+test('reported: muting reads in orgs whose MutingPermissionSet has no NamespacePrefix', async () => {
+  resetOrg();
+  await withEnv({ FAKE_SF_TOKEN: tokenFile, FAKE_SF_INSTANCE: INSTANCE }, async () => {
+    const c = conn();
+    await assert.rejects(c.query('SELECT Id, DeveloperName, MasterLabel, NamespacePrefix FROM MutingPermissionSet'), e => /No such column 'NamespacePrefix' on entity 'MutingPermissionSet'/.test(e.message), 'the test org fails the old query as the org did');
+    const { mp, p } = await metaPanel();
+    const key = [...mp.items.keys()].find(k => k.startsWith('group:') && !mp.items.get(k).managed);
+    // A group without muting gets one, and the Muted Permissions screen then reads it (this is where it failed)
+    const g = mp.items.get(key);
+    F.T.PermissionSetGroupComponent = F.T.PermissionSetGroupComponent.filter(x => !(x.PermissionSetGroupId === g.recordId && /^0QM/.test(x.PermissionSetId)));
+    await mp.select(key);
+    await mp.createMuting({ key, name: 'Team_Muting', label: 'Team Muting' });
+    assert.ok(!posts(p, 'mutingCreated').pop().error, JSON.stringify(posts(p, 'mutingCreated').pop()));
+    const last = posts(p, 'mutingDetail').pop();
+    assert.ok(last && last.data && last.data.muting && last.data.muting.name === 'Team_Muting', JSON.stringify(posts(p, 'mutingError').pop() || last));
+  });
+});
+
+test('reported: address parts (Account.BillingCity…) aren’t offered or saved; their access is the compound field’s', async () => {
+  resetOrg();
+  await withEnv({ FAKE_SF_TOKEN: tokenFile, FAKE_SF_INSTANCE: INSTANCE }, async () => {
+    const c = conn();
+    const r = await c.createRecords([{ attributes: { type: 'FieldPermissions' }, ParentId: PS1, SobjectType: 'Account', Field: 'Account.BillingCity', PermissionsRead: true, PermissionsEdit: false }]).catch(e => e);
+    assert.match(String(r && r.message), /INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST: Field Name: bad value for restricted picklist field: Account\.BillingCity/, 'the test org refuses a part as the org did');
+    const { mp, p } = await metaPanel();
+    const key = 'permissionSet:' + PS1;
+    await mp.select(key);
+    // Object Settings: the compound field, not its parts
+    await mp.openObject(key, 'Account');
+    const od = posts(p, 'objectDetail').pop().data;
+    const names = od.fields.map(f => f.apiName);
+    assert.ok(names.includes('BillingAddress') && names.includes('ShippingAddress') && !names.some(n => /^(Billing|Shipping)(City|Street|State|Country|PostalCode|Latitude|Longitude|GeocodeAccuracy)$/.test(n)), names.join(', '));
+    // Grant field access: the same
+    await mp.wizardFields('Account');
+    const wf = posts(p, 'wizardFields').pop().fields.map(f => f.apiName);
+    assert.ok(wf.includes('BillingAddress') && !wf.includes('BillingCity'), wf.join(', '));
+    // Changes staged before the fix: the parts are left out, the rest is saved, and the notice says why
+    const changes = ['BillingCity', 'BillingStreet'].map(f => ({ key: 'field:Account.' + f, label: f, before: null, after: { read: true, edit: false } }))
+      .concat([{ key: 'field:Account.Industry', label: 'Industry', before: null, after: { read: true, edit: false } }]);
+    await mp.save({ key, changes });
+    const res = posts(p, 'saveResult').pop();
+    assert.strictEqual(res.status, 'saved', JSON.stringify(res));
+    assert.match(res.leftOut, /2 changes were left out: Account\.BillingCity, Account\.BillingStreet are parts of Account\.BillingAddress/);
+    assert.ok(F.T.FieldPermissions.some(x => x.ParentId === PS1 && x.Field === 'Account.Industry') && !F.T.FieldPermissions.some(x => /Billing(City|Street)/.test(x.Field)));
+    // Only parts: nothing to save, and what to do instead
+    await mp.save({ key, changes: changes.slice(0, 2) });
+    const only = posts(p, 'saveResult').pop();
+    assert.ok(only.status === 'error' && /set access on the compound field instead/.test(only.message), JSON.stringify(only));
+    // Find access: a part is answered for its compound field
+    await mp.lookup({ object: 'Account', field: 'Account.BillingCity', level: 'read' });
+    const look = posts(p, 'lookupResult').pop().result;
+    assert.deepStrictEqual([look.field, look.partOf], ['Account.BillingAddress', { field: 'Account.BillingCity', compound: 'Account.BillingAddress' }]);
+  });
+});
+
+test('every box the stylesheet lets scroll keeps its place across redraws (the list in app.js matches app.css)', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'media', 'app.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const js = fs.readFileSync(path.join(ROOT, 'media', 'app.js'), 'utf8');
+  const list = /const SCROLLERS = '([^']+)'/.exec(js)[1].split(',').map(x => x.trim());
+  const scrolling = new Set();
+  for (const m of css.matchAll(/([^{}@]+)\{([^}]*)\}/g)) if (/overflow(-[xy])?\s*:\s*(auto|scroll)/.test(m[2])) for (const sel of m[1].split(',')) scrolling.add(sel.trim());
+  assert.deepStrictEqual([...scrolling].filter(x => !list.includes(x)), [], 'add these to SCROLLERS in app.js');
+});
+
+test('health check with the default lists (no groups): groups are still checked and fixable; queries read only what they need', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  const queries = [];
+  const { svc } = reportPanel({ kinds: () => ['permissionSet', 'profile'] });
+  const q0 = svc.conn.query.bind(svc.conn);
+  svc.conn.query = async q => { queries.push(q); return q0(q); };
+  // An inactive user assigned through a group, and a group nobody uses
+  const cara = F.T.User.find(u => u.Name === 'Cara Diaz');
+  cara.IsActive = false;
+  const g = F.T.PermissionSetGroup[0];
+  F.T.PermissionSetAssignment.push({ Id: '0Pa000000000093AAA', AssigneeId: cara.Id, Assignee: cara, PermissionSetId: F.T.PermissionSet.find(x => x.PermissionSetGroupId === g.Id).Id, PermissionSetGroupId: g.Id, ExpirationDate: null });
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, svc);
+  const p = mp.show();
+  await mp.load();
+  assert.ok(![...mp.items.values()].some(i => i.kind === 'group'), 'groups aren’t in the lists');
+  const before = queries.length;
+  await mp.runHealth({ expiringDays: 30 });
+  const healthQueries = queries.slice(before);
+  const d = posts(p, 'health').pop().data;
+  const viaGroup = d.inactiveAssignments.find(x => x.assignmentId === '0Pa000000000093AAA');
+  assert.ok(viaGroup && viaGroup.key === 'group:' + g.Id && viaGroup.itemLabel === g.MasterLabel, 'the group is named and has a key: ' + JSON.stringify(viaGroup));
+  assert.ok(F.T.PermissionSetGroup.length < 2 || d.unusedGroups.length + 1 > 0);
+  // ...and fixable
+  await mp.healthPlan({ action: 'remove', assignmentIds: ['0Pa000000000093AAA'] });
+  const plan = posts(p, 'healthPlan').pop();
+  assert.deepStrictEqual([plan.skipped, plan.plan.map(x => x.key)], [[], ['group:' + g.Id]]);
+  await mp._applyPlan({ plan: plan.plan }, 'wizardProgress', 'wizardResult', 'Health check');
+  assert.deepStrictEqual(posts(p, 'wizardResult').pop().results.map(r => r.status), ['saved']);
+  assert.ok(!F.T.PermissionSetAssignment.some(x => x.Id === '0Pa000000000093AAA'));
+  // The side list still shows only its kinds
+  assert.ok(!mp._listsMessage(Date.now(), false).lists.group.length, 'no groups in the side list');
+  // A group renamed in Setup since the last check shows its new name next time
+  g.MasterLabel = 'Renamed Bundle';
+  await mp.runHealth({ expiringDays: 30 });
+  assert.strictEqual(mp.items.get('group:' + g.Id).label, 'Renamed Bundle');
+  // The health check reads no user or assignment without a filter
+  const users = healthQueries.filter(q => /FROM User\b/.test(q));
+  assert.ok(users.length && users.every(q => /\bWHERE\b/.test(q)), users.join('\n'));
+  const bad = healthQueries.filter(q => /FROM PermissionSetAssignment\b/.test(q) && !/^SELECT PermissionSetId, COUNT/.test(q) && !/IsOwnedByProfile = false|Assignee\.IsActive/.test(q));
+  assert.deepStrictEqual(bad, [], 'profile assignments are left out');
+});
+
+test('History export: this org’s saves only, including those without a snapshot (renames, clones)', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  const { svc } = reportPanel();
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, svc);
+  const p = mp.show();
+  await mp.load();
+  await history.appendLog(svc.projectDir, { org: mp.ctx.org.username, target: 'Renamed_PS', kind: 'permissionSet', path: 'rename', result: 'saved', count: 1 });
+  await history.appendLog(svc.projectDir, { org: 'someone@else.example', target: 'Other_Org_PS', kind: 'permissionSet', path: 'records', result: 'saved', count: 1, snapshot: 'other-snap' });
+  const all = await history.readLog(svc.projectDir, {});
+  await mp.exportWorkbook({ what: 'history', entryIds: all.map(e => [e.at, e.target, e.path].join('|')) });
+  const f = svc.saved.pop();
+  fs.writeFileSync(path.join(tmp, 'hist.xlsx'), f.data);
+  const py = require('child_process').spawnSync('python3', ['-c', 'import openpyxl,sys,json; ws=openpyxl.load_workbook(sys.argv[1])["Saves"]; print(json.dumps([c.value for c in ws["B"]]))', path.join(tmp, 'hist.xlsx')]);
+  if (py.status === 0) { const items = JSON.parse(py.stdout.toString()); assert.ok(items.includes('Renamed_PS') && !items.includes('Other_Org_PS'), items.join(', ')); }
+  await mp.exportWorkbook({ what: 'history', entryIds: [] });
+  assert.match(posts(p, 'toast').pop().message, /Nothing to export/, 'an empty choice exports nothing (not everything)');
+  // Open / Show in folder: only the file just exported
+  const opened = [];
+  mp.s.openFile = async x => opened.push(x);
+  await mp._onMessage({ type: 'openFile', path: '/etc/passwd' });
+  await mp._onMessage({ type: 'openFile', path: '/tmp/' + f.name });
+  assert.deepStrictEqual(opened, ['/tmp/' + f.name]);
+});
+
+test('Excel limits: long cells are capped, links past Excel’s limit stay text; the export writer doesn’t block', async () => {
+  const x = require('../src/util/xlsx');
+  const long = 'x'.repeat(40000);
+  const rows = Array.from({ length: x.MAX_LINKS + 5 }, (_, i) => [{ v: 'u' + i, link: 'https://x.example/' + i }]);
+  rows[0].push(long);
+  const b = await x.writeXlsxAsync([{ name: 'S', header: ['User', 'Note'], rows }]);
+  const file = path.join(tmp, 'limits.xlsx');
+  fs.writeFileSync(file, b);
+  const xml = require('child_process').execFileSync('unzip', ['-p', file, 'xl/worksheets/sheet1.xml'], { maxBuffer: 1 << 28 }).toString();
+  assert.strictEqual((xml.match(/<hyperlink /g) || []).length, x.MAX_LINKS, 'no more links than Excel allows');
+  const cell = /<c r="B2"[^>]*><is><t[^>]*>([^<]*)<\/t>/.exec(xml)[1];
+  assert.strictEqual(cell.length, x.MAX_CELL, 'a cell holds at most 32,767 characters');
+  assert.ok(cell.endsWith('…'));
+});
+
 // ---------- extension wiring ----------
 test('activation: commands and settings match package.json; status bar; version and author', async () => {
   const vscode = require('vscode');
@@ -2911,7 +3064,7 @@ test('activation: commands and settings match package.json; status bar; version 
   assert.deepStrictEqual([...code.matchAll(/c\.get\('([\w.]+)'/g)].map(m => 'permStudio.' + m[1]).sort(), Object.keys(pkg.contributes.configuration.properties).sort());
   assert.ok(vscode.__statusItems[0].shown && vscode.__statusItems[0].command === 'permStudio.open');
   for (const f of ['media/app.js', 'media/app.css', 'media/tab-light.svg', 'media/tab-dark.svg', 'src/model/dependencies.js', pkg.icon]) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
-  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.5.4', 'nikeshvarma', 'Nikesh Varma']);
+  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.6.0', 'nikeshvarma', 'Nikesh Varma']);
   const png = fs.readFileSync(path.join(ROOT, pkg.icon));
   assert.deepStrictEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [256, 256], 'Marketplace icon is 256 px');
   for (const t of ['light', 'dark']) assert.match(fs.readFileSync(path.join(ROOT, 'media', 'tab-' + t + '.svg'), 'utf8'), /fill="#[0-9A-F]{6}"/i, 'tab icon has an explicit colour');

@@ -238,6 +238,29 @@ async function loadDetail(conn, item) {
  * field-level security, with whether Edit can be granted.
  * Required fields are not permissionable and are left out, as in Setup.
  */
+/**
+ * Parts of compound fields, by part name → compound name: BillingCity → BillingAddress,
+ * Location__Latitude__s → Location__c, FirstName → Name. Field-level security is set on the
+ * compound field, never on a part: the org refuses a part as a FieldPermissions Field (a "bad
+ * value for restricted picklist"), even where the describe calls the part permissionable.
+ */
+function compoundParts(describe) {
+  const names = new Set((describe.fields || []).map(f => f.name));
+  return new Map((describe.fields || []).filter(f => f.compoundFieldName && f.compoundFieldName !== f.name && names.has(f.compoundFieldName)).map(f => [f.name, f.compoundFieldName]));
+}
+/** Which of these 'field:Object.Field' keys are parts of a compound field: Map<key, { field, compound }>. */
+async function compoundPartsOf(conn, keys) {
+  const out = new Map();
+  const byObject = new Map();
+  for (const k of keys) { const f = k.slice(k.indexOf(':') + 1); const o = f.split('.')[0]; (byObject.get(o) || byObject.set(o, []).get(o)).push([k, f]); }
+  for (const [o, list] of byObject) {
+    let parts;
+    try { parts = compoundParts(await conn.describe(o)); } catch (e) { continue; }
+    for (const [k, f] of list) { const c = parts.get(f.slice(o.length + 1)); if (c) out.set(k, { field: f, compound: o + '.' + c }); }
+  }
+  return out;
+}
+
 async function loadObjectDetail(conn, item, sobject) {
   const model = emptyModel(item.kind, item.apiName);
   const [describe, cols, allowed] = await Promise.all([conn.describe(sobject), objectColumns(conn), objectPermissionNames(conn)]);
@@ -250,8 +273,10 @@ async function loadObjectDetail(conn, item, sobject) {
   const granted = new Map(rows.map(r => [r.Field, { read: r.PermissionsRead === true, edit: r.PermissionsEdit === true }]));
   // As in Setup, required and system fields are listed too. Their access can't be set
   // ("fixed"): everyone with access to the object can see them, and edit the required ones.
+  // A compound field's parts (BillingCity of BillingAddress) aren't listed: as in Setup, their access is the compound field's.
+  const parts = compoundParts(describe);
   const fields = describe.fields
-    .filter(f => !HIDDEN_FIELDS.has(f.name) && !f.deprecatedAndHidden)
+    .filter(f => !HIDDEN_FIELDS.has(f.name) && !f.deprecatedAndHidden && !parts.has(f.name))
     .map(f => {
       const name = sobject + '.' + f.name;
       const writable = !f.calculated && (f.updateable === true || f.createable === true);
@@ -728,7 +753,15 @@ async function profilesFiltered(conn, profiles, username) {
 async function whoHasAccess(conn, q) {
   const sobject = q.object;
   const level = q.level || 'read';
-  const field = q.field ? (q.field.includes('.') ? q.field : sobject + '.' + q.field) : null;
+  let field = q.field ? (q.field.includes('.') ? q.field : sobject + '.' + q.field) : null;
+  // A part of a compound field (Account.BillingCity) has the compound field's access (Account.BillingAddress).
+  let partOf = null;
+  if (field) {
+    try {
+      const c = compoundParts(await conn.describe(sobject)).get(field.slice(sobject.length + 1));
+      if (c) { partOf = { field, compound: sobject + '.' + c }; field = partOf.compound; }
+    } catch (e) { /* the object's describe is unavailable: look the field up as given */ }
+  }
   const objFlag = field ? (level === 'edit' ? 'PermissionsEdit' : 'PermissionsRead') : LOOKUP_OBJECT_FLAG[level];
   if (!objFlag) throw new Error('Unknown access level: ' + level);
   const allowed = await objectPermissionNames(conn);
@@ -754,11 +787,11 @@ async function whoHasAccess(conn, q) {
   const partial = field && !fieldOnly ? [...users.values()].filter(u => !(u.objectFrom.length && u.fieldFrom.length)) : [];
   const byLabel = (a, b) => a.label.localeCompare(b.label);
   const inactiveGranted = [...inactive.values()].filter(u => fieldOnly ? u.fieldFrom.length : u.objectFrom.length && (!field || u.fieldFrom.length));
-  return { object: sobject, field, level, fieldOnly, sources: [...sources.values()].sort(byLabel), users: granted.sort((a, b) => a.name.localeCompare(b.name)),
+  return { object: sobject, field, partOf, level, fieldOnly, sources: [...sources.values()].sort(byLabel), users: granted.sort((a, b) => a.name.localeCompare(b.name)),
     partial: partial.sort((a, b) => a.name.localeCompare(b.name)), inactive: inactiveGranted.sort((a, b) => a.name.localeCompare(b.name)) };
 }
 
-module.exports = { loadDetail, loadObjectDetail, loadObjectPermissions, loadSystemPermissions, loadFieldRows, loadFieldPermissions,
+module.exports = { compoundParts, compoundPartsOf, loadDetail, loadObjectDetail, loadObjectPermissions, loadSystemPermissions, loadFieldRows, loadFieldPermissions,
   systemPermissionFields, objectCatalog, objectPermissionNames, objectColumns, sliceByLength, OBJECT_FIELDS, ENTITY,
   listEntities, loadAccessRows, loadEntityAccess, listRecordTypes, loadGroupComponents, groupStatus, listTabs, loadTabSettings,
   loadTabsPage, loadAssignments, expirationField, searchUsers, loadObjectAccessFor, whoHasAccess, TAB_FROM_API, whoHasPermission,

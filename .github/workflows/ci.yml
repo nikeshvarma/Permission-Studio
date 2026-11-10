@@ -1,4 +1,4 @@
-# Runs the test suite on every push and pull request.
+# Runs the test suite and the browser tests on every push and pull request.
 name: CI
 on:
   push:
@@ -20,3 +20,18 @@ jobs:
         with:
           name: vsix
           path: dist/*.vsix
+  ui:
+    # The browser tests: the real screen (media/app.js, media/app.css) in Chromium, driven like a user:
+    # layout at laptop sizes, one design for every element, scrolling, the health check, saving.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Playwright and Chromium
+        run: |
+          pip install playwright==1.56.0
+          python -m playwright install --with-deps chromium
+      - name: Browser tests
+        run: python test/ui/run_all.py

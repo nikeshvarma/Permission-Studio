@@ -3,7 +3,7 @@
 // is worked out from the org's records; nothing is changed here (fixes go through
 // the usual review and save).
 const insight = require('./insight');
-const { chunk } = require('./soql');
+const { chunk, str } = require('./soql');
 
 /** System permissions that reach across the whole org. */
 const HIGH_IMPACT = [['ModifyAllData', 'Modify All Data'], ['ViewAllData', 'View All Data'], ['ManageUsers', 'Manage Users'], ['AuthorApex', 'Author Apex'],
@@ -21,21 +21,28 @@ async function parentsWithRows(conn, object) {
 }
 
 /**
- * items: the org's permission sets, groups and profiles as the lists know them
+ * items: the org's permission sets, groups and profiles, whatever lists are shown
  * ({ key, kind, label, apiName, recordId, permissionSetId, managed, standard }).
  * options: { expiringDays }.
+ *
+ * Reads only what the findings need, so it stays quick in orgs with many users:
+ * assignments other than profile assignments, user counts per profile (not users),
+ * and the details of users who have an assignment or a high-impact profile.
  */
 async function healthCheck(conn, items, options) {
   const o = options || {};
   const days = Math.max(1, Math.min(365, o.expiringDays || 30));
   const notes = [];
-  const [assigns, users, comps, profilePs] = await Promise.all([
-    all(conn, 'SELECT Id, AssigneeId, PermissionSetId, PermissionSetGroupId, ExpirationDate FROM PermissionSetAssignment'),
-    all(conn, 'SELECT Id, Name, Username, IsActive, ProfileId, Profile.Name, Profile.UserLicense.Name, LastLoginDate FROM User')
-      .catch(() => all(conn, 'SELECT Id, Name, Username, IsActive, ProfileId, LastLoginDate FROM User')),
+  const USER = 'Id, Name, Username, IsActive, ProfileId, Profile.Name, LastLoginDate';
+  const counts = active => all(conn, 'SELECT ProfileId, COUNT(Id) n FROM User WHERE IsActive = ' + active + ' GROUP BY ProfileId').then(rs => new Map(rs.map(r => [r.ProfileId, r.n])));
+  const [assigns, comps, profilePs, profileActive, profileInactive, integrationProfiles, assignees] = await Promise.all([
+    all(conn, 'SELECT Id, AssigneeId, PermissionSetId, PermissionSetGroupId, ExpirationDate FROM PermissionSetAssignment WHERE PermissionSet.IsOwnedByProfile = false'),
     all(conn, 'SELECT PermissionSetGroupId, PermissionSetId FROM PermissionSetGroupComponent'),
-    all(conn, 'SELECT Id, ProfileId FROM PermissionSet WHERE IsOwnedByProfile = true')]);
-  const userById = new Map(users.map(u => [u.Id, u]));
+    all(conn, 'SELECT Id, ProfileId FROM PermissionSet WHERE IsOwnedByProfile = true'),
+    counts(true), counts(false),
+    all(conn, "SELECT Id FROM Profile WHERE UserLicense.Name LIKE '%Integration%'").then(rs => new Set(rs.map(r => r.Id))).catch(() => new Set()),
+    all(conn, 'SELECT ' + USER + ' FROM User WHERE Id IN (SELECT AssigneeId FROM PermissionSetAssignment WHERE PermissionSet.IsOwnedByProfile = false)')]);
+  const userById = new Map(assignees.map(u => [u.Id, u]));
   const profileOfPs = new Map(profilePs.map(r => [r.Id, r.ProfileId]));
   const byKind = k => items.filter(i => i.kind === k);
   const psById = new Map(byKind('permissionSet').map(i => [i.permissionSetId, i]));
@@ -43,9 +50,7 @@ async function healthCheck(conn, items, options) {
   const profileById = new Map(byKind('profile').map(i => [i.recordId, i]));
   const person = u => ({ userId: u.Id, name: u.Name, username: u.Username, profile: (u.Profile && u.Profile.Name) || (profileById.get(u.ProfileId) || {}).label || '',
     lastLogin: day(u.LastLoginDate) });
-  /** Where an assignment comes from, as an item of the lists. */
-  const sourceOf = a => a.PermissionSetGroupId ? groupById.get(a.PermissionSetGroupId)
-    : profileOfPs.has(a.PermissionSetId) ? profileById.get(profileOfPs.get(a.PermissionSetId)) : psById.get(a.PermissionSetId);
+  const sourceOf = a => a.PermissionSetGroupId ? groupById.get(a.PermissionSetGroupId) : psById.get(a.PermissionSetId);
 
   // ---- unused permission sets, groups and profiles
   const direct = new Map(), directInactive = new Map(), groupActive = new Map(), groupInactive = new Map();
@@ -53,7 +58,7 @@ async function healthCheck(conn, items, options) {
     const u = userById.get(a.AssigneeId);
     const active = !!(u && u.IsActive);
     if (a.PermissionSetGroupId) { const m = active ? groupActive : groupInactive; m.set(a.PermissionSetGroupId, (m.get(a.PermissionSetGroupId) || 0) + 1); }
-    else if (!profileOfPs.has(a.PermissionSetId)) { const m = active ? direct : directInactive; m.set(a.PermissionSetId, (m.get(a.PermissionSetId) || 0) + 1); }
+    else { const m = active ? direct : directInactive; m.set(a.PermissionSetId, (m.get(a.PermissionSetId) || 0) + 1); }
   }
   const inGroup = new Set(comps.map(c => c.PermissionSetId));
   const unusedPermissionSets = byKind('permissionSet').filter(i => !direct.get(i.permissionSetId) && !inGroup.has(i.permissionSetId))
@@ -61,15 +66,13 @@ async function healthCheck(conn, items, options) {
   const unusedGroups = byKind('group').filter(i => !groupActive.get(i.recordId))
     .map(i => ({ key: i.key, recordId: i.recordId, label: i.label, apiName: i.apiName, managed: !!i.managed, inactiveUsers: groupInactive.get(i.recordId) || 0,
       members: comps.filter(c => c.PermissionSetGroupId === i.recordId && !/^0QM/.test(c.PermissionSetId)).length }));
-  const profileActive = new Map(), profileInactive = new Map();
-  for (const u of users) { const m = u.IsActive ? profileActive : profileInactive; m.set(u.ProfileId, (m.get(u.ProfileId) || 0) + 1); }
   const unusedProfiles = byKind('profile').filter(i => !profileActive.get(i.recordId))
     .map(i => ({ key: i.key, recordId: i.recordId, label: i.label, apiName: i.apiName, standard: !!i.standard, inactiveUsers: profileInactive.get(i.recordId) || 0 }));
 
   // ---- assignments to inactive users, and assignments that expire soon
   const assignmentRow = a => { const src = sourceOf(a) || {}; return Object.assign(person(userById.get(a.AssigneeId) || { Id: a.AssigneeId, Name: a.AssigneeId }),
-    { assignmentId: a.Id, key: src.key || null, itemLabel: src.label || a.PermissionSetId, kind: src.kind || 'permissionSet', expires: day(a.ExpirationDate) }); };
-  const inactiveAssignments = assigns.filter(a => { const u = userById.get(a.AssigneeId); return u && !u.IsActive && !profileOfPs.has(a.PermissionSetId); })
+    { assignmentId: a.Id, key: src.key || null, itemLabel: src.label || a.PermissionSetGroupId || a.PermissionSetId, kind: src.kind || (a.PermissionSetGroupId ? 'group' : 'permissionSet'), expires: day(a.ExpirationDate) }); };
+  const inactiveAssignments = assigns.filter(a => { const u = userById.get(a.AssigneeId); return u && !u.IsActive; })
     .map(assignmentRow).sort((x, y) => x.name.localeCompare(y.name) || x.itemLabel.localeCompare(y.itemLabel));
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const limit = new Date(today.getTime() + days * 86400e3);
@@ -77,19 +80,36 @@ async function healthCheck(conn, items, options) {
     .map(a => Object.assign(assignmentRow(a), { daysLeft: Math.round((new Date(day(a.ExpirationDate) + 'T00:00:00') - today) / 86400e3) }))
     .sort((x, y) => x.daysLeft - y.daysLeft || x.name.localeCompare(y.name));
 
-  // ---- who holds high-impact permissions, and through what
-  const holders = new Map(); // permission → Map<userId, Set<source label>>
+  // ---- who holds high-impact permissions, and through what: assignments, and profiles
+  const withPerm = new Map(); // permission → Set of permission set Ids (profile ones included)
   for (const [name] of HIGH_IMPACT.concat([['ApiUserOnly', 'API Only User']])) {
-    let ids;
-    try { ids = new Set((await all(conn, 'SELECT Id FROM PermissionSet WHERE Permissions' + name + ' = true')).map(r => r.Id)); }
-    catch (e) { if (name !== 'ApiUserOnly') notes.push(name + ' isn’t a permission in this org, so it wasn’t checked.'); continue; }
+    try { withPerm.set(name, new Set((await all(conn, 'SELECT Id FROM PermissionSet WHERE Permissions' + name + ' = true')).map(r => r.Id))); }
+    catch (e) { if (name !== 'ApiUserOnly') notes.push((HIGH_IMPACT.find(h => h[0] === name) || [, name])[1] + ' (' + name + ') couldn’t be checked: this org or its API version doesn’t have it.'); }
+  }
+  // Active users of the profiles that grant one of them, or that have an integration licence.
+  const holderProfiles = new Set(integrationProfiles);
+  for (const ids of withPerm.values()) for (const id of ids) if (profileOfPs.has(id)) holderProfiles.add(profileOfPs.get(id));
+  const profileUsers = [];
+  for (const g of chunk([...holderProfiles], 200)) profileUsers.push(...await all(conn, 'SELECT ' + USER + ' FROM User WHERE IsActive = true AND ProfileId IN (' + g.map(str).join(', ') + ')'));
+  for (const u of profileUsers) if (!userById.has(u.Id)) userById.set(u.Id, u);
+  const usersOfProfile = new Map();
+  for (const u of profileUsers) (usersOfProfile.get(u.ProfileId) || usersOfProfile.set(u.ProfileId, []).get(u.ProfileId)).push(u);
+  const holders = new Map(); // permission → Map<userId, Set<source label>>
+  for (const [name, ids] of withPerm) {
     const m = new Map();
+    const add = (u, label) => (m.get(u.Id) || m.set(u.Id, new Set()).get(u.Id)).add(label);
     for (const a of assigns) {
       if (!ids.has(a.PermissionSetId)) continue;
       const u = userById.get(a.AssigneeId);
       if (!u || !u.IsActive) continue;
       const src = sourceOf(a);
-      (m.get(u.Id) || m.set(u.Id, new Set()).get(u.Id)).add(src ? src.label : 'Permission set ' + a.PermissionSetId);
+      add(u, src ? src.label : 'Permission set ' + a.PermissionSetId);
+    }
+    for (const id of ids) {
+      const profileId = profileOfPs.get(id);
+      if (!profileId) continue;
+      const label = (profileById.get(profileId) || {}).label || 'Profile ' + profileId;
+      for (const u of usersOfProfile.get(profileId) || []) add(u, label);
     }
     holders.set(name, m);
   }
@@ -98,8 +118,8 @@ async function healthCheck(conn, items, options) {
 
   // ---- integration users with admin access: API Only users, or users on an integration licence
   const apiOnly = holders.get('ApiUserOnly') || new Map();
-  const integrationAdmins = users.filter(u => u.IsActive && (apiOnly.has(u.Id) || /integration/i.test((u.Profile && u.Profile.UserLicense && u.Profile.UserLicense.Name) || '')))
-    .map(u => ({ u, admin: ADMIN.filter(n => holders.has(n) && holders.get(n).has(u.Id)) })).filter(x => x.admin.length)
+  const integrationUsers = [...userById.values()].filter(u => u.IsActive && (apiOnly.has(u.Id) || integrationProfiles.has(u.ProfileId)));
+  const integrationAdmins = integrationUsers.map(u => ({ u, admin: ADMIN.filter(n => holders.has(n) && holders.get(n).has(u.Id)) })).filter(x => x.admin.length)
     .map(({ u, admin }) => Object.assign(person(u), { why: apiOnly.has(u.Id) ? 'API Only User' : 'Integration licence',
       permissions: admin.map(n => (HIGH_IMPACT.find(h => h[0] === n) || [n, n])[1]),
       sources: [...new Set(admin.flatMap(n => [...holders.get(n).get(u.Id)]))].sort() }))

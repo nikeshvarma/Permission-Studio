@@ -18,6 +18,9 @@ const KIND_LABEL = { permissionSet: 'Permission Set', group: 'Permission Set Gro
  * the webview is told when fresh data lands. Edits are staged in the
  * webview and saved through `services.applyChanges`.
  */
+/** A save's identity in History, the same on the screen: when, what and how. */
+function historyId(e) { return [e.at, e.target, e.path].join('|'); }
+
 class MainPanel {
   constructor(context, services) {
     this.context = context;
@@ -112,8 +115,9 @@ class MainPanel {
       case 'healthPlan': await this.healthPlan(m); break;
       case 'healthApply': await this._applyPlan(m, 'wizardProgress', 'wizardResult', 'Health check'); break;
       case 'export': await this.exportWorkbook(m); break;
-      case 'openFile': if (this.s.openFile) await this.s.openFile(String(m.path || '')); break;
-      case 'revealFile': if (this.s.revealFile) await this.s.revealFile(String(m.path || '')); break;
+      // Only the files exported in this session (the screen can't ask to open anything else).
+      case 'openFile': if (this.s.openFile && this._exported && this._exported.has(String(m.path))) await this.s.openFile(String(m.path)); break;
+      case 'revealFile': if (this.s.revealFile && this._exported && this._exported.has(String(m.path))) await this.s.revealFile(String(m.path)); break;
       case 'mutingFields': await this.mutingFields(m); break;
       case 'createMuting': await this.createMuting(m); break;
       case 'loadProfileSettings': await this.openProfileSettings(m.key, { force: m.force }); break;
@@ -329,6 +333,9 @@ class MainPanel {
       if (old && old.permissionSetId && !i.permissionSetId) i.permissionSetId = old.permissionSetId;
       this.items.set(k, i);
     }
+    // Items of kinds the lists don't show (loaded by the health check, or opened from a file) stay known.
+    const shown = this.kinds();
+    for (const [k, i] of keep) if (!shown.includes(i.kind) && !this.items.has(k)) this.items.set(k, i);
   }
 
   _listsMessage(savedAt, refreshing) {
@@ -724,7 +731,8 @@ class MainPanel {
   async wizardFields(object) {
     try {
       const d = await (await this._conn()).describe(object);
-      const fields = d.fields.filter(f => f.permissionable === true).map(f => ({ name: object + '.' + f.name, apiName: f.name, label: f.label, type: f.type, custom: !!f.custom,
+      const parts = this.s.loader.compoundParts(d); // their access is the compound field's
+      const fields = d.fields.filter(f => f.permissionable === true && !parts.has(f.name)).map(f => ({ name: object + '.' + f.name, apiName: f.name, label: f.label, type: f.type, custom: !!f.custom,
         canEdit: !f.calculated && (f.updateable === true || f.createable === true) })).sort((a, b) => a.label.localeCompare(b.label));
       this.post({ type: 'wizardFields', object, fields });
     } catch (e) { this.post({ type: 'wizardFields', object, fields: [], message: String(e.message || e) }); }
@@ -793,7 +801,8 @@ class MainPanel {
         const item = this.items.get(t.key);
         this.post({ type: progressType, done: i, total: m.plan.length, label: t.label });
         if (!item) { results.push({ key: t.key, label: t.label, status: 'error', message: 'No longer in the list.' }); continue; }
-        const r = await this._applyAndLog(conn, item, t.changes.map(c => ({ key: c.key, ref: c.ref || null, before: c.before, after: c.after, label: c.label })), { path });
+        const r = await this._applyAndLog(conn, item, t.changes.map(c => ({ key: c.key, ref: c.ref || null, before: c.before, after: c.after, label: c.label })), { path,
+          onProgress: (step, done, total) => this.post({ type: progressType, done: i, total: m.plan.length, label: t.label, step, stepDone: done, stepTotal: total, changes: t.changes.length }) });
         results.push(Object.assign({ key: t.key, label: t.label }, r));
         this.cache.set('saved:' + t.key, Date.now());
         this.cache.delete('detail:' + t.key);
@@ -899,13 +908,33 @@ class MainPanel {
   }
 
   /** apply() plus snapshot and log, returning { status, count, message, snapshotId }. */
+  /**
+   * Leaves out changes to parts of compound fields (Account.BillingCity): the org refuses them,
+   * and their access is the compound field's (Account.BillingAddress). Such changes can still
+   * arrive from changes staged before 2.5.5. → { changes, leftOut: 'message' | null }
+   */
+  async _withoutCompoundParts(conn, changes) {
+    const keys = changes.filter(c => c.key.startsWith('field:')).map(c => c.key);
+    if (!keys.length) return { changes, leftOut: null };
+    let parts;
+    try { parts = await this.s.loader.compoundPartsOf(conn, keys); } catch (e) { return { changes, leftOut: null }; }
+    if (!parts.size) return { changes, leftOut: null };
+    const compounds = [...new Set([...parts.values()].map(p => p.compound))];
+    const leftOut = parts.size + (parts.size === 1 ? ' change was' : ' changes were') + ' left out: ' + [...parts.values()].slice(0, 4).map(p => p.field).join(', ') + (parts.size > 4 ? ' and ' + (parts.size - 4) + ' more' : '') +
+      (parts.size === 1 ? ' is a part' : ' are parts') + ' of ' + compounds.join(' and ') + ', and access to ' + (parts.size === 1 ? 'it' : 'them') + ' is set there.';
+    return { changes: changes.filter(c => !parts.has(c.key)), leftOut };
+  }
+
   async _applyAndLog(conn, item, changes, extra) {
     const started = Date.now();
+    const guarded = await this._withoutCompoundParts(conn, changes);
+    if (!guarded.changes.length) return { status: 'error', message: guarded.leftOut };
+    changes = guarded.changes;
     const logBase = { org: this.ctx.org.username, target: item.apiName, kind: item.kind, permissionSetId: item.permissionSetId, path: (extra && extra.path) || 'records', count: changes.length };
     try {
       await this._resolve(item, conn);
       const r = await this.s.applyChanges(conn, item, changes, {
-        force: !!(extra && extra.force), metadata: this.s.metadata, assignLicenses: !!(extra && extra.assignLicenses),
+        force: !!(extra && extra.force), metadata: this.s.metadata, assignLicenses: !!(extra && extra.assignLicenses), onProgress: extra && extra.onProgress,
         onSnapshot: (snapshot, safety) => this.s.history.saveSnapshot(this.ctx.projectDir, { org: this.ctx.org.username, target: item.apiName, permissionSetId: item.permissionSetId, items: snapshot, safety: safety || undefined }),
         onProgress: extra && extra.onProgress, log: l => this.s.log(l), pollMs: this.s.pollMs
       });
@@ -1266,6 +1295,15 @@ class MainPanel {
   async runHealth(m) {
     try {
       const conn = await this._conn();
+      // Every kind counts, whatever lists are shown (permStudio.lists.show): load the hidden ones.
+      // They join the item map, so fixes and Open work for them, but the side list still shows only its kinds.
+      const hidden = ['permissionSet', 'group', 'profile'].filter(k => !this.kinds().includes(k));
+      if (hidden.length) {
+        const extra = await this.s.catalog.listAll(conn, hidden);
+        // Fresh each run: an item renamed or deleted in Setup since the last check doesn't linger.
+        for (const [key, i] of [...this.items]) if (hidden.includes(i.kind)) this.items.delete(key);
+        for (const k of hidden) for (const i of extra[k] || []) this.items.set(itemKey(i), i);
+      }
       this._health = await this.s.health.healthCheck(conn, await this._allResolved(conn), { expiringDays: m.expiringDays });
       this.post({ type: 'health', data: this._health });
     } catch (e) { this.post({ type: 'health', error: this.s.loader.sfReason ? this.s.loader.sfReason(e) : String(e.message || e) }); }
@@ -1281,8 +1319,10 @@ class MainPanel {
       if (!h) throw new Error('Run the health check first.');
       const ids = new Set(m.assignmentIds || []);
       const rows = (m.action === 'extend' ? h.expiring : h.inactiveAssignments).filter(r => ids.has(r.assignmentId));
-      const until = m.action === 'extend' ? new Date(Date.now() + Math.max(1, Number(m.days) || 30) * 86400e3) : null;
-      const newDate = until ? until.getFullYear() + '-' + String(until.getMonth() + 1).padStart(2, '0') + '-' + String(until.getDate()).padStart(2, '0') : null;
+      // Extend by N days from the current expiry date (or from today, if that has passed).
+      const add = Math.max(1, Number(m.days) || 30);
+      const ymd = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+      const extended = expires => { const today = new Date(); today.setHours(0, 0, 0, 0); const from = expires ? new Date(expires + 'T00:00:00') : today; const base = from > today ? from : today; return ymd(new Date(base.getTime() + add * 86400e3)); };
       const byItem = new Map();
       const skipped = [];
       for (const r of rows) {
@@ -1290,7 +1330,7 @@ class MainPanel {
         if (!it) { skipped.push({ label: r.itemLabel, reason: 'Not in the lists shown (turn it on in permStudio.lists.show).' }); continue; }
         const p = byItem.get(r.key) || { key: r.key, label: it.label, kind: it.kind, changes: [] };
         const before = { assigned: true, expires: r.expires || null };
-        p.changes.push({ key: 'assignment:' + r.userId, ref: r.userId, label: r.name, before, after: m.action === 'extend' ? { assigned: true, expires: newDate } : { assigned: false, expires: null } });
+        p.changes.push({ key: 'assignment:' + r.userId, ref: r.userId, label: r.name, before, after: m.action === 'extend' ? { assigned: true, expires: extended(r.expires) } : { assigned: false, expires: null } });
         byItem.set(r.key, p);
       }
       this.post({ type: 'healthPlan', action: m.action, plan: [...byItem.values()], skipped });
@@ -1321,13 +1361,14 @@ class MainPanel {
         if (!this._lookup) throw new Error('Look something up first.');
         sheets = X.findAccessWorkbook(this._lookup, meta); name = 'find-access-' + this._safe(this._lookup.permission ? this._lookup.permission.name : this._lookup.field || this._lookup.object);
       } else if (m.what === 'history') {
-        const ids = new Set(m.snapshotIds || []);
-        const entries = (await this.s.history.readLog(this.ctx.projectDir, {})).filter(e => !ids.size || ids.has(e.snapshot));
-        if (!entries.length) throw new Error('Nothing to export.');
+        // The saves shown or selected, by when, what and how, so saves without a snapshot (renames, clones) are included; this org only.
+        const ids = new Set(m.entryIds || []);
+        const entries = (await this.s.history.readLog(this.ctx.projectDir, { org: this.ctx.org.username })).filter(e => ids.has(historyId(e)));
+        if (!entries.length) throw new Error('Nothing to export: choose the saves to export, or show some.');
         sheets = X.historyWorkbook(entries, meta); name = 'save-history';
       } else throw new Error('Unknown export.');
-      const file = await this._saveFile(name + '-' + this._safe(this._orgName()) + '-' + this._stamp() + '.xlsx', this.s.xlsx.writeXlsx(sheets));
-      if (file) this.post({ type: 'exported', path: file, sheets: sheets.length });
+      const file = await this._saveFile(name + '-' + this._safe(this._orgName()) + '-' + this._stamp() + '.xlsx', await this.s.xlsx.writeXlsxAsync(sheets));
+      if (file) { (this._exported || (this._exported = new Set())).add(file); this.post({ type: 'exported', path: file, sheets: sheets.length }); }
     } catch (e) { this.post({ type: 'toast', variant: 'error', title: 'Export failed', message: String(e.message || e) }); }
   }
 
@@ -1446,7 +1487,10 @@ class MainPanel {
     let conn;
     try { conn = await this._conn(); } catch (e) { return reply({ status: 'error', message: String(e.message || e) }); }
     if (conn.isProduction && !this._confirmed(m.confirm)) return reply({ status: 'error', message: 'Type the org’s alias or username to confirm saving to production.' });
-    const changes = m.changes.map(c => ({ key: String((c && c.key) || ''), ref: (c && c.ref) || null, before: (c && c.before) || null, after: c ? c.after : undefined, label: (c && c.label) || undefined }));
+    let changes = m.changes.map(c => ({ key: String((c && c.key) || ''), ref: (c && c.ref) || null, before: (c && c.before) || null, after: c ? c.after : undefined, label: (c && c.label) || undefined }));
+    const guarded = await this._withoutCompoundParts(conn, changes);
+    if (!guarded.changes.length) return reply({ status: 'error', message: guarded.leftOut + ' Remove ' + (changes.length === 1 ? 'it' : 'them') + ' with × in the review, then set access on the compound field instead.' });
+    changes = guarded.changes;
     const started = Date.now();
     const ticket = String(m.ticket || '').replace(/\s+/g, ' ').trim().slice(0, 80) || undefined;
     const usesDeploy = changes.some(c => c.key.startsWith('recordType:'));
@@ -1480,7 +1524,7 @@ class MainPanel {
           }
         } catch (e) { local = { error: String(e.message || e) }; }
       }
-      reply({ status: 'saved', count: result.count, mismatches: result.mismatches, snapshotId: result.snapshotId, undo, local });
+      reply({ leftOut: guarded.leftOut, status: 'saved', count: result.count, mismatches: result.mismatches, snapshotId: result.snapshotId, undo, local });
     } catch (e) {
       this.s.log('Save to ' + item.apiName + ' failed' + (e.failedStep ? ' at "' + e.failedStep + '"' : '') + ': ' + (e.stack || e));
       await this.s.history.appendLog(this.ctx.projectDir, Object.assign(logBase, {

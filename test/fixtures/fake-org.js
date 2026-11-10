@@ -128,7 +128,7 @@ function createOrg(options) {
     psa(T.User[2], { PermissionSetId: '0PS00000000000GAAA', PermissionSetGroupId: '0PG000000000001AAA' }));
 
   // As in the reported sandbox: BotDefinition has no NamespacePrefix, EmailRoutingAddress has no DisplayName.
-  const FIELDS_OF = { BotDefinition: ['Id', 'DeveloperName', 'MasterLabel'], EmailRoutingAddress: ['Id', 'Address'] };
+  const FIELDS_OF = { BotDefinition: ['Id', 'DeveloperName', 'MasterLabel'], EmailRoutingAddress: ['Id', 'Address'], MutingPermissionSet: ['Id', 'DeveloperName', 'MasterLabel', 'Language'] };
   const DESCRIBE = {
     Lead: { name: 'Lead', label: 'Lead', fields: [
       { name: 'Id', label: 'Lead ID', type: 'id', permissionable: false, updateable: false, createable: false },
@@ -143,7 +143,10 @@ function createOrg(options) {
       { name: 'Score__c', label: 'Score', type: 'double', permissionable: true, updateable: false, createable: false, calculated: true },
       { name: 'Description', label: 'Description', type: 'textarea', permissionable: true, updateable: true, createable: true }
     ] },
-    Account: { name: 'Account', label: 'Account', fields: [{ name: 'Industry', label: 'Industry', type: 'picklist', permissionable: true, updateable: true, createable: true }] },
+    // Addresses as the reported org describes them: the compound field and its parts all "permissionable".
+    Account: { name: 'Account', label: 'Account', fields: [{ name: 'Industry', label: 'Industry', type: 'picklist', permissionable: true, updateable: true, createable: true }].concat(
+      ...['Billing', 'Shipping'].map(a => [{ name: a + 'Address', label: a + ' Address', type: 'address', permissionable: true, updateable: false, createable: false, compoundFieldName: null }].concat(
+        ['City', 'Country', 'GeocodeAccuracy', 'Latitude', 'Longitude', 'State', 'Street', 'PostalCode'].map(p => ({ name: a + p, label: a + ' ' + p, type: 'string', permissionable: true, updateable: true, createable: true, compoundFieldName: a + 'Address' }))))) },
     Event: { name: 'Event', label: 'Event', fields: [
       { name: 'Id', label: 'Activity ID', type: 'id', permissionable: false, updateable: false, createable: false },
       { name: 'Subject', label: 'Subject', type: 'combobox', permissionable: false, updateable: true, createable: true },
@@ -188,6 +191,11 @@ function createOrg(options) {
   }
   function listValues(s) { return (s.match(/'(?:[^'\\]|\\.)*'/g) || []).map(literal); }
   function query(q) {
+    // A semi-join (Id IN (SELECT AssigneeId FROM … WHERE …)) is answered by running the inner query.
+    q = q.replace(/(\w+) IN \(SELECT (\w+) FROM (\w+)((?: WHERE [^()]+)?)\)/g, (m, outer, field, table, where) => {
+      const vals = [...new Set(query('SELECT ' + field + ' FROM ' + table + where).records.map(r => r[field]).filter(v => v != null))];
+      return vals.length ? outer + ' IN (' + vals.map(v => "'" + v + "'").join(', ') + ')' : outer + " IN ('000000000000000AAA')";
+    });
     if (S.noActivationField && /HasActivationRequired/.test(q)) throw bad('No such column \'HasActivationRequired\' on entity \'PermissionSet\'');
     const audit = /FROM SetupAuditTrail WHERE CreatedDate = LAST_N_DAYS:(\d+) ORDER BY CreatedDate DESC LIMIT (\d+)$/.exec(q);
     if (audit) {
@@ -207,11 +215,12 @@ function createOrg(options) {
       return { totalSize: counts.size, done: true, records: [...counts].map(([id, n]) => ({ attributes: { type: 'AggregateResult' }, PermissionSetId: id, [perPs[1]]: n })) };
     }
     // Any single-field GROUP BY with a COUNT (no WHERE), e.g. SELECT ParentId, COUNT(Id) n FROM ObjectPermissions GROUP BY ParentId
-    const groupAny = /^SELECT (\w+), COUNT\(Id\) (\w+) FROM (\w+) GROUP BY \1$/.exec(q);
+    const groupAny = /^SELECT (\w+), COUNT\(Id\) (\w+) FROM (\w+)(?: WHERE (.+?))? GROUP BY \1$/.exec(q);
     if (groupAny) {
       if (!T[groupAny[3]]) throw Object.assign(new Error("sObject type '" + groupAny[3] + "' is not supported."), { code: 'INVALID_TYPE' });
       const counts = new Map();
-      for (const r of T[groupAny[3]]) counts.set(r[groupAny[1]], (counts.get(r[groupAny[1]]) || 0) + 1);
+      const source = groupAny[4] ? query('SELECT ' + groupAny[1] + ' FROM ' + groupAny[3] + ' WHERE ' + groupAny[4]).records : T[groupAny[3]];
+      for (const r of source) counts.set(r[groupAny[1]], (counts.get(r[groupAny[1]]) || 0) + 1);
       return { totalSize: counts.size, done: true, records: [...counts].map(([k, n]) => ({ attributes: { type: 'AggregateResult' }, [groupAny[1]]: k, [groupAny[2]]: n })) };
     }
     const grouped = /^SELECT SobjectType, COUNT\(Id\) (\w+) FROM FieldPermissions WHERE ParentId = '(\w+)' GROUP BY SobjectType$/.exec(q);
@@ -238,6 +247,9 @@ function createOrg(options) {
       if (!c.includes('.') && !FIELDS_OF[table].includes(c)) throw Object.assign(new Error('\n' + q + '\n' + ' '.repeat(Math.max(0, q.indexOf(c))) + '^\nERROR at Row:1:Column:' + (q.indexOf(c) + 1) + '\nNo such column \'' + c + '\' on entity \'' + table + '\'. If you are attempting to use a custom field, be sure to append the \'__c\' after the custom field name. Please reference your WSDL or the describe call for the appropriate names.'), { code: 'INVALID_FIELD' });
     }
     let rows = T[table].slice();
+    // Relationship fields Salesforce resolves for a WHERE: an assignment's permission set, a profile's licence.
+    if (table === 'PermissionSetAssignment') rows = rows.map(r => r.PermissionSet ? r : Object.assign({}, r, { PermissionSet: T.PermissionSet.find(x => x.Id === r.PermissionSetId) || null }));
+    if (table === 'Profile') rows = rows.map(r => r.UserLicense ? r : Object.assign({}, r, { UserLicense: T.UserLicense.find(x => x.Id === r.UserLicenseId) || null }));
     const val = (r, f) => { const v = get(r, f); return v === undefined ? null : v; };
     const test = (r, cond) => {
       let c;
@@ -348,7 +360,12 @@ function createOrg(options) {
         let err = null; let id = fields.Id;
         if (method === 'POST') {
           if (type === 'ObjectPermissions' && T.ObjectPermissions.some(x => x.ParentId === fields.ParentId && x.SobjectType === fields.SobjectType)) err = 'DUPLICATE_VALUE: duplicate value found: duplicates value on record';
-          if (type === 'ObjectPermissions' && !OBJECT_PERM_OBJECTS.includes(fields.SobjectType)) err = 'INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST: SObject Type Name: bad value for restricted picklist field: ' + fields.SobjectType;
+          if (type === 'FieldPermissions' && fields.Field) {
+            const [o, f] = String(fields.Field).split('.');
+            const d = DESCRIBE[o] && DESCRIBE[o].fields.find(x => x.name === f);
+            if (d && d.compoundFieldName) err = 'INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST: Field Name: bad value for restricted picklist field: ' + fields.Field;
+          }
+          if (!err && type === 'ObjectPermissions' && !OBJECT_PERM_OBJECTS.includes(fields.SobjectType)) err = 'INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST: SObject Type Name: bad value for restricted picklist field: ' + fields.SobjectType;
           if (type === 'FieldPermissions' && T.FieldPermissions.some(x => x.ParentId === fields.ParentId && x.Field === fields.Field)) err = 'DUPLICATE_VALUE: duplicate value found';
           if (type === 'SetupEntityAccess') {
             if (T.SetupEntityAccess.some(x => x.ParentId === fields.ParentId && x.SetupEntityId === fields.SetupEntityId)) err = 'DUPLICATE_VALUE: duplicate value found';

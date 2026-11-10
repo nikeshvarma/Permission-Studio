@@ -41,7 +41,7 @@
   let historyData = null;
   let lookupOptions = null;
   let historySetupData = null;      // Setup Audit Trail entries for History
-  let hf = { q: '', days: '7', item: '', result: '', setup: false, open: new Set() };
+  let hf = { q: '', days: '7', item: '', result: '', setup: false, open: new Set(), openLimit: new Map() };
   let recentLookups = [];
   let grantTemplates = [];
   let lastTicket = '';
@@ -563,10 +563,18 @@
    * Boxes are matched by kind (data-scroll-key, or tag and class) and their order on the page.
    */
   function scrollKey(e) { return e.getAttribute('data-scroll-key') || e.tagName + '.' + (typeof e.className === 'string' ? e.className : ''); }
+  /**
+   * The elements that can scroll: every selector app.css gives overflow auto or scroll (a test
+   * checks this list against the stylesheet, so a new scrolling box can't be forgotten). Scanning
+   * only these keeps a redraw quick on pages with thousands of elements. (The page can't read its
+   * own stylesheet's rules: it's served from another origin.)
+   */
+  const SCROLLERS = '[data-scroll-key], .record, .split-list, .card-body.flush, .modal-body, .review-scroll, ul.results, .scroll-y, .rv-scroll, .combo-list, .section-nav';
+  function scrollers(root) { return root.querySelectorAll(SCROLLERS); }
   function saveScrolls(root) {
     const saved = [];
     const seen = new Map();
-    for (const e of root.querySelectorAll('*')) {
+    for (const e of scrollers(root)) {
       const k = scrollKey(e);
       const i = seen.get(k) || 0;
       seen.set(k, i + 1);
@@ -578,7 +586,7 @@
     if (!saved.length) return;
     const want = new Map(saved.map(([k, i, t, l]) => [k + '#' + i, [t, l]]));
     const seen = new Map();
-    for (const e of root.querySelectorAll('*')) {
+    for (const e of scrollers(root)) {
       const k = scrollKey(e);
       const i = seen.get(k) || 0;
       seen.set(k, i + 1);
@@ -1063,6 +1071,9 @@
       h('td', { class: 'muted' }, cat === 'customPermission' ? (x.description || '') : x.namespace ? h('span', { class: 'pill', text: x.namespace }) : '')]);
   }
 
+  /** A save's identity in History, the same in the extension: when, what and how. */
+  function historyId(e) { return [e.at, e.target, e.path].join('|'); }
+
   // ---------- The health check ----------
   let hc = { data: null, busy: false, error: null, days: '30', sel: new Set(), extendDays: '90', fix: null, showManaged: false, showStandard: false, open: new Set(), limits: {} };
   // ---- health check
@@ -1137,17 +1148,18 @@
           text: fixLabel + (chosen.length ? ' ' + chosen.length : '') + '…' })]);
     };
     out.push(selectable('inactive', d.inactiveAssignments, 'Remove', 'remove'));
-    out.push(selectable('expiring', d.expiring, 'Extend', 'extend', select([['30', 'by 30 days'], ['90', 'by 90 days'], ['180', 'by 180 days']], hc.extendDays, v => { hc.extendDays = v; renderMain(); }, false, 'hc.extend', 'Extend by')));
+    out.push(selectable('expiring', d.expiring, 'Extend', 'extend', h('span', { title: 'Counted from each assignment’s current expiry date' }, select([['30', 'by 30 days'], ['90', 'by 90 days'], ['180', 'by 180 days']], hc.extendDays, v => { hc.extendDays = v; renderMain(); }, false, 'hc.extend', 'Extend by'))));
     const ups = d.unusedPermissionSets.filter(x => hc.showManaged || !x.managed);
     out.push(section('unusedPs', 'Unused permission sets', ups.length, 'info', () => table(['Permission set', 'API name', 'Inactive users assigned', ''],
       ups.map(x => h('tr', {}, [h('td', { class: 'strong' }, [x.label, x.managed ? h('span', { class: 'pill', text: 'Managed' }) : null]), h('td', { class: 'mono muted', text: x.apiName }), h('td', { class: 'muted', text: String(x.inactiveUsers) }), h('td', { class: 'c narrow' }, openItem(x.key))]))),
-      [toggle('Include managed packages', hc.showManaged, v => { hc.showManaged = v; renderMain(); }), h('span', { class: 'muted small', text: 'No active users and in no group. Delete in Setup if no longer needed.' })]));
+      [toggle('Include managed packages', hc.showManaged, v => { hc.showManaged = v; renderMain(); }), h('span', { class: 'muted small', text: 'No active users and in no group. A Flow or a user access policy may still assign one when it runs, so check before deleting it in Setup.' })]));
     out.push(section('unusedGroups', 'Unused permission set groups', d.unusedGroups.length, 'info', () => table(['Group', 'API name', 'Member permission sets', 'Inactive users assigned', ''],
-      d.unusedGroups.map(x => h('tr', {}, [h('td', { class: 'strong', text: x.label }), h('td', { class: 'mono muted', text: x.apiName }), h('td', { class: 'muted', text: String(x.members) }), h('td', { class: 'muted', text: String(x.inactiveUsers) }), h('td', { class: 'c narrow' }, openItem(x.key))])))));
+      d.unusedGroups.map(x => h('tr', {}, [h('td', { class: 'strong', text: x.label }), h('td', { class: 'mono muted', text: x.apiName }), h('td', { class: 'muted', text: String(x.members) }), h('td', { class: 'muted', text: String(x.inactiveUsers) }), h('td', { class: 'c narrow' }, openItem(x.key))]))),
+      [h('span', { class: 'muted small', text: 'No active users. A user access policy may still assign one when it runs, so check before deleting it in Setup.' })]));
     const upr = d.unusedProfiles.filter(x => hc.showStandard || !x.standard);
     out.push(section('unusedProfiles', 'Unused profiles', upr.length, 'info', () => table(['Profile', 'Inactive users', ''],
       upr.map(x => h('tr', {}, [h('td', { class: 'strong' }, [x.label, x.standard ? h('span', { class: 'pill', text: 'Standard' }) : null]), h('td', { class: 'muted', text: String(x.inactiveUsers) }), h('td', { class: 'c narrow' }, openItem(x.key))]))),
-      [toggle('Include standard profiles', hc.showStandard, v => { hc.showStandard = v; renderMain(); }), h('span', { class: 'muted small', text: 'No active users.' })]));
+      [toggle('Include standard profiles', hc.showStandard, v => { hc.showStandard = v; renderMain(); }), h('span', { class: 'muted small', text: 'No active users. Some may be kept for new users or licences, so check before deleting one in Setup.' })]));
     out.push(section('empty', 'Permission sets that grant nothing', d.emptyPermissionSets.length, 'info', () => table(['Permission set', 'API name', 'Active users', ''],
       d.emptyPermissionSets.map(x => h('tr', {}, [h('td', { class: 'strong', text: x.label }), h('td', { class: 'mono muted', text: x.apiName }), h('td', { class: 'muted', text: String(x.activeUsers) }), h('td', { class: 'c narrow' }, openItem(x.key))]))),
       [h('span', { class: 'muted small', text: 'No object, field, system, tab, app, Apex or other record-based access. They may still assign record types or other metadata-only settings.' })]));
@@ -1934,6 +1946,8 @@
   /** Results: filters as chips, users with who-and-why, an at-a-glance panel and the sources with next steps. */
   function lookupResults(r) {
     const out = [];
+    // A part of a compound field is answered for the compound field, where its access is set.
+    if (r.partOf) out.push(alertBox('info', r.partOf.field + ' is part of ' + r.partOf.compound + '. Its access is set there, so these results are for ' + r.partOf.compound + '.'));
     for (const x of r.sources) { x.objectVia = x.objectVia || []; x.fieldVia = x.fieldVia || []; }
     for (const u of (r.users || []).concat(r.inactive || [], r.partial || [])) { u.objectFrom = u.objectFrom || []; u.fieldFrom = u.fieldFrom || []; }
     const perm = !!r.permission;
@@ -2159,7 +2173,13 @@
     }
     if (deploys) out.push(alertBox('info', 'Record type assignments are saved with a Metadata API deploy per item, guarded by a full copy of its access.'));
     if (w.plan.skipped && w.plan.skipped.length) out.push(h('details', { class: 'card disclosure' }, [h('summary', { text: w.plan.skipped.length + ' skipped' }), h('ul', { class: 'plain' }, w.plan.skipped.map(x => h('li', {}, [h('strong', { text: x.label }), ' — ' + x.reason])))]));
-    if (w.progress) out.push(h('p', { class: 'muted status' }, [spinner(true), ' Saving ' + w.progress.label + ' (' + (w.progress.done + 1) + ' of ' + w.progress.total + ')']));
+    if (w.progress) {
+      const pr = w.progress;
+      // The item, then the save's own step: a 5,000-change save shows how far it has got.
+      const step = pr.step ? ' · ' + pr.step + (pr.stepTotal > 1 ? ' (step ' + Math.min(pr.stepDone + 1, pr.stepTotal) + ' of ' + pr.stepTotal + ')' : '') : '';
+      out.push(h('p', { class: 'muted status' }, [spinner(true), ' Saving ' + pr.label + (pr.total > 1 ? ' (' + (pr.done + 1) + ' of ' + pr.total + ')' : '') +
+        (pr.changes > 1 ? ', ' + pr.changes.toLocaleString() + ' changes' : '') + step]));
+    }
     if (w.applyError) out.push(alertBox('error', w.applyError));
     if (ctx.production && w.plan.plan && w.plan.plan.length) out.push(h('div', { class: 'confirm' }, [alertBox('warning', 'This is a production org.'), h('label', { text: 'Type ' + (ctx.org.alias || ctx.org.username) + ' to confirm' }),
       h('input', { type: 'text', class: 'text', value: w.confirm, 'data-fid': applyType + '.confirm', oninput: e => { w.confirm = e.target.value; const b = document.getElementById('wzApply'); if (b) b.disabled = !confirmOk(w.confirm); } })]));
@@ -2270,10 +2290,10 @@
       toggle('Include changes made in Setup', hf.setup, v => { hf.setup = v; if (!v) historySetupData = null; renderMain(); })])];
     // Nothing selected: Export covers every save shown.
     if (!picked.length && mine.length) out.push(h('div', { class: 'selbar' }, [h('span', { class: 'muted small', text: mine.length + (mine.length === 1 ? ' save shown' : ' saves shown') }),
-      h('button', { class: 'btn neutral', title: 'Every save shown as an Excel workbook: saves and every change', onclick: () => send({ type: 'export', what: 'history', snapshotIds: mine.map(r => r.e.snapshot).filter(Boolean) }), text: 'Export' })]));
+      h('button', { class: 'btn neutral', title: 'Every save shown as an Excel workbook: saves and every change', onclick: () => send({ type: 'export', what: 'history', entryIds: mine.map(r => historyId(r.e)) }), text: 'Export' })]));
     if (picked.length) out.push(h('div', { class: 'selbar' }, [h('span', { class: 'muted small', text: picked.length + ' selected' }),
       h('button', { class: 'btn neutral', onclick: () => copy(picked, 'markdown'), text: 'Copy summary' }),
-      h('button', { class: 'btn neutral', title: 'The selected saves as an Excel workbook: saves and every change', onclick: () => send({ type: 'export', what: 'history', snapshotIds: picked }), text: 'Export' }),
+      h('button', { class: 'btn neutral', title: 'The selected saves as an Excel workbook: saves and every change', onclick: () => send({ type: 'export', what: 'history', entryIds: copyable.filter(e => historyPicked.has(e.snapshot)).map(historyId) }), text: 'Export' }),
       h('button', { class: 'btn neutral', onclick: () => { historyPicked.clear(); renderMain(); }, text: 'Clear' })]));
     if (hf.setup && historySetupData && historySetupData.denied) out.push(alertBox('info', 'Changes made in Setup need the View Setup Audit Trail permission (from Winter ’27; View Setup before that).'));
     if (!all.length) { out.push(h('p', { class: 'empty-line', text: historyData.length ? 'Nothing matches these filters.' : 'No saves yet. Every save from this screen is recorded here.' })); return out; }
@@ -2297,10 +2317,13 @@
       const canPick = e.snapshot && e.changes && e.changes.length;
       const changes = e.changes || [];
       const open = hf.open.has(e.snapshot || e.at);
+      // Chips are built only for what's shown: 6, or 300 more each time "more" is clicked (a 5,000-change save stays light).
+      const limitChips = open ? (hf.openLimit.get(e.snapshot || e.at) || 300) : 6;
       const chips = [];
+      let chipCount = 0;
       for (const c of changes) {
         const name = c.key.slice(c.key.indexOf(':') + 1);
-        for (const x of changeChips(c.from, c.to)) chips.push(chip(x.sign, x.text + ' · ' + (c.label && !name.endsWith(c.label) ? c.label : name)));
+        for (const x of changeChips(c.from, c.to)) { if (chips.length < limitChips) chips.push(chip(x.sign, x.text + ' · ' + (c.label && !name.endsWith(c.label) ? c.label : name))); chipCount++; }
       }
       const status = e.result === 'failed' ? h('span', { class: 'st bad', text: 'Failed' }) : /^undo/.test(e.path || '') ? h('span', { class: 'st und', text: 'Undo' }) : e.result === 'created' ? h('span', { class: 'st ok', text: 'Created' }) : h('span', { class: 'st ok', text: 'Saved' });
       out.push(h('div', { class: 'ev' + (historyPicked.has(e.snapshot) ? ' sel' : '') }, [
@@ -2310,7 +2333,10 @@
             status, e.ticket ? h('span', { class: 'ticket', text: e.ticket }) : null]),
           h('div', { class: 'meta', text: timeOf(e.at) + ' · ' + (e.count != null ? e.count : changes.length) + ((e.count != null ? e.count : changes.length) === 1 ? ' change' : ' changes') + (e.path ? ' · ' + e.path : '') }),
           e.result === 'failed' && e.error ? h('div', { class: 'cur err', text: (e.failedStep ? e.failedStep + ': ' : '') + e.error }) : null,
-          chips.length ? h('div', { class: 'ch' }, (open ? chips : chips.slice(0, 6)).concat(chips.length > 6 ? [h('button', { class: 'link small', onclick: () => { if (open) hf.open.delete(e.snapshot || e.at); else hf.open.add(e.snapshot || e.at); renderMain(); }, text: open ? 'Show fewer' : '+' + (chips.length - 6) + ' more' })] : [])) : null]),
+          chips.length ? h('div', { class: 'ch' }, chips.concat(chipCount > 6 ? [
+            chipCount > chips.length ? h('button', { class: 'link small', onclick: () => { const id = e.snapshot || e.at; if (open) hf.openLimit.set(id, limitChips + 300); else hf.open.add(id); renderMain(); },
+              text: open ? 'Show ' + Math.min(300, chipCount - chips.length).toLocaleString() + ' more' : '+' + (chipCount - chips.length).toLocaleString() + ' more' }) : null,
+            open ? h('button', { class: 'link small', onclick: () => { const id = e.snapshot || e.at; hf.open.delete(id); hf.openLimit.delete(id); renderMain(); }, text: 'Show fewer' }) : null] : [])) : null]),
         h('div', { class: 'act' }, [canPick ? h('button', { class: 'btn neutral small', title: 'Copy this save as a Markdown table', onclick: () => copy([e.snapshot], 'markdown'), text: 'Copy' }) : null,
           e.snapshot && e.result !== 'failed' && e.key ? h('button', { class: 'btn neutral small', onclick: () => send({ type: 'undoSnapshot', snapshotId: e.snapshot }), text: 'Undo…' }) : null])]));
     }
@@ -2686,6 +2712,7 @@
               { label: 'Copy summary', run: () => send({ type: 'copySummary', snapshotIds: [m.snapshotId], format: 'markdown' }) }] : null });
           if (m.local && m.local.error) toast('warning', 'Saved to the org, but the local file could not be updated: ' + m.local.error, { sticky: true });
           if (m.local && m.local.skipped) toast('info', m.local.skipped + ' connected app change' + (m.local.skipped === 1 ? ' has' : 's have') + ' no place in the file and ' + (m.local.skipped === 1 ? 'was' : 'were') + ' left out of it.');
+          if (m.leftOut) toast('warning', m.leftOut, { title: 'Left out', sticky: true });
           if (m.mismatches && m.mismatches.length) toast('warning', m.mismatches.length + ' entries did not end up as requested; the screen shows what the org now holds.', { title: 'Check these', sticky: true });
           break;
         }
@@ -2773,7 +2800,8 @@
         if (ui.tool === 'lookup' || ui.tool === 'wizard') renderMain();
         break;
       case 'wizardPlan': wizard.busy = false; wizard.plan = m; if (ui.tool === 'wizard') renderMain(); break;
-      case 'wizardProgress': { const w = applyTarget === 'revoke' && lookup.revoke ? lookup.revoke : applyTarget === 'health' && hc.fix ? hc.fix : wizard; w.progress = { label: m.label, done: m.done, total: m.total }; renderMain(); break; }
+      case 'wizardProgress': { const w = applyTarget === 'revoke' && lookup.revoke ? lookup.revoke : applyTarget === 'health' && hc.fix ? hc.fix : wizard;
+        w.progress = { label: m.label, done: m.done, total: m.total, step: m.step || null, stepDone: m.stepDone, stepTotal: m.stepTotal, changes: m.changes }; renderMain(); break; }
       case 'wizardResult': {
         const w = applyTarget === 'revoke' && lookup.revoke ? lookup.revoke : applyTarget === 'health' && hc.fix ? hc.fix : wizard;
         w.progress = null;

@@ -361,7 +361,9 @@ async function mutingFor(conn, item) {
   const c = await conn.query('SELECT PermissionSetId FROM PermissionSetGroupComponent WHERE PermissionSetGroupId = ' + str(item.recordId));
   const ids = c.records.map(r => r.PermissionSetId).filter(id => /^0QM/.test(id));
   if (!ids.length) return null;
-  const m = await conn.query('SELECT Id, DeveloperName, MasterLabel, NamespacePrefix FROM MutingPermissionSet WHERE Id = ' + str(ids[0]));
+  // MutingPermissionSet has no NamespacePrefix in some orgs: ask for it only where the describe has it.
+  const ns = await conn.describe('MutingPermissionSet').then(d => (d.fields || []).some(f => f.name === 'NamespacePrefix')).catch(() => false);
+  const m = await conn.query('SELECT Id, DeveloperName, MasterLabel' + (ns ? ', NamespacePrefix' : '') + ' FROM MutingPermissionSet WHERE Id = ' + str(ids[0]));
   const r = m.records[0];
   return r ? { id: r.Id, name: (r.NamespacePrefix ? r.NamespacePrefix + '__' : '') + r.DeveloperName, label: r.MasterLabel } : null;
 }

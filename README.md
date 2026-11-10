@@ -114,13 +114,13 @@ Add or remove a group's member permission sets while Salesforce recalculates the
 
 ### Access health check
 
-The **Health** button in the top bar reads the whole org and lists what needs cleaning up or a second look:
+The **Health** button in the top bar reads the whole org (every permission set, group and profile, whichever lists you show) and lists what needs cleaning up or a second look:
 
 - **Integration users with admin access:** API Only users, and users on an integration licence, who hold Modify All Data, View All Data, Manage Users or other admin permissions.
 - **High-impact permissions:** everyone who holds Modify All Data, View All Data, Manage Users, Author Apex and the other org-wide permissions, and through which profile, permission set or group.
 - **Assignments to inactive users:** remove them in one reviewed save.
-- **Assignments that expire soon** (within 7 to 90 days): extend them by 30, 90 or 180 days.
-- **Unused permission sets, permission set groups and profiles:** no active users (and, for permission sets, in no group).
+- **Assignments that expire soon** (within 7 to 90 days): extend them by 30, 90 or 180 days from their current expiry date.
+- **Unused permission sets, permission set groups and profiles:** no active users (and, for permission sets, in no group). A Flow or a user access policy may still assign one when it runs, so check before deleting it in Setup.
 - **Permission sets that grant nothing:** no object, field, system, tab, app, Apex or other record-based access.
 
 Summary cards give the counts at a glance; click one to jump to its finding. Built for large orgs: a long finding shows 50 rows at a time (**Show more** adds 100), and **Select all** takes the whole finding, including rows not shown, so thousands of inactive users' assignments can be removed in one go. Fixes go through the same review, snapshot and undo as every other save. **Export** the findings as one Excel workbook: a summary and one sheet per finding.
@@ -312,6 +312,8 @@ There is no build step and there are no runtime dependencies: the extension is p
 
 ```
 npm test             the test suite (a stand-in Salesforce CLI and an in-memory org)
+npm run test:ui      the browser tests: the real screen in Chromium (needs Python and Playwright)
+npm run screenshots  regenerates the README screenshots
 npm run package      builds dist/permission-studio-<version>.vsix with only Node.js
 ```
 
@@ -325,7 +327,8 @@ src/xml/              reading and updating the project's source files
 src/views/            the Permission Studio page (extension side)
 media/                the page itself (app.js, app.css), icons and README images
 test/                 the test suite, a stand-in CLI and an in-memory org
-tools/                packaging, release notes and the README image check
+test/ui/              browser tests: the real screen in Chromium, used like a person would
+tools/                packaging, release notes, the README image check and screenshots
 docs/                 the design document and the QA report
 ```
 
