@@ -4,10 +4,12 @@
 // table: banded rows, filter buttons on the header, sortable, frozen below the
 // header. Cells can carry a colour (read, edit, delete, all, ok, risk, muted) and a
 // link. Results too large for one sheet are split across several.
-const { zip } = require('./zip');
+const { zip, zipAsync } = require('./zip');
 
 const MAX_ROWS = 1048576;
 const MAX_COLS = 16384;
+const MAX_CELL = 32767;  // characters in one cell
+const MAX_LINKS = 65530; // links on one sheet
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
   // XML 1.0 can't hold most control characters; Excel refuses a file that has them.
   .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
@@ -70,11 +72,13 @@ function sheetXml(sheet, index, tableId) {
     const c = cellOf(raw);
     if (c.v == null || c.v === '') return '';
     const ref = col(ci) + (ri + 1);
-    if (c.link) links.push({ ref, url: c.link });
-    const st = STYLE[c.link && !c.style ? 'link' : c.style] || 0;
+    const linked = c.link && links.length < MAX_LINKS;
+    if (linked) links.push({ ref, url: c.link });
+    const st = STYLE[linked && !c.style ? 'link' : c.style] || 0;
     const s = st ? ' s="' + st + '"' : '';
     if (typeof c.v === 'number' && isFinite(c.v)) return '<c r="' + ref + '"' + s + '><v>' + c.v + '</v></c>';
-    return '<c r="' + ref + '" t="inlineStr"' + s + '><is><t xml:space="preserve">' + esc(c.v) + '</t></is></c>';
+    const t = String(c.v);
+    return '<c r="' + ref + '" t="inlineStr"' + s + '><is><t xml:space="preserve">' + esc(t.length > MAX_CELL ? t.slice(0, MAX_CELL - 1) + '…' : t) + '</t></is></c>';
   }).join('') + '</row>').join('');
   const headRow = top + 1;
   const freezeRows = header.length ? headRow : 0;
@@ -119,8 +123,8 @@ function split(sheet) {
     : Array.from({ length: Math.ceil(p.rows.length / room) }, (_, i) => Object.assign({}, p, { name: p.name + ' ' + (i + 1), rows: p.rows.slice(i * room, (i + 1) * room) })));
 }
 
-/** sheets: [{ name, title?, info?, header, rows, freezeCols?, widths? }] → a .xlsx file as a Buffer. */
-function writeXlsx(sheets) {
+/** The workbook's parts: [[path, xml]]. */
+function workbookFiles(sheets) {
   const used = new Set();
   const named = sheets.flatMap(split).map(s => Object.assign({}, s, { name: sheetName(s.name, used) }));
   const built = [];
@@ -152,7 +156,12 @@ function writeXlsx(sheets) {
   });
   let t = 0;
   built.forEach(b => { if (b.table) files.push(['xl/tables/table' + (++t) + '.xml', b.table]); });
-  return zip(files);
+  return files;
 }
 
-module.exports = { writeXlsx, col, sheetName, STYLES, MAX_ROWS, MAX_COLS, split };
+/** sheets: [{ name, title?, info?, header, rows, freezeCols?, widths? }] → a .xlsx file as a Buffer. */
+function writeXlsx(sheets) { return zip(workbookFiles(sheets)); }
+/** The same, compressed without blocking VS Code (used for exports). */
+async function writeXlsxAsync(sheets) { return zipAsync(workbookFiles(sheets)); }
+
+module.exports = { writeXlsx, writeXlsxAsync, col, sheetName, STYLES, MAX_ROWS, MAX_COLS, MAX_CELL, MAX_LINKS, split };

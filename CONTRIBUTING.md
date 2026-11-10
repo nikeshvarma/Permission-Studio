@@ -15,13 +15,26 @@ You need Node.js 18 or later and Git. There are no dependencies to install.
 ```
 git clone https://github.com/<your-fork>/permission-studio.git
 cd permission-studio
-npm test                 runs the test suite
+npm test                 runs the test suite (backend, saving, the screen's logic)
+npm run test:ui          runs the browser tests (the real screen in Chromium)
+npm run screenshots      regenerates the README screenshots in media/readme
 npm run package          builds dist/permission-studio-<version>.vsix
 ```
 
 To try your changes, open the folder in VS Code and press **F5** to start an Extension Development Host, or install the built `.vsix` with `code --install-extension`.
 
 The test suite uses a stand-in Salesforce CLI (a shell script) and a small in-memory org, so it runs on macOS, Linux and WSL. On plain Windows, run it in WSL; GitHub Actions also runs it on every pull request.
+
+The browser tests (`test/ui`) open the real screen (`media/app.js`, `media/app.css`) in Chromium and use it the way a person would: the layout at four laptop sizes, one design for every element, lists that keep their place, the health check with an org-sized dataset, saving, History. They need Python 3 and Playwright:
+
+```
+pip install playwright pillow
+python -m playwright install chromium
+npm run test:ui                      all of them (about two minutes)
+python3 test/ui/run_all.py run17     just one
+```
+
+Set `CHROME=/path/to/chrome` to use a Chrome you already have, and `UI_SLOW=4` to run every page with its CPU slowed four times, like a busy CI machine. The tests hand the page its messages synchronously (see `DELIVER` in `test/ui/common.py`), so a check never runs before the page has handled what it was sent. When they fail on GitHub, their screenshots are attached to the run as `ui-screenshots`. GitHub Actions runs them on every pull request too. Run them, and `npm run screenshots` if the screen changed, before sending a change to the screen.
 
 ## How the code is organised
 
@@ -35,13 +48,15 @@ The test suite uses a stand-in Salesforce CLI (a shell script) and a small in-me
 | `src/xml` | Reading and updating permission set and profile files |
 | `src/views`, `media` | The screen (a webview) |
 | `test` | Tests, the stand-in CLI and the in-memory org |
+| `test/ui` | Browser tests: page harnesses that load the real screen, sample data, and the checks |
+| `tools/screenshots` | The scripts that make the README screenshots |
 
 `docs/DESIGN.md` explains the main decisions, including how saving is guarded.
 
 ## Pull requests
 
 - **Keep each pull request to one change,** and explain the problem it solves.
-- **Add or update a test** for new behaviour, and make sure `npm test` passes.
+- **Add or update a test** for new behaviour, and make sure `npm test` passes. For a change to the screen, `npm run test:ui` too.
 - **Add a line to `CHANGELOG.md`** under a new version heading.
 - **Keep the extension dependency-free:** plain JavaScript (CommonJS) and the VS Code API only.
 - **Anything that writes to an org must go through the save path in `src/changes/apply.js`,** so it gets the review, the conflict check, the snapshot and the read-back.

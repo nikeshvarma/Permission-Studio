@@ -1,0 +1,19 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+  html,body{margin:0;height:100%}
+  body{background:#0e2a5c;display:flex;align-items:center;justify-content:center;font-family:"Noto Sans CJK JP",sans-serif}
+  .win{width:1440px;border-radius:10px;overflow:hidden;box-shadow:0 30px 80px rgba(3,12,32,.55),0 0 0 1px rgba(255,255,255,.08)}
+  .bar{height:34px;background:var(--bar);display:flex;align-items:center;padding:0 12px;gap:8px;color:var(--bartext);font-size:12px}
+  .dots{display:flex;gap:7px;margin-right:10px}.dots i{width:11px;height:11px;border-radius:50%;display:block}
+  .tabs{height:36px;background:var(--tabs);display:flex;align-items:flex-end;border-bottom:1px solid var(--edge)}
+  .tab{height:35px;display:flex;align-items:center;gap:7px;padding:0 14px;font-size:13px;color:var(--tabtext);border-right:1px solid var(--edge)}
+  .tab.on{background:var(--editor);color:var(--tabon);border-top:1px solid #0078d4;margin-top:-1px}
+  .tab img{width:16px;height:16px}
+  iframe{display:block;width:1440px;height:820px;border:0;background:var(--editor)}
+  .dark{--bar:#181818;--bartext:#9d9d9d;--tabs:#181818;--edge:#2b2b2b;--tabtext:#9d9d9d;--tabon:#ffffff;--editor:#1f1f1f}
+  .light{--bar:#dddddd;--bartext:#555;--tabs:#f3f3f3;--edge:#e5e5e5;--tabtext:#6f6f6f;--tabon:#333;--editor:#ffffff}
+</style></head><body>
+<div class="win dark">
+  <div class="bar"><span class="dots"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span>acme-sales-app — Visual Studio Code</div>
+  <div class="tabs"><div class="tab"><span style="color:#cbcb41">{ }</span> sfdx-project.json</div><div class="tab on"><img src="tab-dark.svg"> Permission Studio</div></div>
+  <iframe src="webview-dark.html"></iframe>
+</div></body></html>

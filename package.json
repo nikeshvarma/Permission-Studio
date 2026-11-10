@@ -2,7 +2,7 @@
   "name": "permission-studio",
   "displayName": "Permission Studio",
   "description": "View and edit Salesforce permission sets, permission set groups and profiles for your project's default org, right inside VS Code.",
-  "version": "2.5.4",
+  "version": "2.6.1",
   "publisher": "nikeshvarma",
   "author": {
     "name": "Nikesh Varma"
@@ -268,6 +268,8 @@
   },
   "scripts": {
     "test": "node test/smoke.js",
+    "test:ui": "python3 test/ui/run_all.py",
+    "screenshots": "python3 tools/screenshots/make.py",
     "package": "node tools/package.js",
     "package:vsce": "npx @vscode/vsce package --no-dependencies --out dist/"
   }

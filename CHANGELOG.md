@@ -2,6 +2,43 @@
 
 All notable changes to Permission Studio. Versions follow `major.minor.patch`; every delivered change raises the patch number.
 
+## 2.6.1
+
+Tests only; the extension is unchanged.
+
+- Fixed: a browser test (Find access, `run3.py`) failed on GitHub Actions and passed locally. The tests handed the page its messages with `window.postMessage`, which delivers them later as a separate task, and a check that followed straight away could run first, depending on the browser's scheduling (GitHub's newer Chromium ran it first). The tests now deliver messages synchronously, so the page has always handled a message before the test looks; this applies to all 19 places tests send messages.
+- `UI_SLOW=4` runs the browser tests with the CPU slowed four times, like a busy CI machine; all 17 pass that way too.
+- When the browser tests fail on GitHub, their screenshots are attached to the run (`ui-screenshots`).
+
+## 2.6.0
+
+Every issue found in the 2.5 review, fixed and covered by a test.
+
+**Health check**
+- Checks every permission set, group and profile, whichever lists are shown. With the default lists (no groups), unused groups were always 0 and assignments made through a group couldn't be fixed.
+- Reads only what it needs, so it stays quick in orgs with many users: no profile assignments (one per user), user counts per profile instead of every user, and the details only of users with an assignment or a high-impact profile.
+- Extend counts from each assignment's current expiry date (it counted from today, so "by 30 days" on one ending in 5 days added 25).
+- Big fixes show real progress (the item, how many changes, and the save's step) instead of "1 of 1" until the end.
+- Unused items say that a Flow or a user access policy may still assign them; a permission that can't be checked says why (this org or its API version doesn't have it).
+
+**Exports**
+- History's Export covers this org's saves only, includes saves without a snapshot (renames, clones), and never exports everything when nothing is chosen.
+- Excel's limits are respected (32,767 characters in a cell, 65,530 links on a sheet), and compressing a large workbook no longer blocks VS Code.
+- Open and Show in folder open only the files exported in this session.
+
+**Screen**
+- History draws a save's first 6 changes, then 300 at a time: a 5,000-change save no longer builds 5,000 chips on every redraw.
+- Keeping lists in place on a redraw looks only at the boxes that can scroll: a redraw on a page with 15,000 elements takes about 17 ms (it spent about 90 ms on this alone). A test checks the list of scrolling boxes against the stylesheet.
+
+**Tests**
+- The browser tests are now in the repository (`test/ui`, `npm run test:ui`) and run in CI on every push: 17 of them, from the basics to the layout audit at laptop sizes, the design check, scrolling, the health check with an org-sized dataset, and big saves and History entries.
+- The README screenshots are made by `npm run screenshots` (`tools/screenshots`).
+
+## 2.5.5
+
+- Fixed: saving field access on Account (and any object with an address or geolocation field) failed with "INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST … Account.BillingCity" and the same for every address part. Field-level security is set on the compound field (Billing Address), never on its parts, but the describe calls the parts permissionable, so Object Settings and Grant field access offered them. The parts are no longer listed (as in Setup); a save that still contains them (changes staged before this version) leaves them out and says which, and Find access answers a part (Account.BillingCity) for its compound field.
+- Fixed: Muted Permissions showed "INVALID_FIELD … No such column 'NamespacePrefix' on entity 'MutingPermissionSet'" after creating a muting permission set, and for any group that had one. The muting permission set was created and linked; only reading it back failed. It's now read with the fields the org has.
+
 ## 2.5.4
 
 - README brought up to date: the Health button and how the health check handles large orgs (summary cards, 50 rows at a time with Show more, Select all across the whole finding), lists that keep their place while you work, and every screenshot taken from the current screen.
