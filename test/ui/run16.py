@@ -47,7 +47,7 @@ async def main():
     await post({"type":"health","data":json.load(open(DATA / 'health-big.json'))}); await pg.wait_for_timeout(200)
     h=await pg.evaluate("""()=>({rows: document.querySelectorAll('main tbody tr').length, nested: document.querySelectorAll('main .scroll-y').length, more: [...document.querySelectorAll('.hc-more')].map(e=>e.innerText.replace(/\\n/g,' ')),
       tabs: !!document.querySelector('.rp-tabs'), matrix: document.body.innerText.includes('Access matrix'), title: document.querySelector('main h1') && document.querySelector('main h1').textContent})""")
-    check("7 no boxes inside boxes, and long findings start with 50 rows", h['nested']==0 and h['rows']<=50*6+12 and any('Showing 50 of 5,345' in m for m in h['more']), h)
+    check("7 each finding's table scrolls in its own box, and long findings start with 50 rows", h['nested']>=5 and h['rows']<=50*6+12 and any('Showing 50 of 5,345' in m for m in h['more']), h)
     check("8 no access matrix anywhere", not h['tabs'] and not h['matrix'], h)
     await pg.click("#hc-inactive .hc-more button:has-text('Show 100 more')"); await pg.wait_for_timeout(60)
     check("7 'Show 100 more' adds rows", 'Showing 150 of 5,345' in await pg.inner_text("#hc-inactive"))

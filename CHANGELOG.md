@@ -2,6 +2,75 @@
 
 All notable changes to Permission Studio. Versions follow `major.minor.patch`; every delivered change raises the patch number.
 
+## 2.6.14
+
+- README brought up to date with 2.6.2 to 2.6.13: the full-page review with its progress bar and Saved / Not saved rows, the checks made before anything is written, one request for bulk saves, History's "Saved with differences", read-only muting, and the limitations. Screenshots regenerated from the current screens.
+
+## 2.6.13
+
+- **The save never sends a field permission Salesforce defines as invalid**, whichever screen the change came from (the screens already prevented it; the save now checks too). Each field change is checked against the object's describe: the field must exist and take field permissions, and read-only fields (formula, auto-number, system) take Read only.
+
+## 2.6.12
+
+- **System permissions that need object access are checked before saving.** Salesforce lists these in PermissionDependency (for example, Activate Contracts needs Read and Edit on Contract). Permission Studio used only the system-to-system ones; it now reads the object requirements too, and stops a save that turns such a permission on without that access: "Activate Contracts needs Read and Edit on Contract. Add them in Object Settings, or remove it." Modify All Data counts as every object. Requirements written in a form Permission Studio doesn't recognise are listed once in Show Log.
+
+## 2.6.11
+
+- **Fixed: "INVALID_ID_FIELD … is not a valid Salesforce ID for the type Field Permissions".** With View All Fields on an object, Salesforce shows Read on every field through placeholder rows that aren't records (Ids like 00000007FZp7Wmu). Permission Studio tried to update them. Granting Edit on such a field now adds a real field permission; removing Read that comes from View All Fields is stopped before anything is written, with the reason.
+
+## 2.6.10
+
+- **The review is a full page.** Reviewing changes, for one item or from the Grant screens, Find access and the health check, now fills the Permission Studio page: the title at the top, Cancel and Save at the bottom, and the change table taking the space between, instead of a small dialog.
+
+## 2.6.9
+
+- **Shorter messages.** A partial save now reads "1 of 2 changes were saved." on one line and Salesforce's reason, with what to do, on the next. Messages keep their line breaks. Notices across the screen say only what you need: the group, audit trail, health check, muting, clone, deploy, Modify All Data and profile notes lost their extra explanations and hints.
+
+## 2.6.8
+
+- **When a save fails partway, the review shows what was saved.** Permission Studio reads every change back from the org and marks each row of the review **Saved** or **Not saved**. Saved rows stay in the table (with nothing to remove); the rest can be adjusted or removed, and Save then saves only those. The message says how many were saved and gives Salesforce's reason; History keeps which changes were saved, and Show Log has the count.
+
+## 2.6.7
+
+- **Fixed: saving a profile's system permissions failed** with "You can't create, edit, or delete this permission set because it's associated with a profile". A profile's system permissions are now saved on the Profile record, as Salesforce requires; permission sets are unchanged.
+- **A profile with Modify All Data takes no object permissions.** It already has full access to every object, and Salesforce refuses object permission records on it ("Cannot insert a record if parent permission set has Modify All Data permission enabled"). The save now stops before writing anything and says so, naming the object changes to remove from the review.
+
+## 2.6.6
+
+- **Fixed: "DUPLICATE_VALUE: Duplicate SetupEntityAccess" when granting custom metadata types or custom settings.** Salesforce Ids come in 15- and 18-character forms. These lists take each item's Id from EntityDefinition.DurableId, the 15-character form, while a permission set's access rows hold the 18-character one, so access that was already granted showed as not granted, and ticking it made the save try to add it again. Ids are now matched on either form, so granted items show as granted and nothing is added twice.
+- The same fix for Compare, which left custom metadata types and custom settings out of comparisons, and for page layouts of custom objects, which are now found whichever form the org stores.
+
+## 2.6.5
+
+- **Fixed: assignment expiry dates could be a day off.** Salesforce stores an expiry as a date and time; in time zones ahead of UTC it can be midnight local time, which is the day before in UTC. Permission Studio read the UTC day, so a correct save looked wrong ("entries did not end up as requested"), and expiry dates set in Setup could show a day early. Midnight UTC is now read as a plain date, and any other time as the date on your clock, in the Assignments list, the save's check and the health check.
+- **A save that ends differently says what differs.** The message names the entries and what the org has (for example "expiry: asked 2026-11-30, the org has 2026-11-29"); History shows "Saved with differences" with the same details; Show Log has a line for each, with the value Salesforce stored.
+- **Object Settings lists only objects the org describes.** Salesforce allows some objects in ObjectPermissions that an org can't describe (a feature that isn't on, or an object hidden from the user); Setup doesn't show them and opening one failed with NOT_FOUND. They aren't listed any more.
+
+## 2.6.4
+
+- **Muted permissions are read-only.** Muted Permissions shows everything the group's muting permission set turns off, section by section, as Salesforce stores it (a muting permission set has the same sections as a permission set): object permissions, including View All Fields; field permissions; system permissions; apps; Apex classes; Visualforce pages; flows; custom permissions; custom metadata types; custom settings; record types; and tab settings. It is searchable. Muting is changed in Setup; Permission Studio no longer mutes, unmutes or creates muting permission sets, and refuses a muting change if one was staged by an older version.
+- Groups otherwise work as before: add or remove member permission sets, and change assignments.
+
+## 2.6.3
+
+- The progress bar keeps moving while a save runs: it eases on towards the next step between updates, with moving stripes and a percentage (still when the system asks for reduced motion).
+- The review reads plainly when muting: "Users lose View All on Account".
+- A deploy step says what it deploys ("Deploying muted permissions", "Deploying the password policy" and so on); it was blank for muting, profile settings and the newer kinds of access.
+- When Salesforce refuses a muting deploy, the muting XML that was sent is written to Permission Studio: Show Log, to find the cause.
+
+## 2.6.2
+
+- **Grant field access and Grant object access save in one request.** Every item's changes go together (as few requests as Composite allows: 25 subrequests of up to 200 records), so a permission set group isn't recalculated between one permission set and the next, and nothing waits for it. Each item still gets its own conflict check, snapshot and History entry; if the org refuses the one request, the items are saved one by one. Find access removals and health check fixes save the same way.
+- **One review everywhere.** The Grant screens, Find access removals and health check fixes open the same review dialog as a single save, with the changes grouped by permission set or profile, a filter, the ticket, and production confirmation.
+- **A progress bar while saving**, in every review: changes saved out of all of them, and what is happening now.
+- **Find access:** system and custom permissions are searched by typing, like objects and fields.
+- **User access:** search fields across every object (`Account.Rating`, or just `Rating`); custom permissions have a searchable, scrolling table like system permissions.
+- **Health check:** each finding has its own search and a scrolling table; Select all takes the rows the search shows.
+- **Pills:** lists of pills wrap evenly, with space between rows, so a second row lines up with the first everywhere.
+- **Removed:** Copy to permission set (copying a profile into a new permission set), and the Log button in the top bar (Permission Studio: Show Log is in the Command Palette).
+- The ticket box asks for a "User story or ticket number"; the review's notices use the same icons as every other notice.
+- Fixed: in a window 900 px wide or narrower, the page was squeezed into a thin strip once an item was open, and with nothing open there was no way to pick one.
+
 ## 2.6.1
 
 Tests only; the extension is unchanged.

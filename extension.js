@@ -168,7 +168,7 @@ function activate(context) {
       const all = lib && lib.core && lib.core.AuthInfo && lib.core.AuthInfo.listAllAuthorizations ? await lib.core.AuthInfo.listAllAuthorizations() : [];
       return all.map(a => ({ username: a.username, alias: (a.aliases && a.aliases[0]) || '' })).filter(o => o.username).sort((x, y) => (x.alias || x.username).localeCompare(y.alias || y.username));
     },
-    applyChanges: apply, showLog: () => out.show(true)
+    applyChanges: apply, applyMany: require('./src/changes/apply').applyMany, showLog: () => out.show(true)
   });
 
   // The default org lives in the project's .sf/config.json (or the older

@@ -64,7 +64,7 @@ async function loadObjectPermissions(conn, permissionSetId, model, ids, objects)
   const pages = await Promise.all(queries.map(q => conn.query(q)));
   for (const r of pages) for (const rec of r.records) {
     model.entries.set(key('object', rec.SobjectType), objectProps(rec, cols));
-    if (ids) ids.set(key('object', rec.SobjectType), rec.Id);
+    if (ids && realId(rec.Id)) ids.set(key('object', rec.SobjectType), rec.Id);
   }
   return cols;
 }
@@ -183,7 +183,10 @@ async function objectCatalog(conn) {
   const [g, perm] = await Promise.all([conn.globalDescribe(), permissionableObjects(conn)]);
   const labels = new Map(g.sobjects.map(s => [s.name, s.label || s.name]));
   if (perm.object) {
-    const names = new Set([...perm.object.keys(), ...(perm.field ? perm.field.keys() : [])]);
+    // Salesforce allows some objects in ObjectPermissions that this org can't describe (a feature that isn't
+    // on, or an object hidden from this user): Setup doesn't list them and they can't be opened, so neither do we.
+    const describes = n => !labels.size || labels.has(n);
+    const names = new Set([...perm.object.keys(), ...(perm.field ? perm.field.keys() : [])].filter(describes));
     return [...names].map(n => ({ name: n, label: labels.get(n) || perm.object.get(n) || (perm.field && perm.field.get(n)) || n, custom: /__c$/.test(n),
       objectPerms: perm.object.has(n), fieldPerms: !perm.field || perm.field.has(n) }))
       .sort((a, b) => a.label.localeCompare(b.label));
@@ -223,10 +226,12 @@ async function loadDetail(conn, item) {
     const results = await conn.queryMany([objQ, assigneeCountQuery(item), fieldQ].concat(sys.queries));
     const model = emptyModel(item.kind, item.apiName);
     const labels = new Map();
-    for (const rec of results[0].records) model.entries.set(key('object', rec.SobjectType), objectProps(rec, cols));
+    // Only objects the org describes (as in Setup); others can't be opened.
+    const describes = n => !objLabels.size || objLabels.has(n);
+    for (const rec of results[0].records) if (describes(rec.SobjectType)) model.entries.set(key('object', rec.SobjectType), objectProps(rec, cols));
     readSystem(results.slice(3), sysFields, model, labels);
     for (const k of model.entries.keys()) if (k.startsWith('object:')) labels.set(k, objLabels.get(k.slice(7)) || k.slice(7));
-    const fieldObjects = results[2].records.map(r => ({ name: r.SobjectType, label: objLabels.get(r.SobjectType) || r.SobjectType, fields: r.n || r.expr0 || 0,
+    const fieldObjects = results[2].records.filter(r => describes(r.SobjectType)).map(r => ({ name: r.SobjectType, label: objLabels.get(r.SobjectType) || r.SobjectType, fields: r.n || r.expr0 || 0,
       objectPermissions: !allowed || allowed.has(r.SobjectType) }))
       .sort((a, b) => a.label.localeCompare(b.label));
     return { model, labels, activeAssignees: results[1].totalSize, objectColumns: cols.map(c => c[1]), fieldObjects };
@@ -392,16 +397,47 @@ async function listEntities(conn, cat) {
 }
 
 /** Access rows of one permission set for a category: Map<entityId, accessRowId>. */
+/**
+ * Salesforce Ids come in 15- and 18-character forms (the 18 adds a 3-character checksum). Entity lists
+ * take some Ids from a DurableId, which is the 15-character form for custom objects (custom metadata
+ * types, custom settings), while SetupEntityAccess returns 18: compare on the first 15.
+ */
+/**
+ * A record Id, or a placeholder? With View All Fields (and similar), Salesforce returns rows that aren't
+ * records, with Ids like '00000007FZp7Wmu': they can't be updated or deleted.
+ */
+const realId = v => typeof v === 'string' && !/^0{5}/.test(v);
+const id15 = v => (typeof v === 'string' && /^[a-zA-Z0-9]{18}$/.test(v) ? v.slice(0, 15) : v);
+/** The 18-character form of a 15-character Id (Salesforce's checksum); other values unchanged. */
+function id18(v) {
+  if (typeof v !== 'string' || !/^[a-zA-Z0-9]{15}$/.test(v)) return v;
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ012345';
+  let out = v;
+  for (let i = 0; i < 3; i++) {
+    let n = 0;
+    for (let j = 0; j < 5; j++) if (/[A-Z]/.test(v[i * 5 + j])) n += 1 << j;
+    out += A[n];
+  }
+  return out;
+}
+/** A Map of Salesforce Ids that finds an entry by either form. */
+class IdMap extends Map {
+  get(k) { return super.get(id15(k)); }
+  has(k) { return super.has(id15(k)); }
+  set(k, v) { return super.set(id15(k), v); }
+}
+
 async function loadAccessRows(conn, permissionSetId, cat, entityIds) {
   const e = ENTITY[cat];
   const base = 'SELECT Id, SetupEntityId FROM SetupEntityAccess WHERE ParentId = ' + str(assertId(permissionSetId)) + ' AND SetupEntityType = ' + str(e.type);
   let queries = [base];
   if (entityIds) {
-    const render = g => base + ' AND SetupEntityId IN (' + g.map(str).join(', ') + ')';
+    const render = g => base + ' AND SetupEntityId IN (' + g.map(x => str(id18(x))).join(', ') + ')';
     queries = entityIds.length ? sliceByLength(entityIds, render, conn.maxQueryLength || 5000).map(render) : [];
   }
   const pages = await conn.queryMany(queries);
-  const out = new Map();
+  // Found by either form of the Id, so a 15-character DurableId matches its 18-character SetupEntityId.
+  const out = new IdMap();
   for (const p of pages) for (const r of p.records) out.set(r.SetupEntityId, r.Id);
   return out;
 }
@@ -444,6 +480,21 @@ async function loadTabsPage(conn, item, tabs) {
   return { items: list.map(t => Object.assign({}, t, { visibility: set.get(t.name) || 'None' })) };
 }
 
+/**
+ * An assignment's expiry as a calendar date (YYYY-MM-DD). ExpirationDate is a date and time: exactly
+ * midnight UTC is a plain date; any other time (such as midnight in the user's time zone, stored as
+ * 18:30 the day before for UTC+5:30) is read as the date on this machine's clock.
+ */
+function expiryDate(v) {
+  if (!v) return null;
+  const s = String(v);
+  if (!/T/.test(s) || /T00:00:00(\.0+)?(Z|\+00:?00)$/.test(s)) return s.slice(0, 10);
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s.slice(0, 10);
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
 /** Whether PermissionSetAssignment has ExpirationDate in this org, and its type. */
 async function expirationField(conn) {
   const d = await conn.describe('PermissionSetAssignment');
@@ -464,7 +515,7 @@ async function loadAssignments(conn, item) {
   return {
     readOnly: false, expiration: exp,
     items: r.records.map(a => ({ userId: a.AssigneeId, name: (a.Assignee && a.Assignee.Name) || a.AssigneeId, username: (a.Assignee && a.Assignee.Username) || '',
-      profile: (a.Assignee && a.Assignee.Profile && a.Assignee.Profile.Name) || '', active: !a.Assignee || a.Assignee.IsActive !== false, assigned: true, expires: a.ExpirationDate ? String(a.ExpirationDate).slice(0, 10) : null }))
+      profile: (a.Assignee && a.Assignee.Profile && a.Assignee.Profile.Name) || '', active: !a.Assignee || a.Assignee.IsActive !== false, assigned: true, expires: expiryDate(a.ExpirationDate) }))
   };
 }
 
@@ -669,14 +720,37 @@ async function permissionOptions(conn) {
  * CustomPermissionDependency. { system: { Name: [Required…] }, custom: { id: [requiredId…] } }.
  * Names are as the org reports them; the screen matches them to API names or labels.
  */
+/**
+ * An object permission a user permission requires, as PermissionDependency writes it: { object, flag } or null.
+ * Accepts 'Contract<Read>', 'Contract.Read', 'Contract:Read', 'Read Contract', 'ReadContract' (flag names as in
+ * ObjectPermissions: Read, Create, Edit, Delete, ViewAllRecords, ModifyAllRecords).
+ */
+const OBJ_FLAG = { read: 'read', create: 'create', edit: 'edit', delete: 'delete', viewall: 'viewAll', viewallrecords: 'viewAll', modifyall: 'modifyAll', modifyallrecords: 'modifyAll' };
+function objectRequirement(text) {
+  const t = String(text).trim().replace(/^Permissions/i, '');
+  const flag = f => OBJ_FLAG[String(f).toLowerCase().replace(/[\s_]/g, '')];
+  let m = /^([\w]+)\s*[<.:]\s*([A-Za-z ]+?)\s*>?$/.exec(t);
+  if (m && flag(m[2])) return { object: m[1], flag: flag(m[2]) };
+  m = /^(Read|Create|Edit|Delete|View ?All(?: ?Records)?|Modify ?All(?: ?Records)?)[\s_]*([A-Z]\w*)$/i.exec(t);
+  if (m && flag(m[1])) return { object: m[2], flag: flag(m[1]) };
+  return null;
+}
+
 async function permissionDependencies(conn) {
-  const out = { system: {}, custom: {}, problems: [] };
+  // objects: { UserPermission: [{ object, flag }] }: object access a system permission needs (such as
+  // Activate Contracts: Read and Edit on Contract). unparsed: object requirements in a form not recognised.
+  const out = { system: {}, custom: {}, objects: {}, unparsed: [], problems: [] };
   const add = (m, a, b) => { (m[a] = m[a] || []).includes(b) || m[a].push(b); };
   await Promise.all([
     conn.query('SELECT Permission, PermissionType, RequiredPermission, RequiredPermissionType FROM PermissionDependency', { tooling: true }).then(r => {
       for (const d of r.records) {
-        if (!/user/i.test(String(d.PermissionType || 'user')) || !/user/i.test(String(d.RequiredPermissionType || 'user'))) continue;
-        if (d.Permission && d.RequiredPermission) add(out.system, String(d.Permission), String(d.RequiredPermission));
+        if (!/user/i.test(String(d.PermissionType || 'user')) || !d.Permission || !d.RequiredPermission) continue;
+        if (/user/i.test(String(d.RequiredPermissionType || 'user'))) { add(out.system, String(d.Permission), String(d.RequiredPermission)); continue; }
+        if (/object/i.test(String(d.RequiredPermissionType))) {
+          const req = objectRequirement(String(d.RequiredPermission));
+          if (req) (out.objects[d.Permission] = out.objects[d.Permission] || []).some(x => x.object === req.object && x.flag === req.flag) || out.objects[d.Permission].push(req);
+          else out.unparsed.push(d.Permission + ' → ' + d.RequiredPermission);
+        }
       }
     }).catch(e => out.problems.push('PermissionDependency: ' + e.message)),
     conn.query('SELECT CustomPermissionId, RequiredCustomPermissionId FROM CustomPermissionDependency').then(r => {
@@ -791,7 +865,7 @@ async function whoHasAccess(conn, q) {
     partial: partial.sort((a, b) => a.name.localeCompare(b.name)), inactive: inactiveGranted.sort((a, b) => a.name.localeCompare(b.name)) };
 }
 
-module.exports = { compoundParts, compoundPartsOf, loadDetail, loadObjectDetail, loadObjectPermissions, loadSystemPermissions, loadFieldRows, loadFieldPermissions,
+module.exports = { objectRequirement, realId, id15, id18, expiryDate, compoundParts, compoundPartsOf, loadDetail, loadObjectDetail, loadObjectPermissions, loadSystemPermissions, loadFieldRows, loadFieldPermissions,
   systemPermissionFields, objectCatalog, objectPermissionNames, objectColumns, sliceByLength, OBJECT_FIELDS, ENTITY,
   listEntities, loadAccessRows, loadEntityAccess, listRecordTypes, loadGroupComponents, groupStatus, listTabs, loadTabSettings,
   loadTabsPage, loadAssignments, expirationField, searchUsers, loadObjectAccessFor, whoHasAccess, TAB_FROM_API, whoHasPermission,

@@ -27,6 +27,6 @@ async def main():
     rows=await pg.locator("tbody tr td.strong").all_inner_texts(); assert rows==["Event"], rows
     await pg.fill("[data-fid='search.objects']",""); await pg.dispatch_event("[data-fid='search.objects']","input"); await pg.wait_for_timeout(250)
     rows=await pg.locator("tbody tr td.strong").all_inner_texts(); assert "Task" not in rows and "Event" in rows, rows
-    await pg.screenshot(path="fieldobjects.png", clip={"x":330,"y":200,"width":1070,"height":520})
+    await pg.screenshot(path=f"{OUT}/fieldobjects.png", clip={"x":330,"y":200,"width":1070,"height":520})
     print("ok; errors:", errs); await b.close()
 asyncio.run(main())

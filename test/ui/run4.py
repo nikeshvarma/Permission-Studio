@@ -30,7 +30,7 @@ async def main():
     await pg.click("ul.results button:has-text('Add')")
     await pg.click("[aria-label='In group: Sales Operations']")
     assert "2 unsaved changes" in await pg.inner_text(".docked-footer")
-    await pg.screenshot(path="g_members.png")
+    await pg.screenshot(path=f"{OUT}/g_members.png")
     await pg.click(".docked-footer button.brand"); await pg.wait_for_timeout(30)
     t=await pg.inner_text(".modal"); assert "Permission Sets in Group (2)" in t and "Included: No → Yes" not in t or True
     await pg.click("#saveBtn")
@@ -41,7 +41,7 @@ async def main():
     await post({"type":"groupStatus","key":"group:1","status":"Updating"}); await pg.wait_for_timeout(30)
     assert "Salesforce is recalculating" in await pg.inner_text("main")
     assert "Updating" in await pg.inner_text(".split-item.on")
-    await pg.screenshot(path="g_updating.png")
+    await pg.screenshot(path=f"{OUT}/g_updating.png")
     await pg.click(".toast >> text=Copy summary")
     assert (await last("copySummary"))=={"type":"copySummary","snapshotIds":["snap-g"],"format":"markdown"}
     await post({"type":"groupStatus","key":"group:1","status":"Updated"}); await pg.wait_for_timeout(30)
@@ -60,7 +60,7 @@ async def main():
     c=await last("export"); assert c["what"]=="history" and len(c["entryIds"])==2 and all(i.count("|")==2 for i in c["entryIds"]), c
     await pg.click(".ev >> nth=0 >> button:has-text('Copy')")
     assert (await last("copySummary"))=={"type":"copySummary","snapshotIds":["snap-g"],"format":"markdown"}
-    await pg.screenshot(path="g_history.png")
+    await pg.screenshot(path=f"{OUT}/g_history.png")
     print("ok; errors:", errs)
     await b.close()
 asyncio.run(main())

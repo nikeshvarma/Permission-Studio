@@ -14,7 +14,7 @@ async def main():
       await post(ctx); await post({"type":"lists","lists":lists,"kinds":["permissionSet","group","profile"],"savedAt":now,"refreshing":False}); await pg.wait_for_timeout(50)
       await pg.click("text=Sales Operations"); assert (await sent())[-1]=={"type":"select","key":"permissionSet:1"}
       await post(detail); await pg.wait_for_timeout(50)
-      if theme=="light": await pg.screenshot(path="light_detail.png"); 
+      if theme=="light": await pg.screenshot(path=f"{OUT}/light_detail.png"); 
       await pg.click("td:has-text('Lead')")
       s=(await sent())[-2]; assert s=={"type":"openObject","key":"permissionSet:1","object":"Lead"}, s
       await post(objd); await pg.wait_for_timeout(50)
@@ -31,7 +31,7 @@ async def main():
       autos=await pg.locator(".perm-grid .auto").count(); assert autos==0, autos  # read/edit/delete/viewAll were already on
       await pg.click("label.cb:has-text('View All Fields') input")
       assert "2 unsaved changes" in (await pg.inner_text(".docked-footer"))
-      await pg.screenshot(path=f"{theme}_object.png")
+      await pg.screenshot(path=f"{OUT}/{theme}_object.png")
       # Bulk: Edit Access header for all shown fields
       await pg.click("th label.cb:has-text('Edit Access') input")
       n=await pg.locator("tr.row-edited").count()
@@ -39,12 +39,12 @@ async def main():
       await pg.click(".docked-footer button.brand")
       await pg.wait_for_timeout(50)
       if not await pg.is_visible(".modal"):
-        await pg.screenshot(path="debug.png"); print("ERRS", errs); print(await pg.evaluate("document.querySelector('.overlay').outerHTML.slice(0,400)"))
+        await pg.screenshot(path=f"{OUT}/debug.png"); print("ERRS", errs); print(await pg.evaluate("document.querySelector('.overlay').outerHTML.slice(0,400)"))
       assert await pg.is_visible(".modal")
       assert await pg.is_disabled("#saveBtn"), "production confirm required"
       await pg.fill("#confirm","uat")
       assert not await pg.is_disabled("#saveBtn")
-      await pg.screenshot(path=f"{theme}_review.png")
+      await pg.screenshot(path=f"{OUT}/{theme}_review.png")
       await pg.click("#saveBtn")
       s=(await sent())[-1]; assert s["type"]=="save" and s["confirm"]=="uat" and s["object"]=="Lead", s
       keys=sorted(c["key"] for c in s["changes"])
@@ -54,12 +54,12 @@ async def main():
       lead=[c for c in s["changes"] if c["key"]=="object:Lead"][0]["after"]
       assert lead["modifyAll"] and lead["viewAllFields"] and lead["read"]
       await post({"type":"saveProgress","key":"permissionSet:1","label":"Adding field access","done":1,"total":3}); await pg.wait_for_timeout(30)
-      assert "Adding field access (2 of 3)" in await pg.inner_text(".modal")
+      pb=await pg.inner_text(".modal .save-progress"); assert "Adding field access" in pb and "Step 2 of 3" in pb and await pg.get_attribute(".modal .save-progress", "aria-valuenow") is not None, pb
       await post({"type":"saveResult","key":"permissionSet:1","status":"saved","count":len(keys),"mismatches":[],"snapshotId":"x","undo":[{"key":"field:Lead.Description","after":{"read":False,"edit":False}}]})
       await pg.wait_for_timeout(50)
       assert not await pg.is_visible(".modal") and await pg.locator(".docked-footer").is_hidden()
       assert "saved to Sales Operations" in await pg.inner_text(".toasts")
-      await pg.screenshot(path=f"{theme}_saved.png")
+      await pg.screenshot(path=f"{OUT}/{theme}_saved.png")
       # Fresh data arrives, then Undo stages the old value for review
       od2=json.loads(json.dumps(objd)); [f.update(read=True,edit=True) for f in od2["data"]["fields"] if f["apiName"]=="Description"]
       await post(od2); await pg.wait_for_timeout(30)
@@ -79,14 +79,14 @@ async def main():
       await pg.click(".nav-item:has-text('System Permissions')")
       await pg.click("[aria-label='Export Reports']")
       assert "1 unsaved change" in await pg.inner_text(".docked-footer")
-      await pg.screenshot(path=f"{theme}_system.png")
+      await pg.screenshot(path=f"{OUT}/{theme}_system.png")
       await pg.click(".docked-footer button.neutral")
       # Read-only group
       await pg.click("button.kind:has-text('Groups')"); await pg.click("text=Sales Bundle")
       g=json.loads(json.dumps(detail)); g["key"]="group:1"; g["data"]["header"].update(label="Sales Bundle",kind="Permission Set Group",kindId="group",editable=True,editableCats=["assignment"],readOnlyReason="Permission set group access comes from its permission sets and muting. Edit those permission sets instead.")
       await post(g); await pg.wait_for_timeout(50)
       assert await pg.is_disabled("[aria-label='Export Reports']")
-      if theme=="dark": await pg.screenshot(path="dark_group.png")
+      if theme=="dark": await pg.screenshot(path=f"{OUT}/dark_group.png")
       print(theme, "ok; bulk-edited rows:", n, "errors:", errs)
       await pg.close()
     await b.close()

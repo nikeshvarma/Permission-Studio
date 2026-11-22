@@ -3,6 +3,7 @@
 // is worked out from the org's records; nothing is changed here (fixes go through
 // the usual review and save).
 const insight = require('./insight');
+const { expiryDate } = require('./loader');
 const { chunk, str } = require('./soql');
 
 /** System permissions that reach across the whole org. */
@@ -71,13 +72,13 @@ async function healthCheck(conn, items, options) {
 
   // ---- assignments to inactive users, and assignments that expire soon
   const assignmentRow = a => { const src = sourceOf(a) || {}; return Object.assign(person(userById.get(a.AssigneeId) || { Id: a.AssigneeId, Name: a.AssigneeId }),
-    { assignmentId: a.Id, key: src.key || null, itemLabel: src.label || a.PermissionSetGroupId || a.PermissionSetId, kind: src.kind || (a.PermissionSetGroupId ? 'group' : 'permissionSet'), expires: day(a.ExpirationDate) }); };
+    { assignmentId: a.Id, key: src.key || null, itemLabel: src.label || a.PermissionSetGroupId || a.PermissionSetId, kind: src.kind || (a.PermissionSetGroupId ? 'group' : 'permissionSet'), expires: expiryDate(a.ExpirationDate) }); };
   const inactiveAssignments = assigns.filter(a => { const u = userById.get(a.AssigneeId); return u && !u.IsActive; })
     .map(assignmentRow).sort((x, y) => x.name.localeCompare(y.name) || x.itemLabel.localeCompare(y.itemLabel));
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const limit = new Date(today.getTime() + days * 86400e3);
-  const expiring = assigns.filter(a => { if (!a.ExpirationDate) return false; const u = userById.get(a.AssigneeId); const d = new Date(day(a.ExpirationDate) + 'T00:00:00'); return u && u.IsActive && d >= today && d <= limit; })
-    .map(a => Object.assign(assignmentRow(a), { daysLeft: Math.round((new Date(day(a.ExpirationDate) + 'T00:00:00') - today) / 86400e3) }))
+  const expiring = assigns.filter(a => { if (!a.ExpirationDate) return false; const u = userById.get(a.AssigneeId); const d = new Date(expiryDate(a.ExpirationDate) + 'T00:00:00'); return u && u.IsActive && d >= today && d <= limit; })
+    .map(a => Object.assign(assignmentRow(a), { daysLeft: Math.round((new Date(expiryDate(a.ExpirationDate) + 'T00:00:00') - today) / 86400e3) }))
     .sort((x, y) => x.daysLeft - y.daysLeft || x.name.localeCompare(y.name));
 
   // ---- who holds high-impact permissions, and through what: assignments, and profiles

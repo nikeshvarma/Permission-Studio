@@ -159,6 +159,8 @@
   const SRC_CLASS = { permissionSet: 'ps', profile: 'pr', group: 'gr' };
   const SRC_TYPE = { permissionSet: 'Permission set', profile: 'Profile', group: 'Group' };
   /** A grant source as a coloured chip: blue permission sets, green profiles, purple groups. Opens the item. */
+  /** A list of pills: one wrapping row with an even gap, so a second row lines up with the first. */
+  function pills(items) { return h('span', { class: 'pills' }, (items || []).flat().filter(Boolean)); }
   function srcChip(src) {
     if (!src) return null;
     const attrs = { class: 'src ' + SRC_CLASS[src.kind], title: SRC_TYPE[src.kind], text: src.label };
@@ -478,7 +480,6 @@
     top.append(left, h('div', { class: 'actions' }, [status,
       h('div', { class: 'btn-group' }, [tool('lookup', 'Find access', 'Find'), tool('wizard', 'Grant field access', 'Grant fields'), tool('objwizard', 'Grant object access', 'Grant objects'),
         tool('useraccess', 'User access', 'User access'), tool('compare', 'Compare', 'Compare'), tool('health', 'Health', 'Health'), tool('history', 'History', 'History')]),
-      h('button', { class: 'btn neutral', onclick: () => send({ type: 'showLog' }), text: 'Log' }),
       h('button', { class: 'btn neutral icon-btn', title: 'Refresh everything from the org' + (listsMeta.savedAt && !listsMeta.refreshing ? ' (updated ' + ago(listsMeta.savedAt) + ')' : ''), 'aria-label': 'Refresh', disabled: ctx.status === 'loading',
         onclick: () => guard(() => send({ type: 'refresh' })) }, [svg(ICONS.refresh), h('span', { text: 'Refresh' })])
     ]));
@@ -525,11 +526,11 @@
         onclick: () => guard(() => choose(r.key)), onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); guard(() => choose(r.key)); } } }, [
         h('div', { class: 'si-text' }, [
           h('span', { class: 'si-title', text: r.label }),
-          h('span', { class: 'si-sub' }, [h('span', { text: r.apiName !== r.label ? r.apiName : (r.license || '') })].concat(marks.map(m => h('span', { class: 'pill', text: m }))))]),
+          h('span', { class: 'si-sub' }, [h('span', { text: r.apiName !== r.label ? r.apiName : (r.license || '') })].concat(marks.length ? [pills(marks.map(m => h('span', { class: 'pill', text: m })))] : []))]),
         star(isFav, r.label, () => send({ type: 'toggleFavorite', kind: 'item', id: favId(r) }))
       ]);
     };
-    if (ui.kind === 'profile' && lists.profilesFiltered) frag.appendChild(h('div', { class: 'si-note' }, alertBox('info', 'Only your own profile is visible. Since Winter ’27, Salesforce shows other profiles only to users with the View All Profiles permission.')));
+    if (ui.kind === 'profile' && lists.profilesFiltered) frag.appendChild(h('div', { class: 'si-note' }, alertBox('info', 'Only your own profile is visible. Other profiles need the View All Profiles permission.')));
     if (favRows.length) {
       frag.appendChild(h('div', { class: 'si-group', text: 'Favorites' }));
       favRows.forEach(r => frag.appendChild(item(r)));
@@ -615,7 +616,13 @@
   function drawMain() {
     if (ctx.status !== 'ready' && !lists) { main.appendChild(statusView()); return; }
     if (ui.tool) { main.appendChild(toolPage()); return; }
-    if (!ui.selected || !detail) { main.appendChild(h('div', { class: 'illustration' }, [svg(ICONS.permissionSet, 'big-icon'), h('h2', { text: 'Pick something to open' }), h('p', { class: 'muted', text: 'Choose a permission set, group or profile from the list to see and change its access.' })])); return; }
+    if (!ui.selected || !detail) {
+      // In a narrow window the list is hidden, so the item picker is the way in (it was missing until an item was open).
+      if (isNarrow() && lists) main.appendChild(narrowPicker());
+      main.appendChild(h('div', { class: 'illustration' }, [svg(ICONS.permissionSet, 'big-icon'), h('h2', { text: 'Pick something to open' }),
+        h('p', { class: 'muted', text: 'Choose a permission set, group or profile from the ' + (isNarrow() ? 'picker above' : 'list') + ' to see and change its access.' })]));
+      return;
+    }
     if (!detail.data) {
       if (detail.state === 'error') main.appendChild(h('div', { class: 'pad' }, alertBox('error', 'Could not read this item. ', [h('pre', { text: detail.message || '' }), h('div', { class: 'btns' }, [h('button', { class: 'btn brand', onclick: () => send({ type: 'select', key: ui.selected, force: true }), text: 'Try again' }), h('button', { class: 'btn neutral', onclick: () => send({ type: 'showLog' }), text: 'Show log' })])])));
       else main.appendChild(pageSkeleton('Reading ' + (((lists && lists[ui.kind]) || []).concat(lists ? [].concat(...Object.values(lists).filter(Array.isArray)) : []).find(r => r.key === ui.selected) || { label: 'this item' }).label + ' from the org…'));
@@ -671,7 +678,6 @@
         h('div', { class: 'ph-actions' }, [meta,
           hd.canRename ? h('button', { class: 'btn neutral', onclick: () => guard(() => openPsForm('edit')), text: 'Edit' }) : null,
           hd.canClone ? h('button', { class: 'btn neutral', onclick: () => guard(() => openPsForm('clone')), text: 'Clone' }) : null,
-          hd.canCopyToPs ? h('button', { class: 'btn neutral', title: 'Copy this profile’s access into a new permission set', onclick: () => guard(() => openPsForm('copyProfile')), text: 'Copy to permission set' }) : null,
           h('button', { class: 'btn neutral', onclick: () => guard(() => reloadCurrent()), text: 'Reload' })])
       ]),
       h('dl', { class: 'highlights' }, fields.map(([k, v]) => h('div', { class: 'hl' }, [h('dt', { text: k }), h('dd', { text: v, title: v })]))),
@@ -960,7 +966,7 @@
               c.managed ? h('span', { class: 'pill', text: 'Managed' }) : null]),
             h('td', { class: 'muted mono', text: c.apiName })]);
         }))]) : h('p', { class: 'empty-line', text: q ? 'Nothing matches.' : 'This group holds no permission sets yet.' })),
-      h('div', { class: 'card-body' }, h('p', { class: 'muted flat', text: 'Adding or removing a permission set changes the group’s access for everyone assigned to it. Muting permission sets are shown but not edited here.' }))
+      h('div', { class: 'card-body' }, h('p', { class: 'muted flat', text: 'Changes apply to everyone assigned to this group.' }))
     ]);
   }
 
@@ -973,7 +979,7 @@
       h('div', { class: 'card-head' }, [h('h2', {}, ['Changes in Setup ', h('span', { class: 'count', text: String(d.items.length) })]), h('div', { class: 'card-tools' }, [
         auditPage.refreshing ? h('span', { class: 'muted status' }, [spinner(true), ' Refreshing…']) : null,
         h('span', { class: 'muted', text: 'Last 90 days, from Setup Audit Trail' })])]),
-      d.denied ? h('div', { class: 'card-body' }, alertBox('info', 'Reading Setup Audit Trail needs the View Setup Audit Trail permission (from Winter ’27; View Setup before that). Changes made with Permission Studio are in History either way.'))
+      d.denied ? h('div', { class: 'card-body' }, alertBox('info', 'Needs the View Setup Audit Trail permission.'))
       : h('div', { class: 'card-body flush' }, d.items.length ? h('table', { class: 'datatable' }, [
         h('thead', {}, h('tr', {}, [h('th', { text: 'When' }), h('th', { text: 'Who' }), h('th', { text: 'What changed' }), h('th', { text: 'Section' })])),
         h('tbody', {}, d.items.map(x => h('tr', {}, [h('td', { class: 'muted', text: fmtDate(x.at) }), h('td', { class: 'strong', text: x.by + (x.delegate ? ' (as ' + x.delegate + ')' : '') }),
@@ -1075,7 +1081,7 @@
   function historyId(e) { return [e.at, e.target, e.path].join('|'); }
 
   // ---------- The health check ----------
-  let hc = { data: null, busy: false, error: null, days: '30', sel: new Set(), extendDays: '90', fix: null, showManaged: false, showStandard: false, open: new Set(), limits: {} };
+  let hc = { data: null, busy: false, error: null, days: '30', sel: new Set(), extendDays: '90', fix: null, showManaged: false, showStandard: false, open: new Set(), limits: {}, q: {} };
   // ---- health check
   function runHealth() { hc.busy = true; hc.error = null; hc.sel = new Set(); renderMain(); send({ type: 'healthCheck', expiringDays: Number(hc.days) }); }
   function healthPage() {
@@ -1110,22 +1116,35 @@
     const openItem = key => h('button', { class: 'btn neutral small', disabled: !key, onclick: () => { ui.tool = null; renderTop(); guard(() => choose(key)); }, text: 'Open' });
     const userLink = u => h('button', { class: 'link strong', title: 'See everything this user can do', onclick: () => { Object.assign(ua, { userId: u.userId, picked: true, q: u.name, data: null, error: null, busy: true }); ui.tool = 'useraccess'; send({ type: 'userAccess', userId: u.userId }); renderTop(); renderMain(); }, text: u.name });
     let current = null; // the section being built: its table's "Show more" belongs to it
-    const section = (id, title, n, tone, body, tools) => h('section', { class: 'card hc-sec', id: 'hc-' + id }, [h('div', { class: 'card-head' }, [h('h2', {}, [title + ' ', h('span', { class: 'count ' + (n ? tone : ''), text: n.toLocaleString() })]), tools ? h('div', { class: 'card-tools' }, tools) : null]),
-      n ? (current = id, body()) : h('div', { class: 'card-body' }, h('p', { class: 'muted flat', text: 'Nothing found.' }))]);
+    const section = (id, title, n, tone, body, tools) => {
+      // A finding's explanation goes on its own line under the header; the header keeps the title, toggles and search.
+      const all = [].concat(tools || []).filter(Boolean);
+      const notes = all.filter(e => e.tagName === 'SPAN' && e.classList.contains('muted'));
+      return h('section', { class: 'card hc-sec', id: 'hc-' + id }, [h('div', { class: 'card-head' }, [h('h2', {}, [title + ' ', h('span', { class: 'count ' + (n ? tone : ''), text: n.toLocaleString() })]),
+          h('div', { class: 'card-tools' }, all.filter(e => !notes.includes(e)).concat(n ? [searchBox(hc.q[id] || '', 'Search', v => { hc.q[id] = v; hc.limits[id] = 0; renderMain(); }, 'hc.q.' + id, true)] : []))]),
+        notes.length ? h('p', { class: 'hc-note', text: notes.map(e => e.textContent).join(' ') }) : null,
+        n ? (current = id, body()) : h('div', { class: 'card-body' }, h('p', { class: 'muted flat', text: 'Nothing found.' }))]);
+    };
+    /** The section's search: does this row's text (user, username, item, profile, permission) contain it? */
+    const matches = (id, text) => { const q = (hc.q[id] || '').trim().toLowerCase(); return !q || String(text).toLowerCase().includes(q); };
     // A column is a heading's text, or a ready-made header cell (such as the select-all checkbox).
-    // A finding's table scrolls with the page (no box inside a box) and starts with 50 rows; "Show more" adds 100.
-    const table = (cols, rows, id) => {
+    // A finding's table scrolls in its own box (it keeps its place on a redraw), filtered by the section's search,
+    // and starts with 50 rows; "Show more" adds 100.
+    const table = (cols, all, id) => {
       id = id || current;
+      const q = current;
+      const rows = all.filter(r => matches(q, r.textContent));
+      if (!rows.length) return h('div', { class: 'card-body' }, h('p', { class: 'muted flat', text: 'Nothing matches “' + (hc.q[q] || '').trim() + '”.' }));
       const limit = hc.limits[id] || 50;
       const more = rows.length - limit;
-      return h('div', { class: 'card-body flush' }, [h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, cols.map(c => typeof c === 'string' ? h('th', { text: c }) : c))), h('tbody', {}, rows.slice(0, limit))]),
+      return h('div', { class: 'card-body flush' }, [h('div', { class: 'scroll-y hc-scroll' }, h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, cols.map(c => typeof c === 'string' ? h('th', { text: c }) : c))), h('tbody', {}, rows.slice(0, limit))])),
         more > 0 ? h('div', { class: 'hc-more' }, [h('span', { class: 'muted small', text: 'Showing ' + limit.toLocaleString() + ' of ' + rows.length.toLocaleString() }),
           h('button', { class: 'btn neutral small', onclick: () => { hc.limits[id] = limit + 100; renderMain(); }, text: 'Show ' + Math.min(100, more) + ' more' }),
           rows.length <= 1000 ? h('button', { class: 'btn neutral small', onclick: () => { hc.limits[id] = rows.length; renderMain(); }, text: 'Show all' }) : null]) : null]);
     };
     out.push(section('integration', 'Integration users with admin access', d.integrationAdmins.length, 'risk', () => table(['User', 'Profile', 'Integration because', 'Admin permissions', 'Granted by'],
       d.integrationAdmins.map(u => h('tr', {}, [h('td', {}, [userLink(u), h('div', { class: 'cur', text: u.username })]), h('td', { class: 'muted wrap', text: u.profile }), h('td', { text: u.why }),
-        h('td', { class: 'wrap' }, u.permissions.map(x => h('span', { class: 'rv-risk', text: x }))), h('td', { class: 'wrap muted', text: u.sources.join(', ') })])), 'integration')));
+        h('td', { class: 'wrap' }, pills(u.permissions.map(x => h('span', { class: 'rv-risk', text: x })))), h('td', { class: 'wrap muted', text: u.sources.join(', ') })])), 'integration')));
     out.push(section('high', 'High-impact permissions', S.highImpactUsers, 'risk', () => h('div', { class: 'card-body flush' }, d.highImpact.filter(x => x.users.length).map(p2 => {
       const open = hc.open.has('perm:' + p2.name);
       return h('div', { class: 'hc-perm' }, [h('div', { class: 'hc-perm-head' }, [h('button', { class: 'link strong', onclick: () => { if (open) hc.open.delete('perm:' + p2.name); else hc.open.add('perm:' + p2.name); renderMain(); }, text: (open ? '▾ ' : '▸ ') + p2.label }),
@@ -1135,11 +1154,12 @@
           p2.users.map(u => h('tr', {}, [h('td', {}, [userLink(u), h('div', { class: 'cur', text: u.username })]), h('td', { class: 'muted', text: u.profile }), h('td', { class: 'wrap muted', text: u.sources.join(', ') })])), 'perm:' + p2.name) : null]);
     }))));
     const selectable = (id, rows, fixLabel, act, extra) => {
-      const ids = rows.map(r => r.assignmentId);
+      // Select all takes the rows the search shows (all of them, when there's no search).
+      const ids = rows.filter(r => matches(id, [r.name, r.username, r.itemLabel, r.profile, r.lastLogin, r.expires].join(' '))).map(r => r.assignmentId);
       const chosen = ids.filter(x => hc.sel.has(x));
       const all = chosen.length === ids.length && ids.length > 0;
       return section(id, id === 'inactive' ? 'Assignments to inactive users' : 'Assignments expiring within ' + d.expiringDays + ' days', rows.length, 'warn', () => table([
-        h('th', { class: 'c narrow' }, checkbox({ checked: all, indeterminate: !all && chosen.length > 0, fid: 'hc.all.' + id, aria: 'Select all', title: 'Select all ' + ids.length.toLocaleString() + ', including those not shown', onChange: v => { for (const x of ids) { if (v) hc.sel.add(x); else hc.sel.delete(x); } renderMain(); } })),
+        h('th', { class: 'c narrow' }, checkbox({ checked: all, indeterminate: !all && chosen.length > 0, fid: 'hc.all.' + id, aria: 'Select all', title: 'Select all ' + ids.length.toLocaleString() + (hc.q[id] ? ' that match the search' : ', including those not shown'), onChange: v => { for (const x of ids) { if (v) hc.sel.add(x); else hc.sel.delete(x); } renderMain(); } })),
         'User', 'Assigned', id === 'inactive' ? 'Last login' : 'Expires'],
         rows.map(r => h('tr', { class: hc.sel.has(r.assignmentId) ? 'row-edited' : '' }, [h('td', { class: 'c narrow' }, checkbox({ checked: hc.sel.has(r.assignmentId), fid: 'hc.' + r.assignmentId, aria: 'Select ' + r.name + ' – ' + r.itemLabel, onChange: v => { if (v) hc.sel.add(r.assignmentId); else hc.sel.delete(r.assignmentId); renderMain(); } })),
           h('td', {}, [h('b', { text: r.name }), h('div', { class: 'cur', text: r.username })]), h('td', {}, [srcChip({ kind: r.kind, label: r.itemLabel, key: r.key })]),
@@ -1152,22 +1172,22 @@
     const ups = d.unusedPermissionSets.filter(x => hc.showManaged || !x.managed);
     out.push(section('unusedPs', 'Unused permission sets', ups.length, 'info', () => table(['Permission set', 'API name', 'Inactive users assigned', ''],
       ups.map(x => h('tr', {}, [h('td', { class: 'strong' }, [x.label, x.managed ? h('span', { class: 'pill', text: 'Managed' }) : null]), h('td', { class: 'mono muted', text: x.apiName }), h('td', { class: 'muted', text: String(x.inactiveUsers) }), h('td', { class: 'c narrow' }, openItem(x.key))]))),
-      [toggle('Include managed packages', hc.showManaged, v => { hc.showManaged = v; renderMain(); }), h('span', { class: 'muted small', text: 'No active users and in no group. A Flow or a user access policy may still assign one when it runs, so check before deleting it in Setup.' })]));
+      [toggle('Include managed packages', hc.showManaged, v => { hc.showManaged = v; renderMain(); }), h('span', { class: 'muted small', text: 'No active users and in no group. A Flow or user access policy may still assign one.' })]));
     out.push(section('unusedGroups', 'Unused permission set groups', d.unusedGroups.length, 'info', () => table(['Group', 'API name', 'Member permission sets', 'Inactive users assigned', ''],
       d.unusedGroups.map(x => h('tr', {}, [h('td', { class: 'strong', text: x.label }), h('td', { class: 'mono muted', text: x.apiName }), h('td', { class: 'muted', text: String(x.members) }), h('td', { class: 'muted', text: String(x.inactiveUsers) }), h('td', { class: 'c narrow' }, openItem(x.key))]))),
-      [h('span', { class: 'muted small', text: 'No active users. A user access policy may still assign one when it runs, so check before deleting it in Setup.' })]));
+      [h('span', { class: 'muted small', text: 'No active users. A user access policy may still assign one.' })]));
     const upr = d.unusedProfiles.filter(x => hc.showStandard || !x.standard);
     out.push(section('unusedProfiles', 'Unused profiles', upr.length, 'info', () => table(['Profile', 'Inactive users', ''],
       upr.map(x => h('tr', {}, [h('td', { class: 'strong' }, [x.label, x.standard ? h('span', { class: 'pill', text: 'Standard' }) : null]), h('td', { class: 'muted', text: String(x.inactiveUsers) }), h('td', { class: 'c narrow' }, openItem(x.key))]))),
       [toggle('Include standard profiles', hc.showStandard, v => { hc.showStandard = v; renderMain(); }), h('span', { class: 'muted small', text: 'No active users. Some may be kept for new users or licences, so check before deleting one in Setup.' })]));
     out.push(section('empty', 'Permission sets that grant nothing', d.emptyPermissionSets.length, 'info', () => table(['Permission set', 'API name', 'Active users', ''],
       d.emptyPermissionSets.map(x => h('tr', {}, [h('td', { class: 'strong', text: x.label }), h('td', { class: 'mono muted', text: x.apiName }), h('td', { class: 'muted', text: String(x.activeUsers) }), h('td', { class: 'c narrow' }, openItem(x.key))]))),
-      [h('span', { class: 'muted small', text: 'No object, field, system, tab, app, Apex or other record-based access. They may still assign record types or other metadata-only settings.' })]));
+      [h('span', { class: 'muted small', text: 'No record-based access. Record types and other metadata-only settings aren’t checked.' })]));
     return out;
   }
 
   // ---------- User access: one user's combined access ----------
-  let ua = { q: '', results: null, userId: null, data: null, busy: false, error: null, objQ: '', sysQ: '', openObj: null, fields: null };
+  let ua = { q: '', results: null, userId: null, data: null, busy: false, error: null, objQ: '', sysQ: '', openObj: null, fields: null, fieldQ: '', fieldIndex: null, fieldIndexFor: null, cusQ: '' };
   const srcDots = (d, ids) => h('span', { class: 'src-dots', title: 'Granted by: ' + ids.map(i => d.sources[i] ? d.sources[i].label : '?').join(', ') },
     ids.slice(0, 4).map(i => h('i', { class: 'dot-' + (SRC_CLASS[(d.sources[i] || {}).kind] || 'ps') })));
   function userAccessPage() {
@@ -1189,8 +1209,8 @@
         h('div', {}, [h('span', { class: 'k', text: 'Profile' }), h('span', { text: u.profile || '—' })]),
         h('div', {}, [h('span', { class: 'k', text: 'Role' }), h('span', { text: u.role || '—' })]),
         h('div', {}, [h('span', { class: 'k', text: 'User licence' }), h('span', { text: u.license || '—' })]),
-        h('div', { class: 'wide' }, [h('span', { class: 'k', text: 'Permission set licences' }), d.licenses.length ? h('span', {}, d.licenses.map(l => h('span', { class: 'pill', text: l }))) : h('span', { class: 'muted', text: 'None' })]),
-        h('div', { class: 'wide' }, [h('span', { class: 'k', text: 'Access comes from' }), h('span', {}, d.sources.map(x => [srcChip(x), x.expires ? h('span', { class: 'pill warn', text: 'until ' + x.expires }) : null]).flat())])])]));
+        h('div', { class: 'wide' }, [h('span', { class: 'k', text: 'Permission set licences' }), d.licenses.length ? pills(d.licenses.map(l => h('span', { class: 'pill', text: l }))) : h('span', { class: 'muted', text: 'None' })]),
+        h('div', { class: 'wide' }, [h('span', { class: 'k', text: 'Access comes from' }), pills(d.sources.map(x => [srcChip(x), x.expires ? h('span', { class: 'pill warn', text: 'until ' + x.expires }) : null]).flat())])])]));
     // objects
     const oq = ua.objQ.trim().toLowerCase();
     const objs = d.objects.filter(o => !oq || o.name.toLowerCase().includes(oq));
@@ -1207,21 +1227,39 @@
           h('tbody', {}, ua.fields.map(f => h('tr', {}, [h('td', { class: 'mono', text: f.field }), h('td', { class: 'c' }, f.read.length ? srcDots(d, f.read) : '—'), h('td', { class: 'c' }, f.edit.length ? srcDots(d, f.edit) : '—')])))])
           : h('p', { class: 'muted small', text: 'No field access on ' + o.name + '.' }))));
     }
-    out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, ['Object permissions ', h('span', { class: 'count', text: String(objs.length) })]),
+    // Field search: every field this user can read or edit, across all objects (read once per user, then searched here).
+    const fq = ua.fieldQ.trim().toLowerCase();
+    if (fq && ua.fieldIndexFor !== ua.userId) { ua.fieldIndexFor = ua.userId; ua.fieldIndex = null; send({ type: 'userFields', userId: ua.userId, ids: d.sources.map(x => x.permissionSetId), object: null }); }
+    const fieldHits = fq && Array.isArray(ua.fieldIndex) ? ua.fieldIndex.filter(f => f.field.toLowerCase().includes(fq)) : [];
+    const FIELD_LIMIT = 300;
+    const head = fq ? ['Field permissions ', h('span', { class: 'count', text: Array.isArray(ua.fieldIndex) ? String(fieldHits.length) : '…' })] : ['Object permissions ', h('span', { class: 'count', text: String(objs.length) })];
+    const body = fq
+      ? (!Array.isArray(ua.fieldIndex) ? skeletonBlock('Reading this user’s field access…', 4)
+        : fieldHits.length ? h('table', { class: 'datatable mtx' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Field' }), h('th', { class: 'c', text: 'Read' }), h('th', { class: 'c', text: 'Edit' })])),
+          h('tbody', {}, fieldHits.slice(0, FIELD_LIMIT).map(f => h('tr', {}, [h('td', { class: 'mono', text: f.field }), h('td', { class: 'c' }, f.read.length ? srcDots(d, f.read) : '—'), h('td', { class: 'c' }, f.edit.length ? srcDots(d, f.edit) : '—')])))])
+        : h('p', { class: 'empty-line', text: 'No field this user can read matches “' + ua.fieldQ.trim() + '”.' }))
+      : (objs.length ? h('table', { class: 'datatable mtx' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Object' })].concat(flags.map(([, l]) => h('th', { class: 'c', text: l.replace(' Records', '') }))))), h('tbody', {}, rows)])
+        : h('p', { class: 'empty-line', text: oq ? 'No object matches.' : 'This user has no object access.' }));
+    out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, head),
       h('div', { class: 'card-tools' }, [h('span', { class: 'legend2' }, [h('span', { class: 'lg pr', text: 'profile' }), h('span', { class: 'lg ps', text: 'permission set' }), h('span', { class: 'lg gr', text: 'group' })]),
-        searchBox(ua.objQ, 'Search objects', v => { ua.objQ = v; renderMain(); }, 'ua.objQ', true)])]),
-      h('div', { class: 'card-body flush scroll-y' }, objs.length ? h('table', { class: 'datatable mtx' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Object' })].concat(flags.map(([, l]) => h('th', { class: 'c', text: l.replace(' Records', '') }))))), h('tbody', {}, rows)])
-        : h('p', { class: 'empty-line', text: oq ? 'No object matches.' : 'This user has no object access.' }))]));
+        fq ? null : searchBox(ua.objQ, 'Search objects', v => { ua.objQ = v; renderMain(); }, 'ua.objQ', true),
+        searchBox(ua.fieldQ, 'Search fields, e.g. Account.Rating', v => { ua.fieldQ = v; renderMain(); }, 'ua.fieldQ', true)])]),
+      h('div', { class: 'card-body flush scroll-y' }, body),
+      fq && fieldHits.length > FIELD_LIMIT ? h('p', { class: 'card-note', text: 'Showing ' + FIELD_LIMIT + ' of ' + fieldHits.length.toLocaleString() + ' fields: type more to narrow it down.' }) : null]));
     const sq = ua.sysQ.trim().toLowerCase();
     const sys = d.system.filter(x => !sq || x.label.toLowerCase().includes(sq) || x.name.toLowerCase().includes(sq));
     out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, ['System permissions ', h('span', { class: 'count', text: String(sys.length) })]),
       h('div', { class: 'card-tools' }, searchBox(ua.sysQ, 'Search system permissions', v => { ua.sysQ = v; renderMain(); }, 'ua.sysQ', true))]),
       h('div', { class: 'card-body flush scroll-y' }, sys.length ? h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Permission' }), h('th', { text: 'Granted by' })])),
         h('tbody', {}, sys.map(x => h('tr', {}, [h('td', { class: 'strong' }, [x.label, isHighImpact(x) ? h('span', { class: 'pill risk', text: 'High impact' }) : null]),
-          h('td', { class: 'wrap' }, x.sources.map(i => srcChip(d.sources[i])))])))]) : h('p', { class: 'empty-line', text: 'No system permissions match.' }))]));
-    if (d.custom.length) out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, h('h2', {}, ['Custom permissions ', h('span', { class: 'count', text: String(d.custom.length) })])),
-      h('div', { class: 'card-body flush' }, h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Custom permission' }), h('th', { text: 'API Name' }), h('th', { text: 'Granted by' })])),
-        h('tbody', {}, d.custom.map(x => h('tr', {}, [h('td', { class: 'strong', text: x.label }), h('td', { class: 'mono muted', text: x.name }), h('td', { class: 'wrap' }, x.sources.map(i => srcChip(d.sources[i])))])))]))]));
+          h('td', { class: 'wrap' }, pills(x.sources.map(i => srcChip(d.sources[i]))))])))]) : h('p', { class: 'empty-line', text: 'No system permissions match.' }))]));
+    const cq = ua.cusQ.trim().toLowerCase();
+    const cus = d.custom.filter(x => !cq || x.label.toLowerCase().includes(cq) || x.name.toLowerCase().includes(cq));
+    out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, ['Custom permissions ', h('span', { class: 'count', text: String(cus.length) })]),
+      h('div', { class: 'card-tools' }, searchBox(ua.cusQ, 'Search custom permissions', v => { ua.cusQ = v; renderMain(); }, 'ua.cusQ', true))]),
+      h('div', { class: 'card-body flush scroll-y' }, cus.length ? h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Custom permission' }), h('th', { text: 'API Name' }), h('th', { text: 'Granted by' })])),
+        h('tbody', {}, cus.map(x => h('tr', {}, [h('td', { class: 'strong', text: x.label }), h('td', { class: 'mono muted', text: x.name }), h('td', { class: 'wrap' }, pills(x.sources.map(i => srcChip(d.sources[i]))))])))])
+        : h('p', { class: 'empty-line', text: d.custom.length ? 'No custom permissions match.' : 'This user has no custom permissions.' }))]));
     return out;
   }
 
@@ -1273,8 +1311,8 @@
 
   // ---------- muting in permission set groups ----------
   let muting = null;          // { key, state, data, refreshing }
-  let mutingFieldList = null; // { key, object, fields, error }
-  let mutingForm = null;      // { label, name, confirm, busy }
+  // Muting permission sets are shown, not changed, in Permission Studio.
+  const MUTING_READ_ONLY = 'Read-only. Change muting in Setup › Permission Set Groups.';
   function ensureMuting() {
     if (muting && muting.key === ui.selected) return;
     muting = { key: ui.selected, state: 'loading' };
@@ -1282,88 +1320,39 @@
   }
   const ALL_OFF = { read: false, create: false, edit: false, delete: false, viewAll: false, modifyAll: false };
   /** Mute or unmute one object permission, as Setup does: muting Read mutes what needs it; unmuting Delete unmutes Edit and Read. */
-  function toggleMuteObject(o, f, v, base) {
-    const k = 'mute:object:' + o.name;
-    const next = Object.assign({}, eff(k, base));
-    next[f] = v;
-    if (v) for (const g of Deps.OBJECT_REQUIRED_BY[f] || []) { if (o.props[g]) next[g] = true; }
-    else for (const g of Deps.OBJECT_REQUIRES[f] || []) next[g] = false;
-    stage(k, base, next, f, o.name, 'mute');
-  }
-  function toggleMuteField(field, f, v, base) {
-    const k = 'mute:field:' + field.field;
-    const next = Object.assign({}, eff(k, base));
-    next[f] = v;
-    if (f === 'read' && v) next.edit = !!field.edit;
-    if (f === 'edit' && !v) next.read = false;
-    stage(k, base, next, f, field.field, 'mute');
-  }
+  /**
+   * Muted Permissions, read only: every section of the group's muting permission set (it has the same
+   * sections as a permission set), each a searchable table of what it mutes. Muting is changed in Setup.
+   */
   function mutingCard() {
     ensureMuting();
     if (!muting.data) return [loadingCard('Muted Permissions', muting, () => { muting = null; renderMain(); })];
     const d = muting.data;
-    const ok = can('mute');
-    const mutedMap = new Map(d.muted);
-    const g = detail.data.header;
     if (!d.muting) {
-      if (!mutingForm) mutingForm = { label: g.label + ' Muting', name: (g.apiName + '_Muting').replace(/__+/g, '_').slice(0, 80), confirm: '' };
       return [h('section', { class: 'card' }, [h('div', { class: 'card-head' }, h('h2', { text: 'Muted Permissions' })), h('div', { class: 'card-body' }, [
-        h('p', { text: 'Muting turns off chosen permissions for this group’s users without changing the permission sets in it. A group needs a muting permission set first; it has none yet.' }),
-        ok ? h('div', { class: 'form-grid' }, [
-          h('label', { class: 'fld' }, [h('span', { text: 'Label' }), h('input', { type: 'text', class: 'text', value: mutingForm.label, 'data-fid': 'mute.label', maxlength: '80', oninput: e => { mutingForm.label = e.target.value; } })]),
-          h('label', { class: 'fld' }, [h('span', { text: 'API name' }), h('input', { type: 'text', class: 'text mono', value: mutingForm.name, 'data-fid': 'mute.name', maxlength: '80', oninput: e => { mutingForm.name = e.target.value; } })]),
-          ctx.production ? h('label', { class: 'fld' }, [h('span', { text: 'Type ' + (ctx.org.alias || ctx.org.username) + ' to confirm' }), h('input', { type: 'text', class: 'text', value: mutingForm.confirm, 'data-fid': 'mute.confirm', oninput: e => { mutingForm.confirm = e.target.value; } })]) : null,
-          h('div', { class: 'btns' }, h('button', { class: 'btn brand', disabled: !!mutingForm.busy, onclick: () => { mutingForm.busy = true; renderMain(); send({ type: 'createMuting', key: ui.selected, label: mutingForm.label.trim(), name: mutingForm.name.trim(), confirm: mutingForm.confirm }); },
-            text: mutingForm.busy ? 'Creating…' : 'Create muting permission set' }))]) : alertBox('info', g.readOnlyReason || 'This group can’t be changed here.')])])];
+        h('p', { text: 'This group has no muting permission set.' }),
+        alertBox('info', MUTING_READ_ONLY)])])];
     }
-    const flagCols = OBJECT_FLAGS.filter(([f]) => f !== 'viewAllFields');
+    const sections = d.sections || [];
+    const total = sections.reduce((n, x) => n + x.rows.length, 0);
+    const out = [h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, ['Muted Permissions ', h('span', { class: 'count', text: total.toLocaleString() })]),
+        h('div', { class: 'card-tools' }, searchBox(ui.muteFilter || '', 'Search muted permissions', v => { ui.muteFilter = v; renderMain(); }, 'mute.q', true))]),
+      h('div', { class: 'card-body slim' }, [h('p', { class: 'muted small flat' }, [h('b', { text: d.muting.label }), ' (', h('span', { class: 'mono', text: d.muting.name }), '). ', MUTING_READ_ONLY]),
+        total ? null : h('p', { class: 'flat', text: 'It doesn’t mute anything yet.' })])])];
     const q = (ui.muteFilter || '').trim().toLowerCase();
-    const objs = d.objects.filter(o => !q || o.name.toLowerCase().includes(q));
-    const objRows = objs.map(o => {
-      const k = 'mute:object:' + o.name;
-      const base = Object.assign({}, ALL_OFF, mutedMap.get(k) || {});
-      const now = eff(k, base);
-      const open = ui.muteObject === o.name;
-      return h('tr', { class: pending.has(k) ? 'row-edited' : Object.values(now).some(Boolean) ? 'muted-row' : '', 'data-row': k }, [
-        h('td', {}, h('button', { class: 'link strong', onclick: () => { ui.muteObject = open ? null : o.name; if (!open) { mutingFieldList = { key: ui.selected, object: o.name }; send({ type: 'mutingFields', key: ui.selected, object: o.name }); } renderMain(); }, text: (open ? '▾ ' : '▸ ') + o.name }))]
-        .concat(flagCols.map(([f, label]) => h('td', { class: 'c' }, o.props[f]
-          ? checkbox({ checked: !!now[f], disabled: !ok, edited: edited(k, f), fid: k + '.' + f, aria: 'Mute ' + label + ' on ' + o.name, onChange: v => toggleMuteObject(o, f, v, base) })
-          : h('span', { class: 'muted', title: 'Not granted by the group’s permission sets', text: '—' })))));
-    });
-    const out = [h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, ['Muted object permissions ', h('span', { class: 'count', text: String(objs.length) })]),
-      h('div', { class: 'card-tools' }, [h('span', { class: 'pill', title: 'The group’s muting permission set', text: d.muting.label }), searchBox(ui.muteFilter || '', 'Search objects', v => { ui.muteFilter = v; renderMain(); }, 'mute.filter', true)])]),
-      h('div', { class: 'card-body slim' }, h('p', { class: 'muted small flat', text: 'A tick mutes the permission for users of this group. Only what the group’s ' + d.members + ' permission set' + (d.members === 1 ? '' : 's') + ' grant can be muted; access from a profile or another assignment isn’t affected.' })),
-      h('div', { class: 'card-body flush scroll-y' }, objs.length ? h('table', { class: 'datatable mtx' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Object' })].concat(flagCols.map(([, label]) => h('th', { class: 'c', text: 'Mute ' + label.replace(' Records', '') }))))),
-        h('tbody', {}, objRows)]) : h('p', { class: 'empty-line', text: 'The group’s permission sets grant no object access.' }))])];
-    if (ui.muteObject && mutingFieldList && mutingFieldList.object === ui.muteObject) {
-      const fl = mutingFieldList;
-      out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, h('h2', { text: 'Muted field permissions: ' + fl.object })),
-        h('div', { class: 'card-body flush scroll-y short' }, !fl.fields ? loadingCard('', { state: 'loading' }) : fl.error ? alertBox('error', fl.error) : fl.fields.length ? h('table', { class: 'datatable' }, [
-          h('thead', {}, h('tr', {}, [h('th', { text: 'Field' }), h('th', { class: 'c', text: 'Mute Read' }), h('th', { class: 'c', text: 'Mute Edit' })])),
-          h('tbody', {}, fl.fields.map(f => {
-            const k = 'mute:field:' + f.field;
-            const base = Object.assign({ read: false, edit: false }, mutedMap.get(k) || {});
-            const now = eff(k, base);
-            return h('tr', { class: pending.has(k) ? 'row-edited' : '', 'data-row': k }, [h('td', { class: 'mono', text: f.field }),
-              h('td', { class: 'c' }, f.read ? checkbox({ checked: !!now.read, disabled: !ok, edited: edited(k, 'read'), fid: k + '.read', aria: 'Mute Read on ' + f.field, onChange: v => toggleMuteField(f, 'read', v, base) }) : '—'),
-              h('td', { class: 'c' }, f.edit ? checkbox({ checked: !!now.edit, disabled: !ok, edited: edited(k, 'edit'), fid: k + '.edit', aria: 'Mute Edit on ' + f.field, onChange: v => toggleMuteField(f, 'edit', v, base) }) : '—')]);
-          }))]) : h('p', { class: 'empty-line', text: 'The group’s permission sets grant no field access on ' + fl.object + '.' }))]));
+    for (const sec of sections) {
+      const rows = sec.rows.filter(r => !q || r.name.toLowerCase().includes(q));
+      if (!rows.length) continue;
+      const single = sec.columns.length === 1 && sec.columns[0] === 'Muted';
+      out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, h('h2', {}, [sec.title + ' ', h('span', { class: 'count', text: String(rows.length) })])),
+        h('div', { class: 'card-body flush scroll-y' }, h('table', { class: 'datatable' }, [
+          h('thead', {}, h('tr', {}, [h('th', { text: sec.tag === 'fieldPermissions' ? 'Field' : sec.tag === 'objectPermissions' ? 'Object' : 'Name' })].concat(single ? [] : sec.columns.map(c => h('th', { class: 'c', text: c }))))),
+          h('tbody', {}, rows.map(r => h('tr', {}, [h('td', { class: sec.tag === 'fieldPermissions' || sec.tag === 'objectPermissions' ? 'mono' : 'strong', text: r.name })]
+            .concat(single ? [] : r.values.map(v => h('td', { class: 'c' }, v === true ? h('span', { class: 'pill perm perm-delete', text: 'Muted' }) : v === false ? h('span', { class: 'muted', text: '—' }) : h('span', { text: String(v) })))))))]))]));
     }
-    const sq = (ui.muteSysFilter || '').trim().toLowerCase();
-    const sys = d.system.filter(x => !sq || x.label.toLowerCase().includes(sq) || x.name.toLowerCase().includes(sq));
-    out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', {}, ['Muted system permissions ', h('span', { class: 'count', text: String(sys.length) })]),
-      h('div', { class: 'card-tools' }, searchBox(ui.muteSysFilter || '', 'Search system permissions', v => { ui.muteSysFilter = v; renderMain(); }, 'mute.sysfilter', true))]),
-      h('div', { class: 'card-body flush scroll-y' }, sys.length ? h('table', { class: 'datatable' }, [h('thead', {}, h('tr', {}, [h('th', { class: 'c narrow', text: 'Mute' }), h('th', { text: 'Permission' }), h('th', { text: 'API Name' })])),
-        h('tbody', {}, sys.map(x => {
-          const k = 'mute:user:' + x.name;
-          const base = Object.assign({ enabled: false }, mutedMap.get(k) || {});
-          const now = eff(k, base);
-          return h('tr', { class: pending.has(k) ? 'row-edited' : now.enabled ? 'muted-row' : '', 'data-row': k }, [
-            h('td', { class: 'c narrow' }, checkbox({ checked: !!now.enabled, disabled: !ok, edited: edited(k, 'enabled'), fid: k, aria: 'Mute ' + x.label, onChange: v => stage(k, base, { enabled: v }, 'enabled', x.label, 'mute') })),
-            h('td', { class: 'strong' }, [x.label, isHighImpact(x) ? h('span', { class: 'pill risk', text: 'High impact' }) : null]), h('td', { class: 'muted mono', text: x.name })]);
-        }))]) : h('p', { class: 'empty-line', text: 'The group’s permission sets grant no system permissions.' }))]));
     return out;
   }
+
 
   // ---------- profile settings ----------
   let profSettings = null; // { key, state, data }
@@ -1458,7 +1447,7 @@
     const words = x => x.label + ' (' + (x.status || 'Draft') + (x.triggerType ? ', runs ' + (TRIGGER[x.triggerType] || x.triggerType) : '') + ')';
     const grants = p.list.filter(x => x.grants);
     const removes = p.list.filter(x => x.removes);
-    return h('div', { class: 'policy-note', role: 'note' }, [h('span', { class: 'ic', text: '⟳' }), h('span', {}, [
+    return h('div', { class: 'policy-note', role: 'note' }, [h('span', { class: 'ic' }, svg(ICONS.refresh)), h('span', {}, [
       grants.length ? ['Assigned automatically by ', h('b', { text: grants.map(words).join(', ') }), '. '] : null,
       removes.length ? ['Removed automatically by ', h('b', { text: removes.map(words).join(', ') }), '. '] : null,
       'User access policies apply their own criteria, so assignments you change by hand may be changed again.'].flat().filter(Boolean))]);
@@ -1499,7 +1488,7 @@
           h('td', { class: 'narrow' }, star(favs.objects.has(o.name), o.label, () => send({ type: 'toggleFavorite', kind: 'object', id: o.name }))),
           h('td', { class: 'strong' }, [o.label, changed ? h('span', { class: 'dot', title: 'Unsaved changes' }) : null]),
           h('td', { class: 'muted mono', text: o.name }),
-          h('td', {}, flags.length ? flags.map(f => h('span', { class: 'pill perm ' + TONE[f], text: SHORT[f] }))
+          h('td', {}, flags.length ? pills(flags.map(f => h('span', { class: 'pill perm ' + TONE[f], text: SHORT[f] })))
             : o.fields ? [h('span', { class: 'pill perm ' + TONE.read, title: 'This item grants access to ' + o.fields + (o.fields === 1 ? ' field' : ' fields') + ' on ' + o.label + '.', text: o.fields + (o.fields === 1 ? ' field' : ' fields') }),
               o.fieldOnly ? h('span', { class: 'muted', text: ' Field access only' }) : null]
             : o.fieldOnly ? h('span', { class: 'muted', title: 'Salesforce has no object permissions for this object; open it to set its fields’ access.', text: 'Field access only' }) : h('span', { class: 'muted', text: 'No access' })),
@@ -1911,14 +1900,13 @@
   function permissionInputs(sys) {
     if (!lookupOptions || !lookupOptions.ready) return [lookupOptions && lookupOptions.message ? alertBox('error', lookupOptions.message) : h('div', { class: 'fld grow' }, skeletonBlock('Loading the permission list…', 1))];
     const opts = sys ? lookupOptions.system : lookupOptions.custom;
-    const high = sys ? opts.filter(isHighImpact) : [];
-    const rest = sys ? opts.filter(o => !isHighImpact(o)) : opts;
-    const value = sys ? lookup.sysName || '' : lookup.customId || '';
-    const sel = h('select', { class: 'select', 'aria-label': sys ? 'System permission' : 'Custom permission', 'data-fid': 'lk.perm', onchange: e => { if (sys) lookup.sysName = e.target.value; else lookup.customId = e.target.value; renderMain(); } },
-      [h('option', { value: '', text: sys ? 'Choose a system permission' : (opts.length ? 'Choose a custom permission' : 'This org has no custom permissions') })]
-        .concat(high.length ? [h('optgroup', { label: 'High impact' }, high.map(o => h('option', { value: o.name, selected: value === o.name, text: o.label })))] : [])
-        .concat([h('optgroup', { label: sys ? 'All system permissions' : 'Custom permissions' }, rest.map(o => h('option', { value: sys ? o.name : o.id, selected: value === (sys ? o.name : o.id), text: o.label + (sys ? '' : ' (' + o.name + ')') })))]));
-    const chosen = opts.find(o => (sys ? o.name : o.id) === value);
+    // Typed search, like "Object or field": several hundred system permissions are quicker to find by typing.
+    const value = sys ? lookup.sysName || '' : ((opts.find(o => o.id === lookup.customId) || {}).name || '');
+    const sel = combobox({ fid: 'lk.perm', value, aria: sys ? 'System permission' : 'Custom permission',
+      placeholder: sys ? 'Type a permission, e.g. Modify All Data' : (opts.length ? 'Type a custom permission' : 'This org has no custom permissions'),
+      items: () => opts.map(o => ({ value: o.name, label: o.label + (sys && isHighImpact(o) ? ' · High impact' : '') })),
+      onPick: v => { if (sys) lookup.sysName = v; else { const c = opts.find(o => o.name === v); lookup.customId = c ? c.id : ''; } renderMain(); } });
+    const chosen = opts.find(o => o.name === value);
     return [h('label', { class: 'fld grow' }, [h('span', { text: sys ? 'System permission' : 'Custom permission' }), sel]),
       h('button', { class: 'btn brand', disabled: !chosen || lookup.busy, onclick: () => {
         lookup.busy = true; lookup.result = null; lookup.why = new Set(); lookup.sel = new Set(); renderMain();
@@ -1990,7 +1978,7 @@
       });
       return h('div', { class: 'path' }, parts);
     };
-    const chips = ids => ids.map(id => srcChip(byId.get(id)));
+    const chips = ids => pills(ids.map(id => srcChip(byId.get(id))));
     const cols = perm ? ['User', 'Profile', 'Granted by', ''] : r.field ? ['User', 'Profile', 'Object access from', 'Field access from', ''] : ['User', 'Profile', 'Access from', ''];
     const rows = [];
     for (const u of users) {
@@ -2163,29 +2151,16 @@
         h('button', { class: 'btn neutral', onclick: closeTool, text: 'Done' })]));
       return out;
     }
-    const total = w.plan.plan ? w.plan.plan.reduce((n, t) => n + t.changes.length, 0) : 0;
-    const deploys = w.plan.plan ? w.plan.plan.some(t => t.changes.some(c => c.key.startsWith('recordType:'))) : false;
-    out.push(w.plan.error ? alertBox('error', w.plan.error) : h('p', { text: total + ' change' + (total === 1 ? '' : 's') + ' across ' + w.plan.plan.length + ' item' + (w.plan.plan.length === 1 ? '' : 's') + '. Each item is saved on its own, with its own snapshot.' }));
-    if (w.plan.plan && w.plan.plan.length) {
-      out.push(h('div', { class: 'rv-scroll' }, h('table', { class: 'rv-table' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Item' }), h('th', { text: 'Entry' }), h('th', { text: 'Change' })])),
-        h('tbody', {}, w.plan.plan.flatMap(t => t.changes.map((c, i) => h('tr', {}, [h('td', {}, i ? null : h('b', { text: t.label })), h('td', { class: 'mono', text: c.label || c.key }),
-          h('td', {}, changeChips(c.before, c.after).map(x => chip(x.sign, x.text)))]))))])));
-    }
-    if (deploys) out.push(alertBox('info', 'Record type assignments are saved with a Metadata API deploy per item, guarded by a full copy of its access.'));
-    if (w.plan.skipped && w.plan.skipped.length) out.push(h('details', { class: 'card disclosure' }, [h('summary', { text: w.plan.skipped.length + ' skipped' }), h('ul', { class: 'plain' }, w.plan.skipped.map(x => h('li', {}, [h('strong', { text: x.label }), ' — ' + x.reason])))]));
-    if (w.progress) {
-      const pr = w.progress;
-      // The item, then the save's own step: a 5,000-change save shows how far it has got.
-      const step = pr.step ? ' · ' + pr.step + (pr.stepTotal > 1 ? ' (step ' + Math.min(pr.stepDone + 1, pr.stepTotal) + ' of ' + pr.stepTotal + ')' : '') : '';
-      out.push(h('p', { class: 'muted status' }, [spinner(true), ' Saving ' + pr.label + (pr.total > 1 ? ' (' + (pr.done + 1) + ' of ' + pr.total + ')' : '') +
-        (pr.changes > 1 ? ', ' + pr.changes.toLocaleString() + ' changes' : '') + step]));
-    }
-    if (w.applyError) out.push(alertBox('error', w.applyError));
-    if (ctx.production && w.plan.plan && w.plan.plan.length) out.push(h('div', { class: 'confirm' }, [alertBox('warning', 'This is a production org.'), h('label', { text: 'Type ' + (ctx.org.alias || ctx.org.username) + ' to confirm' }),
-      h('input', { type: 'text', class: 'text', value: w.confirm, 'data-fid': applyType + '.confirm', oninput: e => { w.confirm = e.target.value; const b = document.getElementById('wzApply'); if (b) b.disabled = !confirmOk(w.confirm); } })]));
+    if (w.plan.error) { out.push(alertBox('error', w.plan.error)); out.push(h('div', { class: 'btns' }, h('button', { class: 'btn neutral', onclick: o.onBack || (() => { w.plan = null; renderMain(); }), text: 'Back' }))); return out; }
+    const total = (w.plan.plan || []).reduce((n, t) => n + t.changes.length, 0);
+    const items = (w.plan.plan || []).length;
+    // The review dialog opens as soon as the plan is ready (the same dialog as a single save).
+    if (items && !w.reviewShown && !w.progress && !w.results) setTimeout(() => { if (w.plan && !w.reviewShown) openPlanReview(w, applyType, o); }, 0);
+    out.push(h('p', { text: items ? total.toLocaleString() + ' change' + (total === 1 ? '' : 's') + ' across ' + items + ' item' + (items === 1 ? '' : 's') + ', ready to review.' : 'Nothing needs to change.' }));
+    if (w.plan.skipped && w.plan.skipped.length && !items) out.push(h('ul', { class: 'plain' }, w.plan.skipped.map(x => h('li', {}, [h('strong', { text: x.label }), ' — ' + x.reason]))));
+    if (w.progress) out.push(progressBar(w.progress));
     out.push(h('div', { class: 'btns' }, [h('button', { class: 'btn neutral', disabled: !!w.progress, onclick: o.onBack || (() => { w.plan = null; renderMain(); }), text: 'Back' }),
-      h('button', { class: 'btn brand', id: 'wzApply', disabled: !!w.progress || !(w.plan.plan && w.plan.plan.length) || (ctx.production && !confirmOk(w.confirm)),
-        onclick: () => { applyTarget = o.target || 'wizard'; w.progress = { label: '', done: 0, total: w.plan.plan.length }; w.applyError = null; renderMain(); send({ type: applyType, plan: w.plan.plan, confirm: w.confirm }); }, text: o.saveLabel || 'Save all' })]));
+      items ? h('button', { class: 'btn brand', disabled: !!w.progress, onclick: () => openPlanReview(w, applyType, o), text: 'Review ' + total.toLocaleString() + (total === 1 ? ' change' : ' changes') }) : null]));
     return out;
   }
 
@@ -2226,7 +2201,7 @@
     if (!w.object) return out;
     if (!info || !w.current) { out.push(loadingCard(w.object + ' access by item', { state: 'loading' })); return out; }
     const rts = info.recordTypes || [];
-    if (rts.length) out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', { text: 'Record types to assign' }), h('span', { class: 'muted small', text: 'Applied to every item that gets access below. On profiles, the chosen default replaces the current one.' })]),
+    if (rts.length) out.push(h('section', { class: 'card' }, [h('div', { class: 'card-head' }, [h('h2', { text: 'Record types to assign' }), h('span', { class: 'muted small', text: 'Applies to every item below. On profiles, it replaces the current default.' })]),
       h('div', { class: 'card-body rt-pick' }, rts.map(t => h('span', { class: 'rt-opt' }, [checkbox({ checked: w.rts.has(t.name), fid: 'owrt.' + t.name, label: t.label, onChange: v => { if (v) w.rts.add(t.name); else { w.rts.delete(t.name); if (w.defaultRt === t.name) w.defaultRt = ''; } renderMain(); } }),
         h('label', { class: 'radio small' }, [h('input', { type: 'radio', name: 'ow-default', checked: w.defaultRt === t.name, 'aria-label': 'Default ' + t.label, onchange: () => { w.defaultRt = t.name; w.rts.add(t.name); renderMain(); } }), ' default'])])))]));
     const cell = (r, f) => {
@@ -2295,7 +2270,7 @@
       h('button', { class: 'btn neutral', onclick: () => copy(picked, 'markdown'), text: 'Copy summary' }),
       h('button', { class: 'btn neutral', title: 'The selected saves as an Excel workbook: saves and every change', onclick: () => send({ type: 'export', what: 'history', entryIds: copyable.filter(e => historyPicked.has(e.snapshot)).map(historyId) }), text: 'Export' }),
       h('button', { class: 'btn neutral', onclick: () => { historyPicked.clear(); renderMain(); }, text: 'Clear' })]));
-    if (hf.setup && historySetupData && historySetupData.denied) out.push(alertBox('info', 'Changes made in Setup need the View Setup Audit Trail permission (from Winter ’27; View Setup before that).'));
+    if (hf.setup && historySetupData && historySetupData.denied) out.push(alertBox('info', 'Changes made in Setup need the View Setup Audit Trail permission.'));
     if (!all.length) { out.push(h('p', { class: 'empty-line', text: historyData.length ? 'Nothing matches these filters.' : 'No saves yet. Every save from this screen is recorded here.' })); return out; }
     const dayOf = at => { const d = new Date(at); const t = new Date(); const y = new Date(Date.now() - 86400e3);
       return d.toDateString() === t.toDateString() ? 'Today' : d.toDateString() === y.toDateString() ? 'Yesterday' : d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' }); };
@@ -2325,7 +2300,8 @@
         const name = c.key.slice(c.key.indexOf(':') + 1);
         for (const x of changeChips(c.from, c.to)) { if (chips.length < limitChips) chips.push(chip(x.sign, x.text + ' · ' + (c.label && !name.endsWith(c.label) ? c.label : name))); chipCount++; }
       }
-      const status = e.result === 'failed' ? h('span', { class: 'st bad', text: 'Failed' }) : /^undo/.test(e.path || '') ? h('span', { class: 'st und', text: 'Undo' }) : e.result === 'created' ? h('span', { class: 'st ok', text: 'Created' }) : h('span', { class: 'st ok', text: 'Saved' });
+      const status = e.result === 'failed' ? h('span', { class: 'st bad', text: 'Failed' }) : /^undo/.test(e.path || '') ? h('span', { class: 'st und', text: 'Undo' }) : e.result === 'created' ? h('span', { class: 'st ok', text: 'Created' })
+        : e.result === 'saved with differences' ? h('span', { class: 'st warn', text: 'Saved with differences' }) : h('span', { class: 'st ok', text: 'Saved' });
       out.push(h('div', { class: 'ev' + (historyPicked.has(e.snapshot) ? ' sel' : '') }, [
         h('div', {}, canPick ? checkbox({ checked: historyPicked.has(e.snapshot), fid: 'hist.' + e.snapshot, aria: 'Select save of ' + (e.target || ''), onChange: v => { if (v) historyPicked.add(e.snapshot); else historyPicked.delete(e.snapshot); renderMain(); } }) : null),
         h('div', {}, [h('div', { class: 't' }, [h('span', { class: 'ico ' + (SRC_CLASS[kind] || 'ps'), text: { permissionSet: 'PS', profile: 'P', group: 'G' }[kind] || 'PS' }),
@@ -2333,6 +2309,8 @@
             status, e.ticket ? h('span', { class: 'ticket', text: e.ticket }) : null]),
           h('div', { class: 'meta', text: timeOf(e.at) + ' · ' + (e.count != null ? e.count : changes.length) + ((e.count != null ? e.count : changes.length) === 1 ? ' change' : ' changes') + (e.path ? ' · ' + e.path : '') }),
           e.result === 'failed' && e.error ? h('div', { class: 'cur err', text: (e.failedStep ? e.failedStep + ': ' : '') + e.error }) : null,
+          // What the read-back found differently from what was asked
+          e.differences && e.differences.length ? h('ul', { class: 'diffs' }, e.differences.map(d => h('li', {}, [h('b', { text: d.label }), ': ' + d.text]))) : null,
           chips.length ? h('div', { class: 'ch' }, chips.concat(chipCount > 6 ? [
             chipCount > chips.length ? h('button', { class: 'link small', onclick: () => { const id = e.snapshot || e.at; if (open) hf.openLimit.set(id, limitChips + 300); else hf.open.add(id); renderMain(); },
               text: open ? 'Show ' + Math.min(300, chipCount - chips.length).toLocaleString() + ' more' : '+' + (chipCount - chips.length).toLocaleString() + ' more' }) : null,
@@ -2356,9 +2334,7 @@
   function openPsForm(mode) {
     const hd = detail && detail.data && detail.data.header;
     const f = mode === 'edit' ? { label: hd.label, name: hd.apiName, description: hd.description || '' }
-        : mode === 'copyProfile' ? { label: hd.label.replace(/^Custom:\s*/i, '') + ' Access', name: '', description: 'Access from the ' + hd.label + ' profile.', useLicense: true }
         : { label: 'Copy of ' + hd.label, name: ('Copy_of_' + hd.apiName.replace(/^\w+?__(?!c$)/, '')).slice(0, 80), description: hd.description || '' };
-    if (mode === 'copyProfile') f.name = apiName(f.label);
     f.nameTouched = mode === 'edit';
     openModal({ kind: 'psForm', mode, form: f });
   }
@@ -2369,11 +2345,7 @@
       oninput: e => { f[prop] = e.target.value; if (prop === 'label' && !f.nameTouched) { f.name = apiName(f.label); const n = document.querySelector('[data-fid="ps.name"]'); if (n) n.value = f.name; } if (prop === 'name') f.nameTouched = true; updatePsBtn(); } },
       extra && extra.area ? { rows: '3', text: f[prop] || '' } : { type: 'text' }))]);
     const out = [field('Label', 'label'), field('API Name', 'name'), field('Description', 'description', { area: true })];
-    if (modal.mode === 'clone') out.push(alertBox('info', 'Copies object, field, system, class, page, custom permission, flow, app, connected app, custom metadata and custom setting access, record type assignments and tab settings. Assignments are not copied.'));
-    if (modal.mode === 'copyProfile') {
-      out.push(checkbox({ checked: f.useLicense !== false, fid: 'ps.license', label: 'Give it the profile’s user license (recommended: every system permission stays valid)', onChange: v => { f.useLicense = v; } }));
-      out.push(alertBox('info', 'Copies the profile’s object, field, system, class, page, custom permission, flow, app, connected app, custom metadata and custom setting access, tab settings and record type assignments into a new permission set. Page layouts, login hours, IP ranges and record type defaults stay on the profile, and nothing is removed from it.'));
-    }
+    if (modal.mode === 'clone') out.push(alertBox('info', 'Copies all access, record type assignments and tab settings. Assignments aren’t copied.'));
     if (ctx.production) out.push(h('div', { class: 'confirm' }, [alertBox('warning', 'This is a production org.'), h('label', { text: 'Type ' + (ctx.org.alias || ctx.org.username) + ' to confirm' }),
       h('input', { type: 'text', class: 'text', value: modal.confirm || '', oninput: e => { modal.confirm = e.target.value; updatePsBtn(); } })]));
     if (modal.progress) out.push(h('p', { class: 'muted status' }, [spinner(true), ' ' + modal.progress]));
@@ -2391,8 +2363,8 @@
     modal.error = null;
     modal.progress = modal.mode === 'edit' ? 'Saving…' : 'Starting the copy…';
     renderModal();
-    const type = { edit: 'editPs', clone: 'clonePs', copyProfile: 'copyProfile' }[modal.mode];
-    send({ type, key: ui.selected, label: f.label.trim(), name: f.name.trim(), description: f.description.trim(), confirm: modal.confirm || '', useLicense: f.useLicense !== false });
+    const type = { edit: 'editPs', clone: 'clonePs' }[modal.mode];
+    send({ type, key: ui.selected, label: f.label.trim(), name: f.name.trim(), description: f.description.trim(), confirm: modal.confirm || '' });
   }
 
   // ---------- footer, review, toasts ----------
@@ -2473,21 +2445,21 @@
       const name = first.k.slice(5);
       const auto = risky.filter(r => r !== first && r.chips.every(c => c.auto)).map(r => r.p.label);
       const others = risky.filter(r => r !== first && !auto.includes(r.p.label)).map(r => r.p.label);
-      out.push(h('div', { class: 'rv-call risk', role: 'note' }, [h('span', { class: 'ic', text: '!' }), h('span', {}, [h('b', { text: first.p.label }),
+      out.push(h('div', { class: 'rv-call risk', role: 'note' }, [h('span', { class: 'ic' }, svg(ICONS.warning)), h('span', {}, [h('b', { text: first.p.label }),
         ' lets all ' + users + ' ' + (hd.kindId === 'profile' ? 'users with this profile ' : 'users ') + (RISK_TEXT[name] || 'reach far beyond a single object') + '.',
         others.length ? ' Also granted: ' + others.join(', ') + '.' : '',
         auto.length ? ' ' + auto.join(' and ') + (auto.length === 1 ? ' is' : ' are') + ' added because Salesforce requires it.' : ''])]));
     }
     if (removed.length) {
-      const lost = removed.slice(0, 3).map(r => r.chips.filter(c => c.sign === '-').map(c => c.text).join(', ') + ' on ' + r.p.label);
-      out.push(h('div', { class: 'rv-call warn', role: 'note' }, [h('span', { class: 'ic', text: '−' }), h('span', { text: 'Users lose ' + lost.join('; ') + (removed.length > 3 ? ' and ' + (removed.length - 3) + ' more' : '') +
+      const lost = removed.slice(0, 3).map(r => r.chips.filter(c => c.sign === '-').map(c => c.text.replace(/^Muted: /, '')).join(', ') + ' on ' + r.p.label);
+      out.push(h('div', { class: 'rv-call warn', role: 'note' }, [h('span', { class: 'ic' }, svg(ICONS.warning)), h('span', { text: 'Users lose ' + lost.join('; ') + (removed.length > 3 ? ' and ' + (removed.length - 3) + ' more' : '') +
         ', unless another permission set, profile or group still gives it to them.' })]));
     }
     // Assignments a user access policy may change again.
     const pol = policies[ui.selected];
     const removedUsers = rows.filter(r => r.p.cat === 'assignment' && r.p.before && r.p.before.assigned && !r.p.after.assigned).length;
     const granting = pol && pol.list.filter(x => x.grants && /active/i.test(x.status));
-    if (removedUsers && granting && granting.length) out.push(h('div', { class: 'rv-call warn', role: 'note' }, [h('span', { class: 'ic', text: '⟳' }), h('span', {}, [
+    if (removedUsers && granting && granting.length) out.push(h('div', { class: 'rv-call warn', role: 'note' }, [h('span', { class: 'ic' }, svg(ICONS.refresh)), h('span', {}, [
       h('b', { text: granting.map(x => x.label).join(', ') }), (granting.length === 1 ? ' grants' : ' grant') + ' this ' + (hd.kindId === 'group' ? 'group' : 'permission set') + ' automatically. ' +
       'Removed users who match ' + (granting.length === 1 ? 'its' : 'their') + ' criteria may be given it again.'])]));
     // Users who only lack the permission set licence can get it in the same save.
@@ -2501,7 +2473,7 @@
     out.push(h('div', { class: 'rv-tools' }, [
       h('input', { type: 'search', class: 'text', placeholder: 'Filter changes', 'aria-label': 'Filter changes', value: modal.filter || '', 'data-fid': 'rv.filter',
         oninput: e => { modal.filter = e.target.value; renderReviewTable(); } }),
-      h('input', { type: 'text', class: 'text', placeholder: 'Ticket (optional), e.g. ADO US 11581701', 'aria-label': 'Ticket', value: modal.ticket, 'data-fid': 'rv.ticket', maxlength: '80',
+      h('input', { type: 'text', class: 'text', placeholder: 'User story or ticket number (optional)', 'aria-label': 'User story or ticket number', value: modal.ticket, 'data-fid': 'rv.ticket', maxlength: '80',
         oninput: e => { modal.ticket = e.target.value; } })]));
     out.push(h('div', { class: 'rv-scroll', id: 'rvTable' }, reviewTable(rows)));
     return out;
@@ -2520,26 +2492,132 @@
     const count = f.users.filter(u => newly.includes(u)).length;
     return count ? { label: f.label, count } : null;
   }
-  function reviewTable(rows) {
+  /**
+   * Progress while saving: a bar (changes saved out of all of them, or steps done) and what is happening now.
+   * p: { label, done, total, changesSaved, changesTotal }.
+   */
+  function progressBar(p) {
+    if (!p) return null;
+    const total = p.changesTotal || p.total || 0;
+    const done = p.changesTotal ? (p.changesSaved || 0) : (p.done || 0);
+    // Steps finished count too, so the bar moves while a big request is still running.
+    const frac = total ? Math.min(1, Math.max(p.total ? (p.done || 0) / p.total : 0, done / total)) : 0;
+    const pct = Math.round(frac * 100);
+    const counts = p.changesTotal ? (p.changesSaved || 0).toLocaleString() + ' of ' + p.changesTotal.toLocaleString() + ' changes saved' : (p.total > 1 ? 'Step ' + Math.min((p.done || 0) + 1, p.total) + ' of ' + p.total : '');
+    // While a step runs, the bar eases on towards the next milestone (never reaching it), so it never sits still.
+    const steps = p.total || 1;
+    const next = Math.min(97, Math.round(Math.min(1, ((p.done || 0) + 0.9) / steps) * 100));
+    const start = Math.max(pct, Math.min(p.shown || 0, next));
+    const fill = h('i', { style: 'width:' + start + '%' });
+    if (next > start) requestAnimationFrame(() => requestAnimationFrame(() => { fill.style.transition = 'width 14s cubic-bezier(.15,.6,.25,1)'; fill.style.width = next + '%'; p.shown = next; }));
+    return h('div', { class: 'save-progress', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(pct), 'aria-label': 'Saving' }, [
+      h('div', { class: 'bar' }, fill),
+      h('div', { class: 'save-progress-text' }, [h('span', { text: p.label || 'Saving…' }), h('span', { class: 'muted', text: (counts ? counts + ' · ' : '') + pct + '%' })])]);
+  }
+
+  // ---------- the review dialog for a plan: the Grant screens, Find access removals, health check fixes.
+  // The same dialog as a single save, with the changes grouped by permission set or profile.
+  function openPlanReview(w, applyType, opts) {
+    w.reviewShown = true;
+    modal = { kind: 'planReview', w, applyType, opts: opts || {}, filter: '', ticket: '', confirm: '' };
+    renderModal();
+  }
+  const planRows = w => (w.plan.plan || []).flatMap(t => t.changes.map(c => ({ t, c, chips: changeChips(c.before, c.after) })));
+  function planReviewContent() {
+    const { w } = modal;
+    const plan = w.plan.plan || [];
+    const rows = planRows(w);
+    const granted = rows.filter(r => r.chips.some(x => x.sign === '+')).length;
+    const removed = rows.filter(r => r.chips.some(x => x.sign === '-')).length;
+    const risky = rows.filter(r => r.c.key.startsWith('object:') && r.c.after && (r.c.after.viewAll || r.c.after.modifyAll) && !(r.c.before && (r.c.before.viewAll || r.c.before.modifyAll))).length;
+    const users = plan.reduce((n, t) => n + (Number(t.users) || 0), 0);
+    const out = [h('div', { class: 'rv-stats' }, [
+      h('div', { class: 'rv-stat' }, [h('b', { text: rows.length.toLocaleString() }), h('span', { text: (rows.length === 1 ? 'change' : 'changes') + ' · ' + granted + ' granted, ' + removed + ' removed' })]),
+      h('div', { class: 'rv-stat' }, [h('b', { text: String(plan.length) }), h('span', { text: (plan.length === 1 ? 'item' : 'items') + (users ? ' · ' + users.toLocaleString() + ' active users' : '') })]),
+      h('div', { class: 'rv-stat' + (risky ? ' risk' : '') }, [h('b', { text: String(risky) }), h('span', { text: 'high-impact permissions granted' })]),
+      h('div', { class: 'rv-stat' + (removed ? ' warn' : '') }, [h('b', { text: String(removed) }), h('span', { text: 'access removed' })])])];
+    if (plan.some(t => t.changes.some(c => c.key.startsWith('recordType:')))) out.push(alertBox('info', 'Record type assignments are deployed per item, after the other changes.'));
+    if (w.plan.skipped && w.plan.skipped.length) out.push(h('details', { class: 'card disclosure' }, [h('summary', { text: w.plan.skipped.length + ' skipped' }), h('ul', { class: 'plain' }, w.plan.skipped.map(x => h('li', {}, [h('strong', { text: x.label }), ' — ' + x.reason])))]));
+    out.push(h('div', { class: 'rv-tools' }, [
+      h('input', { type: 'search', class: 'text', placeholder: 'Filter changes', 'aria-label': 'Filter changes', value: modal.filter || '', 'data-fid': 'rv.filter', oninput: e => { modal.filter = e.target.value; renderPlanReviewTable(); } }),
+      h('input', { type: 'text', class: 'text', placeholder: 'User story or ticket number (optional)', 'aria-label': 'User story or ticket number', value: modal.ticket, 'data-fid': 'rv.ticket', maxlength: '80', oninput: e => { modal.ticket = e.target.value; } })]));
+    out.push(h('div', { class: 'rv-scroll', id: 'rvTable' }, planReviewTable(rows)));
+    return out;
+  }
+  function planReviewTable(rows) {
     const q = (modal.filter || '').trim().toLowerCase();
     const body = [];
+    const busy = !!modal.w.progress;
+    for (const t of modal.w.plan.plan || []) {
+      const mine = rows.filter(r => r.t === t && (!q || (t.label + ' ' + (r.c.label || '') + ' ' + r.c.key + ' ' + r.chips.map(x => x.text).join(' ')).toLowerCase().includes(q)));
+      if (!mine.length) continue;
+      body.push(h('tr', { class: 'rv-grp' }, h('td', { colspan: '4', text: t.label + ' (' + mine.length + ')' })));
+      for (const r of mine) body.push(h('tr', {}, [
+        h('td', {}, h('b', { text: r.c.label || r.c.key.slice(r.c.key.indexOf(':') + 1) })),
+        h('td', { class: 'mono', text: r.c.key.slice(r.c.key.indexOf(':') + 1) }),
+        h('td', {}, pills(r.chips.map(x => chip(x.sign, x.text)))),
+        h('td', { class: 'c narrow' }, h('button', { class: 'rv-x', title: 'Remove this change', 'aria-label': 'Remove the change to ' + (r.c.label || r.c.key) + ' on ' + t.label, disabled: busy,
+          onclick: () => { t.changes = t.changes.filter(c => c !== r.c); modal.w.plan.plan = modal.w.plan.plan.filter(x => x.changes.length);
+            if (!modal.w.plan.plan.length) { closeModal(); renderMain(); } else renderModal(); }, text: '×' }))]));
+    }
+    if (!body.length) return h('p', { class: 'empty-line', text: 'No changes match.' });
+    return h('table', { class: 'rv-table' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Entry' }), h('th', { text: 'API name' }), h('th', { text: 'Change' }), h('th', {})])), h('tbody', {}, body)]);
+  }
+  function renderPlanReviewTable() {
+    const el = document.getElementById('rvTable');
+    if (!el || !modal || modal.kind !== 'planReview') return;
+    el.textContent = '';
+    el.appendChild(planReviewTable(planRows(modal.w)));
+  }
+  function planReviewModal() {
+    const { w, applyType, opts } = modal;
+    const n = (w.plan.plan || []).reduce((k, t) => k + t.changes.length, 0);
+    const items = (w.plan.plan || []).length;
+    const title = 'Review changes to ' + (items === 1 ? w.plan.plan[0].label : items + ' items');
+    const content = planReviewContent();
+    if (w.applyError) content.push(alertBox('error', w.applyError));
+    if (ctx.production) content.push(h('div', { class: 'confirm' }, [alertBox('warning', 'This is a production org.'),
+      h('label', { for: 'confirm', text: 'Type ' + (ctx.org.alias || ctx.org.username) + ' to confirm' }),
+      h('input', { id: 'confirm', type: 'text', autocomplete: 'off', value: modal.confirm || '', 'data-fid': applyType + '.confirm', disabled: !!w.progress,
+        oninput: e => { modal.confirm = e.target.value; const b = document.getElementById('wzApply'); if (b) b.disabled = !!w.progress || !confirmOk(modal.confirm); } })]));
+    if (w.progress) content.push(progressBar(w.progress));
+    const save = () => {
+      applyTarget = opts.target || (applyType === 'objWizardApply' ? 'objwizard' : 'wizard');
+      w.progress = { label: 'Starting…', done: 0, total: 1, changesSaved: 0, changesTotal: n };
+      w.applyError = null;
+      renderModal();
+      send({ type: applyType, plan: w.plan.plan, confirm: modal.confirm, ticket: (modal.ticket || '').trim() });
+    };
+    const buttons = [h('button', { class: 'btn neutral', disabled: !!w.progress, onclick: () => { closeModal(); renderMain(); }, text: 'Cancel' }),
+      h('button', { class: 'btn brand', id: 'wzApply', disabled: !!w.progress || !n || (ctx.production && !confirmOk(modal.confirm)), onclick: save,
+        text: w.progress ? 'Saving…' : (opts.saveLabel ? opts.saveLabel + ' ' : 'Save ') + n.toLocaleString() + (n === 1 ? ' change' : ' changes') })];
+    return { title, content, buttons };
+  }
+
+  function reviewTable(pendingRows) {
+    const q = (modal.filter || '').trim().toLowerCase();
+    const body = [];
+    // After a partial failure: the saved changes too, marked Saved, and a status on every row.
+    const status = !!(modal.outcome && modal.outcome.size);
+    const rows = pendingRows.concat(status ? (modal.savedRows || []).map(([k, p]) => ({ k, p, chips: reviewChips(k, p), saved: true })) : []);
     for (const [cat, title] of CATEGORY_TITLES) {
       const inCat = rows.filter(r => r.p.cat === cat && (!q || (r.p.label + ' ' + r.k + ' ' + r.chips.map(c => c.text).join(' ')).toLowerCase().includes(q)));
       if (!inCat.length) continue;
-      body.push(h('tr', { class: 'rv-grp' }, h('td', { colspan: '4', text: title + ' (' + inCat.length + ')' })));
+      body.push(h('tr', { class: 'rv-grp' }, h('td', { colspan: status ? '5' : '4', text: title + ' (' + inCat.length + ')' })));
       for (const r of inCat) {
         const allAuto = r.chips.length && r.chips.every(c => c.auto);
         const risk = r.p.cat === 'user' && r.p.after.enabled && isHighImpact({ name: r.k.slice(5), label: r.p.label });
         body.push(h('tr', {}, [
           h('td', {}, [h('b', { text: r.p.label }), allAuto ? h('span', { class: 'rv-auto', title: 'Added by Salesforce’s permission rules', text: 'auto' }) : null, risk ? h('span', { class: 'rv-risk', text: 'High impact' }) : null]),
           h('td', { class: 'mono', text: r.k.slice(r.k.indexOf(':') + 1) }),
-          h('td', {}, r.chips.map(c => chip(c.sign, c.text, c.auto ? 'Added by Salesforce’s permission rules' : null))),
-          h('td', { class: 'c narrow' }, h('button', { class: 'rv-x', title: 'Remove this change', 'aria-label': 'Remove the change to ' + r.p.label, disabled: !!saving,
+          h('td', {}, pills(r.chips.map(c => chip(c.sign, c.text, c.auto ? 'Added by Salesforce’s permission rules' : null)))),
+          status ? h('td', { class: 'rv-status' }, r.saved ? h('span', { class: 'st ok', text: 'Saved' }) : h('span', { class: 'st bad', text: 'Not saved' })) : null,
+          r.saved ? h('td', { class: 'c narrow' }) : h('td', { class: 'c narrow' }, h('button', { class: 'rv-x', title: 'Remove this change', 'aria-label': 'Remove the change to ' + r.p.label, disabled: !!saving,
             onclick: () => { pending.delete(r.k); patchRows([r.k]); renderFooter(); if (!pending.size) closeModal(); else renderModal(); }, text: '×' }))]));
       }
     }
     if (!body.length) return h('p', { class: 'empty-line', text: 'No changes match.' });
-    return h('table', { class: 'rv-table' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Entry' }), h('th', { text: 'API name' }), h('th', { text: 'Change' }), h('th', {})])), h('tbody', {}, body)]);
+    return h('table', { class: 'rv-table' }, [h('thead', {}, h('tr', {}, [h('th', { text: 'Entry' }), h('th', { text: 'API name' }), h('th', { text: 'Change' }), status ? h('th', { text: 'Status' }) : null, h('th', {})])), h('tbody', {}, body)]);
   }
   function renderReviewTable() {
     const el = document.getElementById('rvTable');
@@ -2556,8 +2634,10 @@
     overlay.hidden = !modal;
     if (!modal) return;
     let title, content, buttons;
-    if (modal.kind === 'psForm') {
-      title = { edit: 'Edit permission set', clone: 'Clone ' + (detail && detail.data ? detail.data.header.label : ''), copyProfile: 'Copy ' + (detail && detail.data ? detail.data.header.label : '') + ' to a permission set' }[modal.mode];
+    if (modal.kind === 'planReview') {
+      ({ title, content, buttons } = planReviewModal());
+    } else if (modal.kind === 'psForm') {
+      title = { edit: 'Edit permission set', clone: 'Clone ' + (detail && detail.data ? detail.data.header.label : '') }[modal.mode];
       content = psFormContent();
       buttons = [h('button', { class: 'btn neutral', onclick: closeModal, text: 'Cancel', disabled: !!modal.progress }),
         h('button', { class: 'btn brand', id: 'psBtn', onclick: submitPs, text: modal.mode === 'clone' ? 'Clone' : 'Save' })];
@@ -2581,7 +2661,7 @@
       if (modal.kind === 'conflict') content.push(h('div', { class: 'review-scroll' }, reviewList()));
       else {
         content.push(...reviewView(hd));
-        if ([...pending.values()].some(p => ['recordType', 'layoutAssignment', 'loginHours', 'loginIpRanges'].includes(p.cat))) content.push(alertBox('info', 'Some of these are saved with a Metadata API deploy, which takes longer. A full copy of this item’s access is taken first and checked afterwards.'));
+        if ([...pending.values()].some(p => ['recordType', 'layoutAssignment', 'loginHours', 'loginIpRanges'].includes(p.cat))) content.push(alertBox('info', 'Some of these are saved with a Metadata API deploy, which takes longer.'));
       }
       if (modal.error) content.push(alertBox('error', modal.error, modal.restore ? [h('div', { class: 'btns mt' }, h('button', { class: 'btn brand', onclick: () => { send({ type: 'restore', key: ui.selected, snapshotId: modal.restore }); pending.clear(); closeModal(); renderFooter(); }, text: 'Restore removed permissions' }))] : null));
       if (localFile && localFile.key === ui.selected && localFile.path && localFile.mode !== 'never' && modal.kind === 'review') {
@@ -2589,12 +2669,12 @@
         content.push(checkbox({ checked: modal.writeLocal, disabled: localFile.mode === 'always', fid: 'review.local', label: 'Also update ' + localFile.path, onChange: v => { modal.writeLocal = v; } }));
       }
       if (confirm) content.push(confirm);
-      if (saving) content.push(h('p', { class: 'muted status' }, [spinner(true), ' ' + (saving.label || 'Saving…') + (saving.total ? ' (' + (saving.done + 1) + ' of ' + saving.total + ')' : '')]));
+      if (saving) content.push(progressBar(saving));
       const go = h('button', { class: 'btn brand', id: 'saveBtn', onclick: () => doSave(modal.kind === 'conflict'), text: modal.kind === 'conflict' ? 'Save anyway' : 'Save ' + pending.size + (pending.size === 1 ? ' change' : ' changes') });
       buttons = [h('button', { class: 'btn neutral', onclick: () => { if (modal.kind === 'conflict') { pending.clear(); renderFooter(); closeModal(); reloadCurrent(); } else closeModal(); },
         text: modal.kind === 'conflict' ? 'Discard mine and reload' : 'Cancel', disabled: !!saving }), go];
     }
-    const box = h('section', { class: 'modal' + (modal.kind === 'review' ? ' wide' : ''), role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'modal-title' }, [
+    const box = h('section', { class: 'modal' + (modal.kind === 'review' || modal.kind === 'planReview' ? ' wide' : ''), role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'modal-title' }, [
       h('header', {}, [h('h2', { id: 'modal-title', text: title }), h('button', { class: 'icon-only', 'aria-label': 'Close', onclick: () => { if (!saving) closeModal(); } }, svg(ICONS.close))]),
       h('div', { class: 'modal-body' }, content),
       h('footer', {}, buttons)]);
@@ -2713,10 +2793,24 @@
           if (m.local && m.local.error) toast('warning', 'Saved to the org, but the local file could not be updated: ' + m.local.error, { sticky: true });
           if (m.local && m.local.skipped) toast('info', m.local.skipped + ' connected app change' + (m.local.skipped === 1 ? ' has' : 's have') + ' no place in the file and ' + (m.local.skipped === 1 ? 'was' : 'were') + ' left out of it.');
           if (m.leftOut) toast('warning', m.leftOut, { title: 'Left out', sticky: true });
-          if (m.mismatches && m.mismatches.length) toast('warning', m.mismatches.length + ' entries did not end up as requested; the screen shows what the org now holds.', { title: 'Check these', sticky: true });
+          if (m.mismatches && m.mismatches.length) {
+            // Say which entries, and what the org has instead (also in History and Show Log).
+            const ds = m.differences && m.differences.length ? m.differences : m.mismatches.map(x => ({ label: x.key.slice(x.key.indexOf(':') + 1), text: 'not as requested' }));
+            const n = ds.length;
+            toast('warning', ds.slice(0, 3).map(d => d.label + ': ' + d.text).join('\n') + (n > 3 ? '\n…and ' + (n - 3) + ' more.' : ''), { title: (n === 1 ? '1 entry' : n + ' entries') + ' not as requested', sticky: true });
+          }
           break;
         }
-        if (modal) { modal.error = m.message + (m.partial ? '\nSome steps were saved before this error. The screen now shows the org’s current values; anything still listed was not saved.' : ''); modal.restore = m.restorable ? m.snapshotId : null; renderModal(); }
+        if (modal && m.outcome && m.outcome.length) {
+          // Row by row: saved changes leave the pending list (Save now saves the rest) but stay in the table, marked Saved.
+          const saved = new Set(m.outcome.filter(o => o.saved).map(o => o.key));
+          modal.outcome = new Map(m.outcome.map(o => [o.key, o.saved]));
+          modal.savedRows = (modal.savedRows || []).concat([...pending].filter(([k]) => saved.has(k)));
+          for (const k of saved) pending.delete(k);
+          const left = m.outcome.length - saved.size;
+          modal.error = saved.size + ' of ' + m.outcome.length + ' changes were saved.\nSalesforce’s reason: ' + String(m.message).replace(/\s*$/, '').replace(/([^.])$/, '$1.') + ' Adjust what wasn’t saved, then save again.';
+          modal.restore = m.restorable ? m.snapshotId : null; renderModal();
+        } else if (modal) { modal.error = m.message + (m.partial ? '\nSome changes were saved before this error.' : ''); modal.restore = m.restorable ? m.snapshotId : null; renderModal(); }
         else toast('error', m.message, { title: 'Save failed', sticky: true });
         renderFooter();
         break;
@@ -2736,20 +2830,24 @@
       // The page was opened again: read the open item and its sections again (unsaved changes are kept).
       case 'fullRefresh': for (const k of Object.keys(policies)) delete policies[k]; refreshOpen(); break;
       case 'mutingLoading': if (m.key === ui.selected) { if (muting && muting.key === m.key && muting.data) muting.refreshing = true; else muting = { key: m.key, state: 'loading' }; renderMain(); } break;
-      case 'mutingDetail': if (m.key === ui.selected) { muting = { key: m.key, data: m.data, refreshing: m.refreshing, state: 'ready' }; mutingForm = null; renderMain(); } break;
+      case 'mutingDetail': if (m.key === ui.selected) {
+        muting = { key: m.key, data: m.data, refreshing: m.refreshing, state: 'ready' };
+        // Muting is read only: changes staged by an older version are dropped, so they can't reach a save.
+        let dropped = false;
+        for (const k of [...pending.keys()]) if (k.startsWith('mute:')) { pending.delete(k); dropped = true; }
+        if (dropped) renderFooter();
+        renderMain();
+      } break;
       case 'mutingError': if (m.key === ui.selected) { muting = { key: m.key, state: 'error', message: m.message }; renderMain(); } break;
-      case 'mutingFields': if (m.key === ui.selected && mutingFieldList && mutingFieldList.object === m.object) { mutingFieldList = { key: m.key, object: m.object, fields: m.fields, error: m.error }; renderMain(); } break;
-      case 'mutingCreated':
-        if (mutingForm) mutingForm.busy = false;
-        if (m.error) toast('error', m.error, { title: 'Could not create the muting permission set' });
-        else toast('success', 'The group now has a muting permission set. Tick what to mute, then save.', { title: 'Muting ready' });
-        renderMain(); break;
       case 'profileSettingsLoading': if (m.key === ui.selected) { if (profSettings && profSettings.key === m.key && profSettings.data) profSettings.refreshing = true; else profSettings = { key: m.key, state: 'loading' }; renderMain(); } break;
       case 'profileSettings': if (m.key === ui.selected) { profSettings = { key: m.key, data: m.data, refreshing: m.refreshing, state: 'ready' }; renderMain(); } break;
       case 'profileSettingsError': if (m.key === ui.selected) { profSettings = { key: m.key, state: 'error', message: m.message }; renderMain(); } break;
       case 'policies': policies[m.key] = { state: 'ready', list: m.list || [], error: m.error }; if (m.key === ui.selected && !ui.tool) renderMain(); break;
-      case 'userAccess': if (m.userId === ua.userId) { ua.busy = false; ua.data = m.data || null; ua.error = m.error || null; if (ui.tool === 'useraccess') renderMain(); } break;
-      case 'userFields': if (m.userId === ua.userId && m.object === ua.openObj) { ua.fields = m.fields || []; if (ui.tool === 'useraccess') renderMain(); } break;
+      case 'userAccess': ua.fieldIndex = null; ua.fieldIndexFor = null; if (m.userId === ua.userId) { ua.busy = false; ua.data = m.data || null; ua.error = m.error || null; if (ui.tool === 'useraccess') renderMain(); } break;
+      case 'userFields':
+        if (m.userId === ua.userId && m.object == null) { ua.fieldIndex = m.fields || []; if (ui.tool === 'useraccess') renderMain(); }
+        else if (m.userId === ua.userId && m.object === ua.openObj) { ua.fields = m.fields || []; if (ui.tool === 'useraccess') renderMain(); }
+        break;
       case 'orgs': cmp.orgs = m.orgs || []; if (ui.tool === 'compare') renderMain(); break;
       case 'exported': {
         const file = m.path;
@@ -2801,11 +2899,13 @@
         break;
       case 'wizardPlan': wizard.busy = false; wizard.plan = m; if (ui.tool === 'wizard') renderMain(); break;
       case 'wizardProgress': { const w = applyTarget === 'revoke' && lookup.revoke ? lookup.revoke : applyTarget === 'health' && hc.fix ? hc.fix : wizard;
-        w.progress = { label: m.label, done: m.done, total: m.total, step: m.step || null, stepDone: m.stepDone, stepTotal: m.stepTotal, changes: m.changes }; renderMain(); break; }
+        w.progress = { label: m.step || m.label, done: m.done, total: m.total, changesSaved: m.changesSaved, changesTotal: m.changesTotal };
+        if (modal && modal.kind === 'planReview') renderModal(); else renderMain(); break; }
       case 'wizardResult': {
         const w = applyTarget === 'revoke' && lookup.revoke ? lookup.revoke : applyTarget === 'health' && hc.fix ? hc.fix : wizard;
         w.progress = null;
-        if (m.error) w.applyError = m.error; else { w.results = m.results; w.plan = null; if (ui.selected && m.results.some(r => r.key === ui.selected)) detail = null; }
+        if (m.error) { w.applyError = m.error; if (modal && modal.kind === 'planReview') renderModal(); }
+        else { w.results = m.results; w.plan = null; w.reviewShown = false; if (modal && modal.kind === 'planReview') closeModal(); if (ui.selected && m.results.some(r => r.key === ui.selected)) detail = null; }
         applyTarget = 'wizard';
         renderMain();
         break;
@@ -2839,10 +2939,12 @@
       case 'history': historyData = m.entries || []; if (ui.tool === 'history') renderMain(); break;
       case 'objWizardInfo': if (objWizard.object === m.object) { objWizard.info = { recordTypes: m.recordTypes, columns: m.columns }; if (m.message) toast('error', m.message, { title: 'Could not read ' + m.object }); if (ui.tool === 'objwizard') renderMain(); } break;
       case 'objWizardPlan': objWizard.busy = false; objWizard.plan = m; if (ui.tool === 'objwizard') renderMain(); break;
-      case 'objWizardProgress': objWizard.progress = { label: m.label, done: m.done, total: m.total }; if (ui.tool === 'objwizard') renderMain(); break;
+      case 'objWizardProgress': objWizard.progress = { label: m.step || m.label, done: m.done, total: m.total, changesSaved: m.changesSaved, changesTotal: m.changesTotal };
+        if (modal && modal.kind === 'planReview') renderModal(); else if (ui.tool === 'objwizard') renderMain(); break;
       case 'objWizardResult':
         objWizard.progress = null;
-        if (m.error) objWizard.applyError = m.error; else { objWizard.results = m.results; objWizard.plan = null; if (ui.selected && m.results.some(r => r.key === ui.selected)) detail = null; }
+        if (m.error) { objWizard.applyError = m.error; if (modal && modal.kind === 'planReview') renderModal(); }
+        else { objWizard.results = m.results; objWizard.plan = null; objWizard.reviewShown = false; if (modal && modal.kind === 'planReview') closeModal(); if (ui.selected && m.results.some(r => r.key === ui.selected)) detail = null; }
         if (ui.tool === 'objwizard') renderMain();
         break;
       case 'stageChanges':
@@ -2853,11 +2955,7 @@
       case 'psSaved':
         if (m.error) { if (modal && modal.kind === 'psForm') { modal.progress = null; modal.error = m.error; renderModal(); } else toast('error', m.error, { sticky: true }); break; }
         closeModal();
-        if (m.mode === 'copyProfile' && m.counts) {
-          const c = m.counts;
-          toast('success', 'Copied ' + m.from + ' into ' + m.label + ': ' + [c.objects + ' object', c.fields + ' field', c.system + ' system', c.entities + ' class, page and other', c.tabs + ' tab', c.recordTypes + ' record type'].join(', ') +
-            ' permissions. Assign the new permission set, then remove what it duplicates from the profile when you’re ready.', { title: 'Done', sticky: true });
-        } else toast('success', { edit: 'Saved ', clone: 'Cloned into ' }[m.mode] + m.label + '.', { title: 'Done' });
+        toast('success', { edit: 'Saved ', clone: 'Cloned into ' }[m.mode] + m.label + '.', { title: 'Done' });
         break;
       case 'selectKey': guard(() => {
         const kind = m.key.split(':')[0];

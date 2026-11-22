@@ -31,12 +31,13 @@ async def main():
     await post(det(g["key"], hdr(g["label"], g["apiName"], "Permission Set Group", "group", ["assignment","groupComponent","mute"]))); await fr.wait_for_timeout(40)
     await post({"type":"policies","key":g["key"],"list":[{"name":"Sales_Onboarding","label":"Sales Onboarding","status":"Active","triggerType":"Create","grants":True,"removes":False}]})
     await fr.click(".nav-item:has-text('Muted Permissions')")
-    O=lambda **k: {**{"read":False,"create":False,"edit":False,"delete":False,"viewAll":False,"modifyAll":False},**k}
-    await post({"type":"mutingDetail","key":g["key"],"savedAt":now,"refreshing":False,"data":{"muting":{"id":"0QM1","name":"Sales_Team_Bundle_Muting","label":"Sales Team Bundle Muting"},"members":3,
-      "objects":[{"name":n,"props":pr} for n,pr in [("Account",O(read=True,create=True,edit=True,delete=True)),("Contact",O(read=True,create=True,edit=True)),("Lead",O(read=True,create=True,edit=True,delete=True,viewAll=True)),("Opportunity",O(read=True,create=True,edit=True,delete=True)),("Quote",O(read=True,edit=True))]],
-      "system":[{"name":n,"label":l} for n,l in [("ApiEnabled","API Enabled"),("ExportReport","Export Reports"),("ModifyAllData","Modify All Data"),("RunReports","Run Reports"),("ViewSetup","View Setup and Configuration")]],
-      "muted":[["mute:object:Account",O(delete=True)],["mute:user:ExportReport",{"enabled":True}]]}}); await fr.wait_for_timeout(40)
-    await fr.click("[aria-label='Mute Delete on Opportunity']"); await fr.click("[aria-label='Mute Modify All Data']")
+    # Read-only: every section of the group's muting permission set
+    SEC=[{"tag":"objectPermissions","title":"Object permissions","columns":["Read","Create","Edit","Delete","View All","Modify All","View All Fields"],
+          "rows":[{"name":"Account","values":[False,False,False,True,False,False,False]},{"name":"Lead","values":[False,False,False,False,True,False,True]},{"name":"Opportunity","values":[False,False,False,True,False,False,False]}]},
+         {"tag":"fieldPermissions","title":"Field permissions","columns":["Read","Edit"],"rows":[{"name":"Account.AnnualRevenue","values":[False,True]},{"name":"Lead.Rating","values":[True,True]}]},
+         {"tag":"userPermissions","title":"System permissions","columns":["Muted"],"rows":[{"name":"ExportReport","values":[True]},{"name":"ModifyAllData","values":[True]}]},
+         {"tag":"tabSettings","title":"Tab settings","columns":["Visibility"],"rows":[{"name":"standard-Lead","values":["Hidden"]}]}]
+    await post({"type":"mutingDetail","key":g["key"],"savedAt":now,"refreshing":False,"data":{"muting":{"id":"0QM1","name":"Sales_Team_Bundle_Muting","label":"Sales Team Bundle Muting"},"sections":SEC}}); await fr.wait_for_timeout(40)
     await shot(pg,"1-muting"); await pg.close()
     # profile settings
     pg,fr,post=await frame("")

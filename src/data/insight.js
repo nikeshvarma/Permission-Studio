@@ -136,13 +136,14 @@ function entityNames(conn) {
     if (cat === 'customMetadata') {
       for (const c of ['customMetadata', 'customSetting']) {
         if (!lists.has(c)) lists.set(c, loader.listEntities(conn, c).catch(() => []));
-        const hit = (await lists.get(c)).find(x => x.entityId === entityId);
+        const hit = (await lists.get(c)).find(x => loader.id15(x.entityId) === loader.id15(entityId));
         if (hit) return { cat: c, name: hit.name };
       }
       return null;
     }
     if (!lists.has(cat)) lists.set(cat, loader.listEntities(conn, cat).catch(() => []));
-    const hit = (await lists.get(cat)).find(x => x.entityId === entityId);
+    // Either form of the Id: lists can hold a 15-character DurableId, SetupEntityAccess the 18-character Id.
+    const hit = (await lists.get(cat)).find(x => loader.id15(x.entityId) === loader.id15(entityId));
     return hit ? hit.name : null;
   };
 }

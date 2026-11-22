@@ -24,7 +24,7 @@ function createOrg(options) {
         categoryGroupVisibilities: [{ dataCategoryGroup: 'Products', visibility: 'ALL' }] } },
     // Whole files of other types: { type: { name: xml } }.
     files: {
-      MutingPermissionSet: { Sales_Bundle_Muting: '<?xml version="1.0" encoding="UTF-8"?>\n<MutingPermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">\n    <objectPermissions>\n        <allowCreate>false</allowCreate>\n        <allowDelete>true</allowDelete>\n        <allowEdit>false</allowEdit>\n        <allowRead>false</allowRead>\n        <modifyAllRecords>false</modifyAllRecords>\n        <object>Account</object>\n        <viewAllRecords>false</viewAllRecords>\n    </objectPermissions>\n    <label>Sales Bundle Muting</label>\n</MutingPermissionSet>\n' },
+      MutingPermissionSet: { Sales_Bundle_Muting: '<?xml version="1.0" encoding="UTF-8"?>\n<MutingPermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">\n    <objectPermissions>\n        <allowCreate>false</allowCreate>\n        <allowDelete>true</allowDelete>\n        <allowEdit>false</allowEdit>\n        <allowRead>false</allowRead>\n        <object>Account</object>\n    </objectPermissions>\n    <label>Sales Bundle Muting</label>\n</MutingPermissionSet>\n' },
       ProfilePasswordPolicy: { 'sales_policy_1': '<?xml version="1.0" encoding="UTF-8"?>\n<ProfilePasswordPolicy xmlns="http://soap.sforce.com/2006/04/metadata">\n    <lockoutInterval>15</lockoutInterval>\n    <maxLoginAttempts>5</maxLoginAttempts>\n    <minimumPasswordLength>8</minimumPasswordLength>\n    <passwordComplexity>1</passwordComplexity>\n    <passwordExpiration>90</passwordExpiration>\n    <passwordHistory>3</passwordHistory>\n    <passwordQuestion>0</passwordQuestion>\n    <profile>Custom%3A Sales</profile>\n</ProfilePasswordPolicy>\n' },
       ProfileSessionSetting: { 'sales_session_1': '<?xml version="1.0" encoding="UTF-8"?>\n<ProfileSessionSetting xmlns="http://soap.sforce.com/2006/04/metadata">\n    <forceLogout>false</forceLogout>\n    <profile>Custom%3A Sales</profile>\n    <requiredSessionLevel>STANDARD</requiredSessionLevel>\n    <sessionPersistence>false</sessionPersistence>\n    <sessionTimeout>120</sessionTimeout>\n    <sessionTimeoutWarning>true</sessionTimeoutWarning>\n</ProfileSessionSetting>\n' },
       UserAccessPolicy: { Sales_Onboarding: '<?xml version="1.0" encoding="UTF-8"?>\n<UserAccessPolicy xmlns="http://soap.sforce.com/2006/04/metadata">\n    <masterLabel>Sales Onboarding</masterLabel>\n    <status>Active</status>\n    <triggerType>Create</triggerType>\n    <userAccessPolicyActions>\n        <action>Grant</action>\n        <target>Sales_Ops</target>\n        <type>PermissionSet</type>\n    </userAccessPolicyActions>\n    <userAccessPolicyFilters>\n        <operation>equals</operation>\n        <target>Custom: Sales</target>\n        <type>Profile</type>\n    </userAccessPolicyFilters>\n</UserAccessPolicy>\n' },
@@ -55,8 +55,8 @@ function createOrg(options) {
     FlowDefinitionView: [{ DurableId: '300000000000001AAA', ApiName: 'Lead_Intake', Label: 'Lead Intake', NamespacePrefix: null, ProcessType: 'Flow', IsActive: true }],
     AppMenuItem: [{ ApplicationId: '02u000000000001AAA', Name: 'Sales', Label: 'Sales', NamespacePrefix: null, Type: 'TabSet' }, { ApplicationId: '02u000000000002AAA', Name: 'Service', Label: 'Service', NamespacePrefix: null, Type: 'TabSet' }],
     ConnectedApplication: [{ Id: '0H4000000000001AAA', Name: 'Data Loader' }],
-    EntityDefinition: [{ DurableId: '01I000000000001AAA', QualifiedApiName: 'Region__mdt', Label: 'Region', NamespacePrefix: null }, { DurableId: '01I000000000002AAA', QualifiedApiName: 'Config__c', Label: 'Config', NamespacePrefix: null },
-      { DurableId: '01I000000000003AAA', QualifiedApiName: 'Custom_Thing__c', Label: 'Custom Thing', NamespacePrefix: null }],
+    EntityDefinition: [{ DurableId: '01I000000000001', QualifiedApiName: 'Region__mdt', Label: 'Region', NamespacePrefix: null }, { DurableId: '01I000000000002', QualifiedApiName: 'Config__c', Label: 'Config', NamespacePrefix: null },
+      { DurableId: '01I000000000003', QualifiedApiName: 'Custom_Thing__c', Label: 'Custom Thing', NamespacePrefix: null }],
     TabDefinition: [{ Name: 'standard-Lead', Label: 'Leads', SobjectName: 'Lead', IsCustom: false }, { Name: 'standard-Account', Label: 'Accounts', SobjectName: 'Account', IsCustom: false }, { Name: 'Custom_Thing__c', Label: 'Custom Things', SobjectName: 'Custom_Thing__c', IsCustom: true }],
     PermissionSetTabSetting: [{ Id: '01P000000000001AAA', ParentId: '0PS000000000001AAA', Name: 'standard-Lead', Visibility: 'DefaultOn' }],
     // Salesforce's dependency rules, in the forms the org may report names (API name, Permissions… prefix).
@@ -73,7 +73,7 @@ function createOrg(options) {
       { CreatedDate: new Date(Date.now() - 86400e3).toISOString(), CreatedBy: { Name: 'Admin User' }, Action: 'profileFlsChanged', Section: 'Manage Users', Display: 'Changed profile Custom: Sales: field-level security for Lead: Rating was changed', DelegateUser: null },
       { CreatedDate: new Date(Date.now() - 2 * 86400e3).toISOString(), CreatedBy: { Name: 'Admin User' }, Action: 'PermSetAssign', Section: 'Manage Users', Display: 'Permission set Reader: assigned to user Ana Lima', DelegateUser: 'Support Agent' }
     ],
-    Layout: [{ Name: 'Lead Layout', NamespacePrefix: null, TableEnumOrId: 'Lead' }, { Name: 'Partner Layout', NamespacePrefix: null, TableEnumOrId: 'Lead' }, { Name: 'Thing Layout', NamespacePrefix: null, TableEnumOrId: '01I000000000003AAA' }],
+    Layout: [{ Name: 'Lead Layout', NamespacePrefix: null, TableEnumOrId: 'Lead' }, { Name: 'Partner Layout', NamespacePrefix: null, TableEnumOrId: 'Lead' }, { Name: 'Thing Layout', NamespacePrefix: null, TableEnumOrId: '01I000000000003EAA' }],
     UserLicense: [{ Id: '100000000000001AAA', Name: 'Salesforce', Status: 'Active' }, { Id: '100000000000002AAA', Name: 'Salesforce Platform', Status: 'Active' }],
     User: [
       { Id: '005000000000001AAA', Name: 'Ana Lima', Username: 'ana@example.com', IsActive: true, ProfileId: '00e000000000002AAA', Profile: { Name: 'Custom: Sales', UserLicenseId: '100000000000001AAA', UserLicense: { Name: 'Salesforce' } } },
@@ -288,12 +288,16 @@ function createOrg(options) {
   function bad(msg) { const e = new Error(msg); e.code = 'MALFORMED_QUERY'; return e; }
 
   // ---------- writes ----------
+  // Salesforce Ids: the 18-character form is the 15 plus a checksum; either finds the record.
+  const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.slice(0, 15) === b.slice(0, 15);
+  const to18 = v => { if (typeof v !== 'string' || v.length !== 15) return v; const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ012345'; let o = v;
+    for (let i = 0; i < 3; i++) { let n = 0; for (let j = 0; j < 5; j++) if (/[A-Z]/.test(v[i * 5 + j])) n += 1 << j; o += A[n]; } return o; };
   const ID_PREFIX = { ObjectPermissions: '110', FieldPermissions: '01k', SetupEntityAccess: '0J0', PermissionSet: '0PS', PermissionSetAssignment: '0Pa', PermissionSetGroupComponent: '0PU', PermissionSetTabSetting: '01P' };
   const ENTITY_OF = id => [['ApexClass', 'Id', 'ApexClass'], ['CustomPermission', 'Id', 'CustomPermission'], ['ApexPage', 'Id', 'ApexPage'], ['FlowDefinitionView', 'DurableId', 'FlowDefinition'],
     ['AppMenuItem', 'ApplicationId', 'TabSet'], ['ConnectedApplication', 'Id', 'ConnectedApplication'], ['EntityDefinition', 'DurableId', 'CustomEntityDefinition']]
-    .map(([t, f, type]) => (T[t].some(x => x[f] === id) ? type : null)).find(Boolean) || null;
+    .map(([t, f, type]) => (T[t].some(x => same(x[f], id)) ? type : null)).find(Boolean) || null;
   function findById(id) {
-    for (const t of ['ObjectPermissions', 'FieldPermissions', 'PermissionSet', 'SetupEntityAccess', 'PermissionSetAssignment', 'PermissionSetGroupComponent', 'PermissionSetTabSetting']) { const r = T[t].find(x => x.Id === id); if (r) return [t, r]; }
+    for (const t of ['ObjectPermissions', 'FieldPermissions', 'PermissionSet', 'SetupEntityAccess', 'PermissionSetAssignment', 'PermissionSetGroupComponent', 'PermissionSetTabSetting', 'Profile']) { const r = T[t].find(x => x.Id === id); if (r) return [t, r]; }
     return [null, null];
   }
   function check(type, rec) {
@@ -366,9 +370,11 @@ function createOrg(options) {
             if (d && d.compoundFieldName) err = 'INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST: Field Name: bad value for restricted picklist field: ' + fields.Field;
           }
           if (!err && type === 'ObjectPermissions' && !OBJECT_PERM_OBJECTS.includes(fields.SobjectType)) err = 'INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST: SObject Type Name: bad value for restricted picklist field: ' + fields.SobjectType;
-          if (type === 'FieldPermissions' && T.FieldPermissions.some(x => x.ParentId === fields.ParentId && x.Field === fields.Field)) err = 'DUPLICATE_VALUE: duplicate value found';
+          if (type === 'FieldPermissions' && T.FieldPermissions.some(x => !/^0{5}/.test(x.Id) && x.ParentId === fields.ParentId && x.Field === fields.Field)) err = 'DUPLICATE_VALUE: duplicate value found';
           if (type === 'SetupEntityAccess') {
-            if (T.SetupEntityAccess.some(x => x.ParentId === fields.ParentId && x.SetupEntityId === fields.SetupEntityId)) err = 'DUPLICATE_VALUE: duplicate value found';
+            // Salesforce stores the 18-character Id, and refuses a second row for the same entity (the reported error)
+            fields.SetupEntityId = to18(fields.SetupEntityId);
+            if (T.SetupEntityAccess.some(x => x.ParentId === fields.ParentId && same(x.SetupEntityId, fields.SetupEntityId))) err = 'DUPLICATE_VALUE: Duplicate SetupEntityAccess. Parent: ' + String(fields.ParentId).slice(0, 15) + ', SetupEntity: ' + String(fields.SetupEntityId).slice(0, 15);
             const ent = ENTITY_OF(fields.SetupEntityId);
             if (!ent) err = err || 'INVALID_CROSS_REFERENCE_KEY: invalid cross reference id';
             fields.SetupEntityType = ent;
@@ -403,7 +409,10 @@ function createOrg(options) {
             : type === 'FieldPermissions' ? Object.assign({ PermissionsRead: false, PermissionsEdit: false }, fields)
               : type === 'PermissionSet' ? ps(null, Object.assign({ Label: fields.Label }, fields))
                 : type === 'PermissionSetAssignment' ? Object.assign({ PermissionSetGroupId: null, ExpirationDate: null }, fields) : Object.assign({}, fields);
+          // A real field permission replaces the placeholder row Salesforce showed for it
+          if (type === 'FieldPermissions') apply.push(() => { T.FieldPermissions = T.FieldPermissions.filter(x => !(/^0{5}/.test(x.Id) && x.ParentId === row.ParentId && x.Field === row.Field)); });
           err = err || check(type, row);
+          if (!err && type === 'ObjectPermissions' && (p => p && p.IsOwnedByProfile && p.PermissionsModifyAllData)(T.PermissionSet.find(x => x.Id === row.ParentId))) err = 'FIELD_INTEGRITY_EXCEPTION: Cannot insert a record if parent permission set has Modify All Data permission enabled';
           id = ID_PREFIX[type] + String(100000 + (++S.seq)).padStart(12, '0') + 'AAA';
           row.Id = id;
           if (type === 'PermissionSet' && row.LicenseId) row.License = { Name: (T.UserLicense.find(l => l.Id === row.LicenseId) || {}).Name };
@@ -411,7 +420,12 @@ function createOrg(options) {
           if (!err) apply.push(() => T[type].push(row));
         } else {
           const [t, r] = findById(fields.Id);
-          if (!r) err = 'ENTITY_IS_DELETED: entity is deleted';
+          // As Salesforce: a placeholder row (View All Fields) isn't a record
+          if (/^0{5}/.test(String(fields.Id))) err = 'INVALID_ID_FIELD: \'' + fields.Id + '\' is not a valid Salesforce ID for the type Field Permissions';
+          else if (!r) err = 'ENTITY_IS_DELETED: entity is deleted';
+          // As Salesforce: a profile's own permission set can't be edited (its permissions are on the Profile)
+          else if (t === 'PermissionSet' && r.IsOwnedByProfile && Object.keys(fields).some(k => /^Permissions/.test(k))) err = 'INVALID_CROSS_REFERENCE_KEY: You can’t create, edit, or delete this permission set because it\'s associated with a profile.';
+          else if (t === 'Profile') { const owned = T.PermissionSet.find(x => x.ProfileId === r.Id); if (owned) apply.push(() => Object.assign(owned, Object.fromEntries(Object.entries(fields).filter(([k]) => /^Permissions/.test(k))))); }
           else {
             const merged = Object.assign({}, r, fields);
             if (t === 'PermissionSet' && fields.Name !== undefined && (!/^[A-Za-z][A-Za-z0-9_]*$/.test(fields.Name) || /__|_$/.test(fields.Name))) err = 'INVALID_FIELD: The API name can only contain underscores and alphanumeric characters';
@@ -628,7 +642,7 @@ function createOrg(options) {
       }
     });
   });
-  return { S, T, server, sysNames };
+  return { S, T, server, sysNames, DESCRIBE };
 }
 
 module.exports = { createOrg };

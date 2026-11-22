@@ -32,7 +32,7 @@ async def main():
     assert await pg.locator("tr.fixed").count()==0, "Show only granted hides fields nobody grants"
     await pg.click("text=Show only granted"); await pg.wait_for_timeout(30)
     await pg.evaluate("document.querySelector('main.record').scrollTop=10000"); await pg.wait_for_timeout(30)
-    await pg.screenshot(path="fixed.png")
+    await pg.screenshot(path=f"{OUT}/fixed.png")
     await pg.click(".docked-footer button.neutral")
     # Event: note instead of object permissions
     await pg.click(".breadcrumb button")
@@ -44,7 +44,7 @@ async def main():
     assert await pg.locator(".perm-grid").count()==0
     await pg.click("[aria-label='Read Region']")
     assert "1 unsaved change" in await pg.inner_text(".docked-footer")
-    await pg.evaluate("document.querySelector('main.record').scrollTop=0"); await pg.screenshot(path="event.png")
+    await pg.evaluate("document.querySelector('main.record').scrollTop=0"); await pg.screenshot(path=f"{OUT}/event.png")
     await pg.click(".docked-footer button.neutral")
     # Grant object access offers no activities
     await pg.click("text=Grant object access"); await pg.wait_for_timeout(30)

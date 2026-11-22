@@ -51,8 +51,8 @@ function editBlocker(item, cat) {
     if (item.kind === 'profile') return 'Users get a profile from their user record, not here.';
     return null;
   }
-  if (cat === 'mute') return item.kind !== 'group' ? 'Only permission set groups have muting.' : item.managed ? 'This group belongs to a managed package and can’t be edited.' : null;
-  if (item.kind === 'group') return cat ? 'Permission set group access comes from its permission sets and muting. Edit those permission sets, or mute permissions under Muted Permissions.'
+  if (cat === 'mute') return 'Muting is read-only in Permission Studio. Change it in Setup.';
+  if (item.kind === 'group') return cat ? 'Permission set group access comes from its permission sets and muting. Edit those permission sets; muting is changed in Setup.'
     : 'A group’s access comes from its permission sets and muting. Change which permission sets it holds under Permission Sets in Group, and its assignments here; edit the permission sets themselves for anything else.';
   if (item.managed) return cat ? 'This permission set belongs to a managed package and can’t be edited.' : 'This permission set belongs to a managed package and can’t be edited; assignments can be changed here.';
   if (cat && PROFILE_ONLY.includes(cat) && item.kind !== 'profile') return 'Only profiles have this.';
@@ -106,7 +106,9 @@ async function readCurrent(conn, item, keys, refs) {
   }
   for (const r of rows) {
     model.entries.set(key('field', r.Field), { read: r.PermissionsRead === true, edit: r.PermissionsEdit === true });
-    ids.set(key('field', r.Field), r.Id);
+    // A placeholder row (View All Fields) isn't a record: a grant creates one; Read from it can't be removed here.
+    if (loader.realId(r.Id)) ids.set(key('field', r.Field), r.Id);
+    else (model.implied || (model.implied = new Set())).add(key('field', r.Field));
   }
   for (const [ks, access] of entityRows) for (const k of ks) {
     const rowId = access.get(refs.get(k));
@@ -117,6 +119,7 @@ async function readCurrent(conn, item, keys, refs) {
     const a = assignRows.get(refs.get(k));
     model.entries.set(k, a ? { assigned: true, expires: a.expires } : { assigned: false, expires: null });
     if (a) ids.set(k, a.id);
+    if (a && a.raw) (model.rawExpiry || (model.rawExpiry = new Map())).set(k, a.raw);
   }
   for (const k of members) {
     const rowId = memberRows.get(refs.get(k));
@@ -124,7 +127,7 @@ async function readCurrent(conn, item, keys, refs) {
     if (rowId) ids.set(k, rowId);
   }
   const props = new Map(keys.map(k => [k, model.entries.get(k) || null]));
-  return { props, ids, columns: cols.map(c => c[1]) };
+  return { props, ids, columns: cols.map(c => c[1]), rawExpiry: model.rawExpiry || null, implied: model.implied || new Set() };
 }
 
 /** Tab setting rows of a permission set (or a profile's permission set): Map<tab name, { Id, Visibility }>. */
@@ -156,7 +159,7 @@ async function readAssignments(conn, item, userIds) {
   for (const slice of chunk(userIds, 200)) {
     const r = await conn.query('SELECT Id, AssigneeId' + (exp ? ', ExpirationDate' : '') + ' FROM PermissionSetAssignment WHERE ' + where +
       ' AND AssigneeId IN (' + slice.map(str).join(', ') + ')');
-    for (const a of r.records) out.set(a.AssigneeId, { id: a.Id, expires: a.ExpirationDate ? String(a.ExpirationDate).slice(0, 10) : null });
+    for (const a of r.records) out.set(a.AssigneeId, { id: a.Id, expires: loader.expiryDate(a.ExpirationDate), raw: a.ExpirationDate || null });
   }
   return out;
 }
@@ -208,8 +211,12 @@ function validate(changes, columns) {
 /** Changes the screen can send: every category this module knows how to save. */
 const KNOWN_CATS = ['object', 'field', 'user', 'assignment', 'groupComponent', 'tab'].concat(ENTITY_CATS, META_CATS);
 
-async function apply(conn, item, changes, options) {
-  const o = options || {};
+/**
+ * Everything before the first write: validation, what the org has now, the conflict check,
+ * the safety copy and snapshot, and the planned record writes. Returns { result } when there is
+ * nothing to write (no changes, or a conflict), otherwise the context the write steps use.
+ */
+async function prepare(conn, item, changes, o) {
   if (!Array.isArray(changes)) throw new Error('These changes are not valid: expected a list of changes.');
   const malformed = changes.filter(c => !c || typeof c.key !== 'string' || !/^\w+:.+/.test(c.key) || !KNOWN_CATS.includes(splitKey(c.key).cat) || !c.after || typeof c.after !== 'object');
   if (malformed.length) throw new Error('These changes are not valid:\n' + malformed.slice(0, 5).map(c => (c && c.key ? c.key : 'an entry') + ': ' + (c && c.key && !KNOWN_CATS.includes(splitKey(String(c.key)).cat) ? 'unknown kind of change' : 'no new value')).join('\n'));
@@ -220,7 +227,7 @@ async function apply(conn, item, changes, options) {
   // Everything that can be checked without the org is checked before anything is read from it.
   const early = validate(changes, null);
   if (early.length) throw new Error('These changes are not valid:\n' + early.join('\n'));
-  if (!changes.length) return { status: 'saved', count: 0, mismatches: [], snapshot: [] };
+  if (!changes.length) return { result: { status: 'saved', count: 0, mismatches: [], snapshot: [] } };
   const psId = item.permissionSetId;
   const metaChanges = changes.filter(c => META_CATS.includes(splitKey(c.key).cat));
   const recordChanges = changes.filter(c => !META_CATS.includes(splitKey(c.key).cat));
@@ -234,7 +241,7 @@ async function apply(conn, item, changes, options) {
     const allowed = await loader.objectPermissionNames(conn);
     if (allowed) for (const c of recordChanges.filter(x => x.key.startsWith('object:'))) {
       const obj = splitKey(c.key).name;
-      if (!allowed.has(obj)) problems.push(obj + ': Salesforce has no object permissions for this object' + (/^(Task|Event)$/.test(obj) ? ' (activity access comes from the Edit Tasks and Edit Events system permissions)' : '') + '. Its fields can still be changed.');
+      if (!allowed.has(obj)) problems.push(obj + ': Salesforce has no object permissions for this object' + (/^(Task|Event)$/.test(obj) ? ' (activity access comes from the Edit Tasks and Edit Events system permissions)' : ''));
     }
   }
   // New assignees must be able to hold the permission set's licence; say so before writing anything.
@@ -252,46 +259,100 @@ async function apply(conn, item, changes, options) {
     const blocked = await loader.assignmentBlockers(conn, item, users);
     for (const c of newAssignees) if (blocked.has(refs.get(c.key))) problems.push((c.label || refs.get(c.key)) + ' ' + blocked.get(refs.get(c.key)));
   }
+  // A profile with Modify All Data has full access to every object, and Salesforce refuses its object permission
+  // records ("Cannot insert a record if parent permission set has Modify All Data permission enabled"): say so first.
+  const objChanges = item.kind === 'profile' ? recordChanges.filter(c => c.key.startsWith('object:')) : [];
+  if (objChanges.length) {
+    const madChange = changes.find(c => c.key === 'user:ModifyAllData');
+    const mad = madChange ? madChange.after.enabled === true
+      : await conn.query('SELECT PermissionsModifyAllData FROM PermissionSet WHERE Id = ' + require('../data/soql').str(item.permissionSetId)).then(r => !!(r.records[0] && r.records[0].PermissionsModifyAllData)).catch(() => false);
+    if (mad) problems.push((item.label || item.apiName) + ' has Modify All Data, so its object permissions can’t be changed. Remove: ' + objChanges.map(c => c.label || splitKey(c.key).name).slice(0, 5).join(', ') + (objChanges.length > 5 ? '…' : '') + '.');
+  }
+  // Never send a field permission Salesforce defines as invalid, whatever screen the change came from:
+  // the field must exist and take field permissions, and read-only fields (formula, auto-number, system) take Read only.
+  const fieldChanges = recordChanges.filter(c => c.key.startsWith('field:'));
+  if (fieldChanges.length && conn.describe) {
+    const byObj = new Map();
+    for (const c of fieldChanges) { const n = splitKey(c.key).name; const o = n.slice(0, n.indexOf('.')); (byObj.get(o) || byObj.set(o, []).get(o)).push(c); }
+    for (const [obj, list] of byObj) {
+      const d = await conn.describe(obj).catch(() => null);
+      if (!d || !Array.isArray(d.fields)) continue;
+      const fields = new Map(d.fields.map(f => [String(f.name).toLowerCase(), f]));
+      for (const c of list) {
+        const n = splitKey(c.key).name;
+        const f = fields.get(n.slice(n.indexOf('.') + 1).toLowerCase());
+        const label = c.label || n;
+        if (!f) problems.push(label + ': this field no longer exists on ' + obj + '.');
+        else if (f.permissionable !== true) problems.push(label + ': Salesforce doesn’t take field permissions on this field.');
+        else if (c.after && c.after.edit && (f.calculated || !(f.updateable || f.createable))) problems.push(label + ': this field is read-only, so only Read can be given.');
+      }
+    }
+  }
+  // A system permission that needs object access (PermissionDependency, such as Activate Contracts: Read and Edit
+  // on Contract) is refused by Salesforce without it: check the item has, or is getting, that access.
+  const turningOn = recordChanges.filter(c => c.key.startsWith('user:') && c.after && c.after.enabled && !(c.before && c.before.enabled));
+  if (turningOn.length) {
+    const deps = conn._permDeps || (conn._permDeps = await loader.permissionDependencies(conn).catch(() => null));
+    if (deps && deps.unparsed && deps.unparsed.length && o.log && !conn._loggedUnparsed) { conn._loggedUnparsed = true; o.log('Object requirements in a form Permission Studio does not recognise (not checked before saving): ' + deps.unparsed.slice(0, 20).join('; ')); }
+    const needs = turningOn.flatMap(c => ((deps && deps.objects && deps.objects[splitKey(c.key).name]) || []).map(r => ({ c, r })));
+    if (needs.length) {
+      const madOn = changes.find(c => c.key === 'user:ModifyAllData');
+      const mad = madOn ? madOn.after.enabled === true : await conn.query('SELECT PermissionsModifyAllData FROM PermissionSet WHERE Id = ' + str(psId)).then(r => !!(r.records[0] && r.records[0].PermissionsModifyAllData)).catch(() => false);
+      if (!mad) {
+        const objs = [...new Set(needs.map(n => n.r.object))];
+        const have = new Map();
+        const rows = await conn.query('SELECT SobjectType, PermissionsRead, PermissionsCreate, PermissionsEdit, PermissionsDelete, PermissionsViewAllRecords, PermissionsModifyAllRecords FROM ObjectPermissions WHERE ParentId = ' + str(psId) + ' AND SobjectType IN (' + objs.map(str).join(', ') + ')').catch(() => ({ records: [] }));
+        for (const r of rows.records) have.set(r.SobjectType, { read: r.PermissionsRead, create: r.PermissionsCreate, edit: r.PermissionsEdit, delete: r.PermissionsDelete, viewAll: r.PermissionsViewAllRecords, modifyAll: r.PermissionsModifyAllRecords });
+        for (const c of changes) if (c.key.startsWith('object:')) have.set(splitKey(c.key).name, Object.assign({}, have.get(splitKey(c.key).name) || {}, c.after));
+        const FLAG = { read: 'Read', create: 'Create', edit: 'Edit', delete: 'Delete', viewAll: 'View All', modifyAll: 'Modify All' };
+        const missing = new Map();
+        for (const { c, r } of needs) if (!(have.get(r.object) || {})[r.flag]) (missing.get(c) || missing.set(c, []).get(c)).push(r);
+        for (const [c, rs] of missing) {
+          const byObj = new Map();
+          for (const r of rs) (byObj.get(r.object) || byObj.set(r.object, []).get(r.object)).push(FLAG[r.flag]);
+          const what = [...byObj].map(([obj, fl]) => fl.join(' and ') + ' on ' + obj).join('; ');
+          problems.push((c.label || splitKey(c.key).name) + ' needs ' + what + '. Add ' + (rs.length === 1 ? 'it' : 'them') + ' in Object Settings, or remove it.');
+        }
+      }
+    }
+  }
+  // Read that comes from View All Fields isn't a record, so it can't be removed field by field.
+  for (const c of recordChanges) if (live.implied && live.implied.has(c.key) && c.after && !c.after.read) problems.push((c.label || splitKey(c.key).name) + ': Read comes from View All Fields on ' + splitKey(c.key).name.split('.')[0] + ', so it can’t be removed here.');
   if (problems.length) throw new Error('These changes are not valid:\n' + problems.join('\n'));
 
   const conflicts = changes
     .filter(c => differingFlags(c.before, live.props.get(c.key)).length)
     .map(c => ({ key: c.key, before: c.before, now: live.props.get(c.key) }));
-  if (conflicts.length && !o.force) return { status: 'conflict', conflicts };
+  if (conflicts.length && !o.force) return { result: { status: 'conflict', conflicts } };
 
   // A deploy gets a full copy of the item's access first, so anything it removes by mistake can be put back.
   const needSafety = metaChanges.some(c => !NO_SAFETY.includes(splitKey(c.key).cat));
   const safety = needSafety ? await o.metadata.captureSafety(conn, psId) : null;
   const snapshot = changes.map(c => ({ key: c.key, ref: c.ref || null, before: live.props.get(c.key), after: c.after }));
   const snapshotId = o.onSnapshot ? await o.onSnapshot(snapshot, safety) : null;
-
   const exp = recordChanges.some(c => c.key.startsWith('assignment:')) ? await loader.expirationField(conn) : null;
-  let writes = planWrites(item, recordChanges, live, refs, exp);
-  const groupWait = { pollMs: o.pollMs || 3000, maxMs: o.maxGroupWaitMs || 5 * 60 * 1000 };
-  const recordCount = writes.creates.length + writes.updates.length + writes.deletes.length;
-  // If a group this item belongs to is still recalculating from an earlier change, the
-  // first write would be refused: wait for it first.
-  if (recordCount || metaChanges.length) await waitForGroups(conn, item, groupWait, msg => o.onProgress && o.onProgress(msg, 0, 1));
+  const writes = planWrites(item, recordChanges, live, refs, exp);
+  return { item, psId, changes, metaChanges, recordChanges, refs, live, safety, snapshot, snapshotId, exp, writes,
+    groupWait: { pollMs: o.pollMs || 3000, maxMs: o.maxGroupWaitMs || 5 * 60 * 1000 } };
+}
 
-  // First choice: every record change in one Composite request, one transaction. If the
-  // org refuses it for any reason, re-read what is there now and carry on step by step
-  // with whatever did not land.
-  let oneRequest = false;
-  if (recordCount && conn.compositeWrite && conn.mode !== 'cli') {
-    if (o.onProgress) o.onProgress('Saving ' + (recordCount === 1 ? 'the change' : 'all ' + recordCount + ' record changes') + ' in one request', 0, 1);
-    try {
-      await conn.compositeWrite(writes);
-      oneRequest = true;
-    } catch (e) {
-      if (o.log) o.log('One-request save not used (' + String(e.message || e).split('\n')[0] + '); saving step by step');
-      const now = await currentValues(conn, item, recordChanges.map(c => c.key), refs, null);
-      const left = recordChanges.filter(c => differingFlags(c.after, now.props.get(c.key)).length);
-      writes = planWrites(item, left, now, refs, exp);
-    }
-  }
-  const creates = oneRequest ? [] : writes.creates;
-  const updates = oneRequest ? [] : writes.updates;
-  const deletes = oneRequest ? [] : writes.deletes;
+const recordCountOf = w => w.creates.length + w.updates.length + w.deletes.length;
+/** Composite subrequests a set of writes needs: one per 200 records of each kind of write (at most 25 per request). */
+const subrequestsOf = w => Math.ceil(w.creates.length / 200) + Math.ceil(w.updates.length / 200) + Math.ceil(w.deletes.length / 200);
+
+/** When a one-request save isn't used, re-read what is there now and plan only what didn't land. */
+async function replan(conn, ctx) {
+  const now = await currentValues(conn, ctx.item, ctx.recordChanges.map(c => c.key), ctx.refs, null);
+  const left = ctx.recordChanges.filter(c => differingFlags(c.after, now.props.get(c.key)).length);
+  ctx.writes = planWrites(ctx.item, left, now, ctx.refs, ctx.exp);
+}
+
+/** The writes not yet made (step by step: records, then any deploy), each retried while a group recalculates. */
+async function writeSteps(conn, ctx, o, oneRequest) {
+  const { item, metaChanges, safety, psId, snapshotId, groupWait } = ctx;
+  const creates = oneRequest ? [] : ctx.writes.creates;
+  const updates = oneRequest ? [] : ctx.writes.updates;
+  const deletes = oneRequest ? [] : ctx.writes.deletes;
   const steps = [];
   const step = (label, list, run) => { if (list.length) steps.push([label, run]); };
   step(describeWrite('Adding', creates), creates, () => conn.createRecords(creates));
@@ -312,7 +373,6 @@ async function apply(conn, item, changes, options) {
       }
     }]);
   }
-
   const done = [];
   for (const [label, run] of steps) {
     if (o.onProgress) o.onProgress(label, done.length, steps.length);
@@ -327,20 +387,130 @@ async function apply(conn, item, changes, options) {
       }
     } catch (e) {
       e.snapshotId = snapshotId;
-      e.completedSteps = done.slice();
+      e.completedSteps = (oneRequest ? ['Saving in one request'] : []).concat(done);
       e.failedStep = label;
       throw e;
     }
     done.push(label);
   }
-
   if (oneRequest) done.unshift('Saving in one request');
-  if (o.onProgress) o.onProgress('Checking the result', steps.length, steps.length + 1);
-  const after = await currentValues(conn, item, changes.map(c => c.key), refs, o.metadata);
-  const mismatches = changes
+  return done;
+}
+
+/** After the writes: read everything back and report what the org didn't take. */
+async function verify(conn, ctx, o, oneRequest) {
+  const after = await currentValues(conn, ctx.item, ctx.changes.map(c => c.key), ctx.refs, o.metadata);
+  const mismatches = ctx.changes
     .filter(c => differingFlags(c.after, after.props.get(c.key)).length)
-    .map(c => ({ key: c.key, wanted: c.after, now: after.props.get(c.key) }));
-  return { status: 'saved', count: changes.length, mismatches, snapshotId, snapshot, now: [...after.props], oneRequest };
+    .map(c => ({ key: c.key, label: c.label || null, wanted: c.after, now: after.props.get(c.key), raw: (after.rawExpiry && after.rawExpiry.get(c.key)) || undefined }));
+  return { status: 'saved', count: ctx.changes.length, mismatches, snapshotId: ctx.snapshotId, snapshot: ctx.snapshot, now: [...after.props], oneRequest };
+}
+
+async function apply(conn, item, changes, options) {
+  const o = options || {};
+  const ctx = await prepare(conn, item, changes, o);
+  if (ctx.result) return ctx.result;
+  const recordCount = recordCountOf(ctx.writes);
+  // If a group this item belongs to is still recalculating from an earlier change, the
+  // first write would be refused: wait for it first.
+  if (recordCount || ctx.metaChanges.length) await waitForGroups(conn, item, ctx.groupWait, msg => o.onProgress && o.onProgress(msg, 0, 1));
+  // First choice: every record change in one Composite request, one transaction. If the
+  // org refuses it for any reason, re-read what is there now and carry on step by step
+  // with whatever did not land.
+  let oneRequest = false;
+  if (recordCount && conn.compositeWrite && conn.mode !== 'cli') {
+    if (o.onProgress) o.onProgress('Saving ' + (recordCount === 1 ? 'the change' : 'all ' + recordCount + ' record changes') + ' in one request', 0, 1);
+    try {
+      await conn.compositeWrite(ctx.writes);
+      oneRequest = true;
+    } catch (e) {
+      if (o.log) o.log('One-request save not used (' + String(e.message || e).split('\n')[0] + '); saving step by step');
+      await replan(conn, ctx);
+    }
+  }
+  await writeSteps(conn, ctx, o, oneRequest);
+  if (o.onProgress) o.onProgress('Checking the result', 1, 2);
+  return verify(conn, ctx, o, oneRequest);
+}
+
+const mergedWrites = list => ({ creates: [].concat(...list.map(c => c.writes.creates)), updates: [].concat(...list.map(c => c.writes.updates)), deletes: [].concat(...list.map(c => c.writes.deletes)) });
+/**
+ * Items grouped into as few one-request saves as Composite allows (25 subrequests of up to 200
+ * records each), keeping each item whole and in order. Items with nothing to write are left out.
+ */
+function batchesOf(ctxs) {
+  const batches = [];
+  let cur = [];
+  for (const c of ctxs) {
+    if (!recordCountOf(c.writes)) continue;
+    if (cur.length && subrequestsOf(mergedWrites(cur.concat([c]))) > 25) { batches.push(cur); cur = []; }
+    cur.push(c);
+  }
+  if (cur.length) batches.push(cur);
+  return batches;
+}
+
+/**
+ * Many items at once (the Grant screens, Find access, the health check): every item is checked
+ * and snapshotted as in apply(), then the record changes of all of them go in one Composite
+ * request (as few as the limit allows: 25 subrequests of up to 200 records), so a group isn't
+ * recalculated between one permission set and the next. Deploys (record types) follow per item,
+ * then each item is read back. entries: [{ item, changes, options }]. Returns one result per
+ * entry, in order: apply()'s result, or { error }.
+ * options.onProgress(label, done, total, counts) gets { changesSaved, changesTotal } too.
+ */
+async function applyMany(conn, entries, options) {
+  const o = options || {};
+  const results = new Array(entries.length);
+  const ctxs = [];
+  const changesTotal = entries.reduce((n, e) => n + (Array.isArray(e.changes) ? e.changes.length : 0), 0);
+  let changesSaved = 0;
+  const units = entries.length * 2 + 1;
+  let done = 0;
+  const tick = label => { if (o.onProgress) o.onProgress(label, done, units, { changesSaved, changesTotal }); };
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const eo = Object.assign({}, o, e.options || {}, { onProgress: null });
+    tick('Checking ' + (e.item.label || e.item.apiName) + ' before saving');
+    try {
+      const ctx = await prepare(conn, e.item, e.changes, eo);
+      if (ctx.result) results[i] = ctx.result;
+      else { ctx.index = i; ctx.o = eo; ctxs.push(ctx); }
+    } catch (err) { results[i] = { error: err }; }
+    done++;
+  }
+  // A group that is still recalculating would refuse the write: wait for it once, before saving anything.
+  for (const c of ctxs) if (recordCountOf(c.writes) || c.metaChanges.length) await waitForGroups(conn, c.item, c.groupWait, msg => tick(msg));
+  const batches = batchesOf(ctxs);
+  for (const b of batches) {
+    const w = mergedWrites(b);
+    const n = recordCountOf(w);
+    tick('Saving ' + n.toLocaleString() + (n === 1 ? ' change' : ' changes') + (b.length > 1 ? ' to ' + b.length + ' items' : '') + ' in one request');
+    if (conn.compositeWrite && conn.mode !== 'cli' && subrequestsOf(w) <= 25) {
+      try {
+        await conn.compositeWrite(w);
+        for (const c of b) { c.oneRequest = true; changesSaved += c.changes.length; }
+        continue;
+      } catch (e) {
+        if (o.log) o.log('One-request save of ' + b.length + ' items not used (' + String(e.message || e).split('\n')[0] + '); saving them one by one');
+      }
+    }
+    for (const c of b) await replan(conn, c);
+  }
+  done++;
+  // The rest per item: step-by-step writes where the one request wasn't used, deploys, then the read-back.
+  for (const c of ctxs) {
+    tick((c.oneRequest && !c.metaChanges.length ? 'Checking ' : 'Saving ') + (c.item.label || c.item.apiName));
+    try {
+      await writeSteps(conn, c, Object.assign({}, c.o, { onProgress: label => tick(label) }), !!c.oneRequest);
+      if (!c.oneRequest) changesSaved += c.changes.length;
+      results[c.index] = await verify(conn, c, c.o, !!c.oneRequest);
+    } catch (err) { results[c.index] = { error: err }; }
+    done++;
+  }
+  done = units;
+  tick('Done');
+  return results;
 }
 
 /**
@@ -396,7 +566,9 @@ function planWrites(item, recordChanges, live, refs, exp) {
     creates: [].concat(T('ObjectPermissions', ops.objCreate), T('FieldPermissions', ops.fieldCreate), T('SetupEntityAccess', ops.entityCreate),
       T('PermissionSetAssignment', ops.assignCreate), T('PermissionSetGroupComponent', ops.memberCreate), T('PermissionSetTabSetting', ops.tabCreate)),
     updates: [].concat(T('ObjectPermissions', ops.objUpdate), T('FieldPermissions', ops.fieldUpdate),
-      Object.keys(ops.system).length ? T('PermissionSet', [Object.assign({ Id: psId }, ops.system)]) : [], T('PermissionSetAssignment', ops.assignUpdate),
+      // A profile's system permissions are on the Profile record: Salesforce refuses edits to a profile's own
+      // permission set ("You can't create, edit, or delete this permission set because it's associated with a profile").
+      Object.keys(ops.system).length ? (item.kind === 'profile' && item.recordId ? T('Profile', [Object.assign({ Id: item.recordId }, ops.system)]) : T('PermissionSet', [Object.assign({ Id: psId }, ops.system)])) : [], T('PermissionSetAssignment', ops.assignUpdate),
       T('PermissionSetTabSetting', ops.tabUpdate)),
     deletes: [].concat(T('FieldPermissions', ops.fieldDelete.map(Id => ({ Id }))), T('SetupEntityAccess', ops.entityDelete.map(Id => ({ Id }))),
       T('ObjectPermissions', ops.objDelete.map(Id => ({ Id }))), T('PermissionSetAssignment', ops.assignDelete.map(Id => ({ Id }))),
@@ -444,8 +616,11 @@ async function waitForGroups(conn, item, opts, progress) {
 }
 
 function describeMeta(changes) {
-  const names = { recordType: 'record type assignments', layoutAssignment: 'page layout assignments', loginHours: 'login hours', loginIpRanges: 'login IP ranges' };
-  return [...new Set(changes.map(c => names[splitKey(c.key).cat]))].join(', ');
+  const names = { recordType: 'record type assignments', layoutAssignment: 'page layout assignments', loginHours: 'login hours', loginIpRanges: 'login IP ranges',
+    mute: 'muted permissions', defaultApp: 'the default app', loginFlow: 'the login flow', dataCategory: 'data category visibility', passwordPolicy: 'the password policy',
+    sessionSetting: 'session settings', agent: 'agent access', externalCredential: 'external credential access', externalDataSource: 'external data source access',
+    presenceStatus: 'presence status access', emailRouting: 'email routing address access' };
+  return [...new Set(changes.map(c => names[splitKey(c.key).cat] || 'settings'))].join(', ');
 }
 
-module.exports = { apply, currentValues, editBlocker, editableCategories };
+module.exports = { apply, applyMany, batchesOf, subrequestsOf, currentValues, editBlocker, editableCategories };
