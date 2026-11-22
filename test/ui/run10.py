@@ -69,6 +69,6 @@ async def main():
     await pg.select_option("[data-fid='lk.level']","edit")
     await pg.click("[data-fid='lk.target']"); await pg.keyboard.press("End"); await pg.keyboard.press("Escape"); await pg.keyboard.press("Enter"); await pg.wait_for_timeout(30)
     assert (await sent("lookup"))[-1]=={"type":"lookup","object":"Lead","field":"Rating","level":"edit"}, await sent("lookup")
-    await pg.screenshot(path="combo.png")
+    await pg.screenshot(path=f"{OUT}/combo.png")
     print("ok; errors:", errs); await b.close()
 asyncio.run(main())

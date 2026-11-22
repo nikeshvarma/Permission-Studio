@@ -90,8 +90,8 @@ async def main():
     await fr.click(".split-item:has-text('Sales Operations')"); await post(detail()); await fr.wait_for_timeout(40)
     await fr.click(".globalbar button:has-text('History')")
     tdy=time.strftime('%Y-%m-%dT', time.gmtime()); yd=time.strftime('%Y-%m-%dT', time.gmtime(time.time()-86400))
-    H=[(tdy+"11:42:00","Sales_Operations","permissionSet:1","records",3,"saved","s5","ADO US 11581701",[("field:Lead.Rating","Rating",{"read":True,"edit":False},{"read":True,"edit":True}),("field:Lead.Region__c","Sales Region",None,{"read":True,"edit":False}),("field:Lead.Website","Website",{"read":True},{"read":False,"edit":False})]),
-       (tdy+"11:05:00","Sales_Team_Bundle","group:1","records",1,"saved","s4","ADO US 11581701",[("groupComponent:8","Data Steward",{"included":False},{"included":True})]),
+    H=[(tdy+"11:42:00","Sales_Operations","permissionSet:1","records",3,"saved","s5","US-1042",[("field:Lead.Rating","Rating",{"read":True,"edit":False},{"read":True,"edit":True}),("field:Lead.Region__c","Sales Region",None,{"read":True,"edit":False}),("field:Lead.Website","Website",{"read":True},{"read":False,"edit":False})]),
+       (tdy+"11:05:00","Sales_Team_Bundle","group:1","records",1,"saved","s4","US-1042",[("groupComponent:8","Data Steward",{"included":False},{"included":True})]),
        (yd+"16:48:00","Custom: Sales","profile:1","records + deploy",2,"saved","s3",None,[("recordType:Lead.Partner","Partner Lead",None,{"visible":True}),("object:Quote","Quote",None,{"read":True})]),
        (yd+"15:02:00","Quote_Approver","permissionSet:6","records",1,"failed","s1",None,[("user:ExportReport","Export Reports",{"enabled":False},{"enabled":True})])]
     await post({"type":"history","entries":[{"at":a+".000Z","target":t,"key":k,"path":pth,"count":n,"result":r,"snapshot":sn,"ticket":tk,"error":"DELETE_FAILED: The Sales_Team_Bundle permission set group is updating." if r=="failed" else None,

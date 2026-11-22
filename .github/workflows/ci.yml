@@ -23,7 +23,7 @@ jobs:
   ui:
     # The browser tests: the real screen (media/app.js, media/app.css) in Chromium, driven like a user:
     # layout at laptop sizes, one design for every element, scrolling, the health check, saving.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

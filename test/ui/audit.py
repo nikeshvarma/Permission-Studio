@@ -87,7 +87,7 @@ async def main():
       await post({"type":"health","data":json.loads(open(DATA / 'health.json').read())}); await pg.wait_for_timeout(40)
       await measure("11-health")
       await pg.click(".globalbar button:has-text('History')")
-      await post({"type":"history","entries":[{"at":time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),"target":"Sales_Operations","key":"permissionSet:1","path":"records","count":3,"result":"saved","snapshot":"s1","ticket":"ADO US 11581701","changes":[{"key":"field:Lead.Rating","label":"Rating","from":{"read":True,"edit":False},"to":{"read":True,"edit":True}}]}]}); await pg.wait_for_timeout(40)
+      await post({"type":"history","entries":[{"at":time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),"target":"Sales_Operations","key":"permissionSet:1","path":"records","count":3,"result":"saved","snapshot":"s1","ticket":"US-1042","changes":[{"key":"field:Lead.Rating","label":"Rating","from":{"read":True,"edit":False},"to":{"read":True,"edit":True}}]}]}); await pg.wait_for_timeout(40)
       await measure("10-history")
       await pg.close()
     print(json.dumps(report, indent=1))

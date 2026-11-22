@@ -16,7 +16,7 @@ async def main():
     nav=await pg.locator(".nav-item").all_inner_texts()
     assert [n.split('\n')[0] for n in nav][:3]==["Assigned Apps","Object Settings","Apex Class Access"], nav
     assert any("Tab Settings" in n for n in nav) and any("Assignments" in n for n in nav) and not any("Login Hours" in n for n in nav)
-    await pg.screenshot(path="s_nav.png")
+    await pg.screenshot(path=f"{OUT}/s_nav.png")
     # local file offered in review
     await post({"type":"localFile","key":"permissionSet:1","path":"force-app/main/default/permissionsets/Sales_Operations.permissionset-meta.xml","mode":"ask"})
     # tab settings
@@ -39,7 +39,7 @@ async def main():
     await pg.click("[aria-label='Assigned to Ana Lima']")
     await pg.fill("[aria-label='Expiry for Ben Okafor']","2027-03-31"); await pg.dispatch_event("[aria-label='Expiry for Ben Okafor']","change"); await pg.wait_for_timeout(30)
     assert "4 unsaved changes" in await pg.inner_text(".docked-footer"), await pg.inner_text(".docked-footer")
-    await pg.screenshot(path="s_assign.png")
+    await pg.screenshot(path=f"{OUT}/s_assign.png")
     # review shows everything, local file box, prod confirm
     await pg.click(".docked-footer button.brand"); await pg.wait_for_timeout(40)
     txt=await pg.inner_text(".modal")
@@ -50,7 +50,7 @@ async def main():
     assert s["writeLocal"] is True and len(s["changes"])==4
     cara=[c for c in s["changes"] if c["key"]=="assignment:005C"][0]
     assert cara=={"key":"assignment:005C","ref":"005C","before":{"assigned":False,"expires":None},"after":{"assigned":True,"expires":None},"label":"Cara Diaz"}, cara
-    await pg.screenshot(path="s_review.png")
+    await pg.screenshot(path=f"{OUT}/s_review.png")
     await post({"type":"saveResult","key":"permissionSet:1","status":"saved","count":4,"mismatches":[],"snapshotId":"s1","local":{"path":"force-app/x.xml","applied":2,"skipped":2}}); await pg.wait_for_timeout(40)
     assert "Updated force-app/x.xml" in await pg.inner_text(".toasts")
     # removed in 2.0.0
@@ -87,9 +87,9 @@ async def main():
     await pg.click("[aria-label='Select Sales Operations']"); await pg.click("button:has-text('Remove from selected')")
     assert (await last("revokePlan"))=={"type":"revokePlan","object":"Lead","field":"Lead.Rating","level":"edit","sourceKeys":["permissionSet:1"]}
     await post({"type":"revokePlan","plan":[{"key":"permissionSet:1","label":"Sales Operations","kind":"permissionSet","changes":[{"key":"field:Lead.Rating","before":{"read":True,"edit":True},"after":{"read":True,"edit":False},"label":"Lead.Rating"}]}],"skipped":[]}); await pg.wait_for_timeout(30)
-    assert "Remove access from selected sources" in await pg.inner_text("main") and "− Edit" in await pg.inner_text("main")
-    await pg.click("button:has-text('Back')"); await pg.wait_for_timeout(20)
-    await pg.screenshot(path="s_lookup.png")
+    await pg.wait_for_selector(".modal"); assert "Remove access from selected sources" in await pg.inner_text("main") and "− Edit" in await pg.inner_text(".modal"), "the removals are reviewed in the same dialog as a save"
+    await pg.click(".modal footer button:has-text('Cancel')"); await pg.click("main button:has-text('Back')"); await pg.wait_for_timeout(20)
+    await pg.screenshot(path=f"{OUT}/s_lookup.png")
     # field grant: what each item has now, and what changes
     await pg.click("text=Grant field access")
     await pg.fill("[data-fid='wz.obj']","Lead"); await pg.dispatch_event("[data-fid='wz.obj']","change"); await pg.wait_for_timeout(30)
@@ -105,12 +105,12 @@ async def main():
     t=await pg.inner_text("main")
     assert "2 selected" in t and "reaching up to 24 users" in t and "4 field changes" in t, t[:900]
     assert "Grant Read and Edit on Lead where it’s missing (1 item)" in t
-    await pg.screenshot(path="s_wizard.png")
+    await pg.screenshot(path=f"{OUT}/s_wizard.png")
     await pg.click(".grant-sum button.brand")
     wp=await last("wizardPlan"); assert wp["level"]=="edit" and sorted(f["apiName"] for f in wp["fields"])==["Score__c","Tier__c"] and set(wp["targets"])=={"permissionSet:1","permissionSet:3"} and wp["grantObject"] is True, wp
     plan={"type":"wizardPlan","object":"Lead","plan":[{"key":"permissionSet:1","label":"Sales Operations","kind":"permissionSet","changes":[{"key":"field:Lead.Tier__c","before":{"read":False,"edit":False},"after":{"read":True,"edit":True},"label":"Tier"}]}],"skipped":[{"key":"permissionSet:3","label":"Lead Management","reason":"Already has this access."}]}
     await post(plan); await pg.wait_for_timeout(30)
-    t=await pg.inner_text("main"); assert "Tier" in t and "+ Read" in t and "+ Edit" in t, t[:600]
+    await pg.wait_for_selector(".modal"); t=await pg.inner_text(".modal"); assert "Tier" in t and "+ Read" in t and "+ Edit" in t, t[:600]
     assert await pg.is_disabled("#wzApply"), "production confirm"
     await pg.fill("[data-fid='wizardApply.confirm']","uat"); await pg.dispatch_event("[data-fid='wizardApply.confirm']","input")
     await pg.click("#wzApply")
@@ -134,14 +134,14 @@ async def main():
     await pg.click("[aria-label='Default Partner Lead']")
     assert await pg.is_checked("[aria-label='Partner Lead']")
     await pg.click(".col-set:has-text('Create')"); await pg.wait_for_timeout(20)
-    await pg.screenshot(path="s_objwizard.png")
+    await pg.screenshot(path=f"{OUT}/s_objwizard.png")
     await pg.click(".card-body.btns button.brand")
     op=await last("objWizardPlan")
     assert op["recordTypes"]==["Lead.Partner"] and op["defaultRt"]=="Lead.Partner" and sorted(op["perTarget"]["permissionSet:3"])==["create","edit","read","viewAll"], op
     assert sorted(op["perTarget"]["permissionSet:1"])==["create","edit","read"] and sorted(op["perTarget"]["permissionSet:4"])==["create","read"], "setting a column for everyone shown"
     await post({"type":"objWizardPlan","object":"Lead","plan":[{"key":"permissionSet:3","label":"Lead Management","kind":"permissionSet","changes":[{"key":"object:Lead","before":{"read":True},"after":{"read":True,"edit":True,"viewAll":True},"label":"Lead"},{"key":"recordType:Lead.Partner","before":{"visible":False},"after":{"visible":True},"label":"Partner"}]}],"skipped":[]}); await pg.wait_for_timeout(30)
-    t=await pg.inner_text("main")
-    assert "Partner" in t and "+ Assigned" in t and "Metadata API deploy per item" in t, t
+    await pg.wait_for_selector(".modal"); t=await pg.inner_text(".modal")
+    assert "Partner" in t and "+ Assigned" in t and "deployed per item" in t, t
     await pg.fill("[data-fid='objWizardApply.confirm']","uat"); await pg.dispatch_event("[data-fid='objWizardApply.confirm']","input")
     await pg.click("#wzApply"); assert (await last("objWizardApply"))["plan"][0]["key"]=="permissionSet:3"
     await post({"type":"objWizardResult","results":[{"key":"permissionSet:3","label":"Lead Management","status":"saved","count":2}]}); await pg.wait_for_timeout(30)
@@ -153,7 +153,7 @@ async def main():
     await post({"type":"history","entries":[{"at":time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time()-3600)),"org":"u","target":"Sales_Operations","key":"permissionSet:1","path":"records","count":1,"result":"saved","snapshot":"snap-9","changes":[{"key":"field:Lead.Rating","from":{"read":True,"edit":False},"to":{"read":True,"edit":True}}]},
       {"at":time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time()-86400)),"org":"u","target":"Lead_Management","key":"permissionSet:3","path":"records + deploy","count":2,"result":"failed","error":"boom","snapshot":"snap-8"}]}); await pg.wait_for_timeout(30)
     assert await pg.locator("button:has-text('Undo…')").count()==1, "failed saves can't be undone"
-    await pg.screenshot(path="s_history.png")
+    await pg.screenshot(path=f"{OUT}/s_history.png")
     await pg.click("button:has-text('Undo…')"); assert (await last("undoSnapshot"))=={"type":"undoSnapshot","snapshotId":"snap-9"}
     await post({"type":"stageChanges","key":"permissionSet:1","changes":[{"key":"field:Lead.Rating","ref":None,"before":{"read":True,"edit":True},"after":{"read":True,"edit":False}}]}); await pg.wait_for_timeout(40)
     assert (await last("select"))["key"]=="permissionSet:1", "reopens the item to get fresh values"
@@ -174,7 +174,7 @@ async def main():
     await pg.fill("[aria-label='Start IP 2']","192.168.1.0"); await pg.dispatch_event("[aria-label='Start IP 2']","change")
     await pg.fill("[aria-label='End IP 2']","192.168.1.255"); await pg.dispatch_event("[aria-label='End IP 2']","change"); await pg.wait_for_timeout(30)
     assert "2 unsaved changes" in await pg.inner_text(".docked-footer")
-    await pg.screenshot(path="s_login.png")
+    await pg.screenshot(path=f"{OUT}/s_login.png")
     await pg.click(".docked-footer button.brand"); await pg.wait_for_timeout(30)
     t=await pg.inner_text(".modal")
     assert "Friday Start: — → 7:00 AM" in t and "IP ranges: 10.0.0.0–10.0.0.255 → 10.0.0.0–10.0.0.255, 192.168.1.0–192.168.1.255" in t and "Metadata API deploy" in t, t
@@ -187,7 +187,7 @@ async def main():
     await post({"type":"recordTypes","key":"profile:1","object":"Lead","savedAt":now,"refreshing":False,"data":{"object":"Lead","profile":True,"items":[]}}); await pg.wait_for_timeout(40)
     await pg.select_option("[aria-label='Layout for Partner Lead']","Lead-Partner Layout")
     assert "1 unsaved change" in await pg.inner_text(".docked-footer")
-    await pg.screenshot(path="s_layouts.png", full_page=False)
+    await pg.screenshot(path=f"{OUT}/s_layouts.png", full_page=False)
     print("ok; errors:", errs)
     await b.close()
 asyncio.run(main())

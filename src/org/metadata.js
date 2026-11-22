@@ -92,7 +92,8 @@ async function listLayouts(conn, sobject) {
   let ids = [sobject];
   if (/__c$/.test(sobject)) {
     const e = await conn.query('SELECT DurableId FROM EntityDefinition WHERE QualifiedApiName = ' + str(sobject));
-    if (e.records[0]) ids = ids.concat([e.records[0].DurableId]);
+    // Both forms of the custom object's Id: DurableId is the 15-character form, TableEnumOrId may hold either.
+    if (e.records[0]) { const d = e.records[0].DurableId; ids = ids.concat([...new Set([d, require('../data/loader').id18(d)])]); }
   }
   const r = await conn.query('SELECT Name, NamespacePrefix, TableEnumOrId FROM Layout WHERE TableEnumOrId IN (' + ids.map(str).join(', ') + ')', { tooling: true });
   return r.records.map(l => ({ name: sobject + '-' + (l.NamespacePrefix ? l.NamespacePrefix + '__' : '') + l.Name, label: l.Name }))
@@ -226,15 +227,15 @@ async function readExtra(conn, item, keys) {
 const pick = (o, fields) => Object.fromEntries(fields.filter(f => o[f] !== undefined).map(f => [f, o[f]]));
 
 /**
- * Deploys only the given entries ([{ key, after }]) for the item. Muting and
- * password / session policies are separate components and are written whole;
+ * Deploys only the given entries ([{ key, after }]) for the item. Password and
+ * session policies are separate components and are written whole;
  * everything else goes in the item's own file.
  */
 async function deployEntries(conn, item, allChanges) {
-  const mute = allChanges.filter(c => c.key.startsWith('mute:'));
+  // Muting permission sets are read only in Permission Studio (changed in Setup).
+  if (allChanges.some(c => c.key.startsWith('mute:'))) throw new Error('Muting is read-only in Permission Studio. Change it in Setup.');
   const policies = allChanges.filter(c => /^(passwordPolicy|sessionSetting):/.test(c.key));
-  const changes = allChanges.filter(c => !mute.includes(c) && !policies.includes(c));
-  if (mute.length) await writeMuting(conn, item, mute);
+  const changes = allChanges.filter(c => !policies.includes(c));
   for (const c of policies) await writePolicy(conn, c.key.startsWith('passwordPolicy:') ? 'ProfilePasswordPolicy' : 'ProfileSessionSetting', c.key.slice(c.key.indexOf(':') + 1), c.after);
   if (!changes.length) return { id: null, status: 'Succeeded' };
   const name = await metadataName(conn, item);
@@ -380,39 +381,54 @@ function parseMuting(xml) {
   }
   return { label: topValues(xml).label || '', entries };
 }
-function mutingXml(label, entries) {
-  const lines = [];
-  for (const [k, p] of [...entries].sort((a, b) => a[0].localeCompare(b[0]))) {
-    const rest = k.slice('mute:'.length);
-    const kind = rest.slice(0, rest.indexOf(':'));
-    const name = rest.slice(rest.indexOf(':') + 1);
-    if (kind === 'object' && Object.values(p).some(Boolean)) lines.push(model.block('objectPermissions', Object.entries(MUTE_OBJECT).map(([f, x]) => [x, !!p[f]]).concat([['object', name]]), '    '));
-    if (kind === 'field' && (p.read || p.edit)) lines.push(model.block('fieldPermissions', [['editable', !!p.edit], ['field', name], ['readable', !!p.read]], '    '));
-    if (kind === 'user' && p.enabled) lines.push(model.block('userPermissions', [['enabled', true], ['name', name]], '    '));
+/**
+ * A muting permission set has the same sections as a permission set (Salesforce's MutingPermissionSet
+ * metadata type), each muting what the group's permission sets grant. The sections we know have a title
+ * and named columns; any other section is still shown, under its tag.
+ */
+const MUTING_SECTIONS = [
+  ['objectPermissions', 'Object permissions', 'object', [['allowRead', 'Read'], ['allowCreate', 'Create'], ['allowEdit', 'Edit'], ['allowDelete', 'Delete'], ['viewAllRecords', 'View All'], ['modifyAllRecords', 'Modify All'], ['viewAllFields', 'View All Fields']]],
+  ['fieldPermissions', 'Field permissions', 'field', [['readable', 'Read'], ['editable', 'Edit']]],
+  ['userPermissions', 'System permissions', 'name', [['enabled', 'Muted']]],
+  ['applicationVisibilities', 'Assigned apps', 'application', [['visible', 'Muted']]],
+  ['classAccesses', 'Apex class access', 'apexClass', [['enabled', 'Muted']]],
+  ['pageAccesses', 'Visualforce page access', 'apexPage', [['enabled', 'Muted']]],
+  ['flowAccesses', 'Flow access', 'flow', [['enabled', 'Muted']]],
+  ['customPermissions', 'Custom permissions', 'name', [['enabled', 'Muted']]],
+  ['customMetadataTypeAccesses', 'Custom metadata types', 'name', [['enabled', 'Muted']]],
+  ['customSettingAccesses', 'Custom settings', 'name', [['enabled', 'Muted']]],
+  ['externalDataSourceAccesses', 'External data sources', 'externalDataSource', [['enabled', 'Muted']]],
+  ['recordTypeVisibilities', 'Record types', 'recordType', [['visible', 'Muted']]],
+  ['tabSettings', 'Tab settings', 'tab', [['visibility', 'Visibility']]]
+];
+/** Every section of a muting permission set's XML: [{ tag, title, columns: [label], rows: [{ name, values: [true | false | text] }] }]. */
+function mutingSections(xml) {
+  const byTag = new Map();
+  for (const e of flatXml.parse(xml).entries) (byTag.get(e.tag) || byTag.set(e.tag, []).get(e.tag)).push(e.values);
+  const known = new Map(MUTING_SECTIONS.map(s => [s[0], s]));
+  const out = [];
+  for (const [tag, list] of byTag) {
+    const def = known.get(tag);
+    const nameKey = def ? def[2] : Object.keys(list[0] || {}).find(k => !/^(true|false)$/.test(String(list[0][k]))) || Object.keys(list[0] || {})[0];
+    const cols = def ? def[3] : [...new Set(list.flatMap(v => Object.keys(v)))].filter(k => k !== nameKey).map(k => [k, k]);
+    const rows = list.map(v => ({ name: v[nameKey] || '', values: cols.map(([k]) => v[k] === 'true' ? true : v[k] === 'false' || v[k] === undefined ? false : v[k]) }))
+      // A row mutes something when a flag is on (or, for tabs, a visibility is set).
+      .filter(r => r.values.some(x => x === true || (typeof x === 'string' && x)))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    if (rows.length) out.push({ tag, title: def ? def[1] : tag, columns: cols.map(c => c[1]), rows });
   }
-  return '<?xml version="1.0" encoding="UTF-8"?>\n<MutingPermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">\n' + lines.join('\n') + (lines.length ? '\n' : '') +
-    '    <label>' + esc(label) + '</label>\n</MutingPermissionSet>\n';
+  const order = MUTING_SECTIONS.map(s => s[0]);
+  return out.sort((a, b) => ((order.indexOf(a.tag) + 1) || 99) - ((order.indexOf(b.tag) + 1) || 99) || a.tag.localeCompare(b.tag));
 }
-/** What the group's muting permission set mutes now: Map<'mute:...', flags> (empty when the group has none). */
+/** The group's muting permission set, read only: { muting, entries, sections } (empty when the group has none). */
 async function readMuting(conn, item) {
   const m = await mutingFor(conn, item);
-  if (!m) return { muting: null, entries: new Map() };
+  if (!m) return { muting: null, entries: new Map(), sections: [] };
   const files = await retrieveFiles(conn, { MutingPermissionSet: [m.name] });
   const xml = files.get('MutingPermissionSet:' + m.name);
-  return { muting: m, entries: xml ? parseMuting(xml).entries : new Map() };
-}
-/** Mutes or unmutes entries: the whole muting permission set is written back, so nothing else changes. */
-async function writeMuting(conn, item, changes) {
-  const { muting, entries } = await readMuting(conn, item);
-  if (!muting) throw new Error(item.label + ' has no muting permission set yet. Create one under Muted Permissions first.');
-  for (const c of changes) entries.set(c.key, c.after);
-  return deployFiles(conn, [{ type: 'MutingPermissionSet', name: muting.name, xml: mutingXml(muting.label, entries) }]);
+  return { muting: m, entries: xml ? parseMuting(xml).entries : new Map(), sections: xml ? mutingSections(xml) : [] };
 }
 
-/** A new, empty muting permission set (the caller adds it to its group). */
-async function createMuting(conn, name, label) {
-  return deployFiles(conn, [{ type: 'MutingPermissionSet', name, xml: mutingXml(label, new Map()) }]);
-}
 
 // ---------- profile settings ----------
 
@@ -538,6 +554,6 @@ async function restoreSafety(conn, permissionSetId, safety) {
 }
 
 module.exports = {
-  FOLDERS, listMembers, retrieveFiles, deployFiles, topValues, withValues, readMetaAccess, mutingFor, parseMuting, mutingXml, readMuting, writeMuting, createMuting,
+  FOLDERS, listMembers, retrieveFiles, deployFiles, topValues, withValues, readMetaAccess, mutingFor, parseMuting, mutingSections, readMuting, 
   readProfileSettings, writePolicy, accessPolicies, PASSWORD_FIELDS, SESSION_FIELDS, metadataName, listLayouts, readEntries, readRecordTypes, readAllRecordTypes, readLayouts, readLoginSettings, deployEntries,
   captureSafety, checkSafety, restoreSafety };

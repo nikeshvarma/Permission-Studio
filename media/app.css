@@ -762,3 +762,52 @@ main { position: relative; }
 /* The section menu scrolls on its own (at most the window's height), so choosing a section near
    the bottom doesn't move it, and its place is kept across redraws. */
 .section-nav { max-height: calc(100vh - 120px); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; scrollbar-width: thin; }
+
+/* ---------- 2.6.2 ---------- */
+/* Lists of pills: one wrapping row with an even gap, so a second row lines up with the first,
+   and a little air between rows. Pills inside a list have no margins of their own. */
+.pills { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 6px; vertical-align: middle; max-width: 100%; }
+.pills > * { margin: 0 !important; }
+td > .pills { display: flex; }
+.si-sub .pills { margin-left: 6px; }
+.ev .ch { gap: 6px; }
+.ua-card .wide .pills, .wide > .pills { display: flex; margin-top: 4px; }
+.hc-scroll { max-height: 420px; }
+
+/* Progress while saving: a bar (changes saved out of all of them) and what is happening now. */
+.save-progress { display: flex; flex-direction: column; gap: 6px; margin: 12px 0 2px; }
+.save-progress .bar { height: 6px; border-radius: 3px; overflow: hidden; background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent); }
+.save-progress .bar > i { display: block; height: 100%; border-radius: 3px; background: var(--vscode-progressBar-background, var(--brand)); transition: width .25s ease; }
+.save-progress-text { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
+@media (prefers-reduced-motion: reduce) { .save-progress .bar > i { transition: none; } }
+
+/* Narrow windows (900 px or less): the list is hidden, so the page has one column, collapsed or not
+   (the collapsed list's two-column grid squeezed the page into a 38 px strip). */
+@media (max-width: 900px) { .body, .body.list-collapsed { grid-template-columns: minmax(0, 1fr) !important; } }
+/* The review's notices use the same icons as every other notice. */
+.rv-call .ic { display: inline-flex; align-items: center; flex: none; }
+.rv-call .ic svg { width: 16px; height: 16px; }
+.rv-call.risk .ic { color: var(--p-modifyall); }
+.rv-call.warn .ic { color: var(--vscode-editorWarning-foreground, var(--p-edit)); }
+.hc-note { margin: 0; padding: 10px 16px 0; font-size: 12px; color: var(--muted); }
+/* The bar moves while saving: stripes run across the filled part. */
+.save-progress .bar > i { background-image: linear-gradient(45deg, rgba(255,255,255,.2) 25%, transparent 25%, transparent 50%, rgba(255,255,255,.2) 50%, rgba(255,255,255,.2) 75%, transparent 75%, transparent);
+  background-size: 18px 18px; animation: ps-stripes .9s linear infinite; min-width: 6px; }
+@keyframes ps-stripes { from { background-position: 0 0; } to { background-position: 18px 0; } }
+@media (prefers-reduced-motion: reduce) { .save-progress .bar > i { animation: none; transition: none !important; } }
+
+/* Saved, but the read-back found differences: say so, and list them. */
+.st.warn { border-color: color-mix(in srgb, var(--vscode-editorWarning-foreground, var(--p-edit)) 55%, transparent); color: var(--vscode-editorWarning-foreground, var(--p-edit)); }
+.ev .diffs { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
+.ev .diffs li { margin: 2px 0; }
+.toast-text { white-space: pre-line; }
+.rv-status { white-space: nowrap; }
+/* Messages keep their line breaks (an outcome on one line, the reason on the next). */
+.alert > div, .toast-text { white-space: pre-line; }
+
+/* The review is a full page, not a dialog: header at the top, Cancel / Save at the bottom,
+   and the change table takes the space between. */
+.overlay:has(> .modal.wide) { padding: 0; place-items: stretch; background: var(--page); grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); }
+.modal.wide { width: 100%; height: 100%; max-width: none; max-height: none; border: 0; border-radius: 0; box-shadow: none; }
+.modal.wide .modal-body { flex: 1 1 auto; min-height: 0; }
+.modal.wide .rv-scroll { flex: 1 1 auto; max-height: none; min-height: 220px; }

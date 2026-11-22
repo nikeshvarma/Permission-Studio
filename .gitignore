@@ -5,3 +5,4 @@
 .permstudio/
 .DS_Store
 __pycache__/
+test/ui/*.png

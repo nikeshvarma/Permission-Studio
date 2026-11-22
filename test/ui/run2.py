@@ -15,7 +15,7 @@ async def main():
     await post({"type":"favorites","items":["permissionSet:Sales_Operations"],"objects":["Lead","Contact"]})
     await post({"type":"lists","lists":fav,"kinds":["permissionSet","group","profile"],"savedAt":now,"refreshing":True,"partial":True}); await pg.wait_for_timeout(50)
     assert "Loading the rest" in await pg.inner_text(".split-list")
-    await pg.screenshot(path="fav_partial.png", clip={"x":0,"y":0,"width":360,"height":300})
+    await pg.screenshot(path=f"{OUT}/fav_partial.png", clip={"x":0,"y":0,"width":360,"height":300})
     await post({"type":"lists","lists":lists,"kinds":["permissionSet","group","profile"],"savedAt":now,"refreshing":False}); await pg.wait_for_timeout(50)
     groups=await pg.locator(".si-group").all_inner_texts(); assert groups==["Favorites","All permission sets"], groups
     await pg.click(".split-item:has-text('Lead Management') .star")
@@ -44,14 +44,14 @@ async def main():
     await pg.fill("[data-fid='search.fields']",""); await pg.wait_for_timeout(250)
     await pg.click("[aria-label='Assign Direct Lead']")
     assert "1 unsaved change" in await pg.inner_text(".docked-footer")
-    await pg.screenshot(path="rt_ps.png")
+    await pg.screenshot(path=f"{OUT}/rt_ps.png")
     await pg.click(".docked-footer button.brand")
     assert "Metadata API deploy" in await pg.inner_text(".modal")
     await pg.click("#saveBtn")
     s=(await sent())[-1]; assert s["changes"]==[{"key":"recordType:Lead.Direct","ref":None,"before":{"visible":False},"after":{"visible":True},"label":"Direct Lead"}], s
     await post({"type":"saveResult","key":"permissionSet:1","status":"error","message":"The deploy removed 1 other permission from this item (1 field). A full copy was saved before the deploy; select Restore to put them back.","restorable":True,"snapshotId":"snap-1"})
     await pg.wait_for_timeout(50)
-    await pg.screenshot(path="restore.png")
+    await pg.screenshot(path=f"{OUT}/restore.png")
     await pg.click("text=Restore removed permissions")
     assert [m for m in (await sent()) if m.get("type")=="restore"][-1]=={"type":"restore","key":"permissionSet:1","snapshotId":"snap-1"}
     # Apex classes tab
@@ -71,7 +71,7 @@ async def main():
     assert "Show 500 more of 904" in await pg.inner_text(".more")
     await pg.check("text=Show only enabled")
     assert (await pg.inner_text(".nav-item.on .count"))=="2"
-    await pg.screenshot(path="apex.png")
+    await pg.screenshot(path=f"{OUT}/apex.png")
     await pg.click(".docked-footer button.brand"); await pg.click("#saveBtn")
     s=(await sent())[-1]; assert s["changes"]==[{"key":"apexClass:OpportunityService","ref":"01p000000000000002","before":{"enabled":False},"after":{"enabled":True},"label":"OpportunityService"}], s
     await post({"type":"saveResult","key":"permissionSet:1","status":"saved","count":1,"mismatches":[],"snapshotId":"s","undo":[]}); await pg.wait_for_timeout(30)
@@ -90,7 +90,7 @@ async def main():
     await pg.click("[aria-label='Default Direct Lead']")
     assert await pg.is_checked("[aria-label='Assign Direct Lead']") and await pg.is_checked("[aria-label='Default Direct Lead']")
     assert "2 unsaved changes" in await pg.inner_text(".docked-footer")
-    await pg.screenshot(path="rt_profile.png")
+    await pg.screenshot(path=f"{OUT}/rt_profile.png")
     print("ok; errors:", errs)
     await b.close()
 asyncio.run(main())

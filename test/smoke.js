@@ -405,10 +405,12 @@ test('object page: only permissionable fields, Edit blocked on calculated ones, 
   assert.ok(Object.values(od.props).every(v => v === false), 'no Lead row yet');
 });
 
-test('object catalog: permissionable objects only', async () => {
+test('object catalog: permissionable objects the org describes (others aren’t in Setup and can’t be opened)', async () => {
   const cat = await loader.objectCatalog(conn());
-  assert.deepStrictEqual(cat.map(o => [o.name, o.objectPerms, o.fieldPerms]), [['Account', true, true], ['Contact', true, true], ['Custom_Thing__c', true, true],
-    ['Event', false, true], ['Lead', true, true], ['Opportunity', true, true], ['Task', false, true]], 'exactly the objects Salesforce lists; activities take field permissions only');
+  // Contact and Opportunity are in this test org's ObjectPermissions list but not in its describe, as in the
+  // reported org: Setup doesn't show such objects and opening them fails with NOT_FOUND, so they aren't listed.
+  assert.deepStrictEqual(cat.map(o => [o.name, o.objectPerms, o.fieldPerms]), [['Account', true, true], ['Custom_Thing__c', true, true],
+    ['Event', false, true], ['Lead', true, true], ['Task', false, true]], 'the objects Salesforce lists that the org describes; activities take field permissions only');
   S.noObjectPicklist = true;
   const c2 = conn();
   assert.deepStrictEqual((await loader.objectCatalog(c2)).map(o => o.name), ['Account', 'Custom_Thing__c', 'Event', 'Lead', 'Region__mdt', 'Task'].filter(n => n !== 'Region__mdt'), 'orgs that don\u2019t say: the old rule');
@@ -728,7 +730,7 @@ function panelServices(over) {
     resolveContext: async () => ({ projectDir, org: { username: 'uat@example.com', alias: 'uat', location: 'Local' } }),
     openConnection: async () => { svc.opens++; if (svc.connectDelay) await new Promise(r => setTimeout(r, svc.connectDelay)); return c; },
     cacheFor: u => { if (!caches.has(u)) caches.set(u, new Cache(path.join(projectDir, 'cache', u))); return caches.get(u); },
-    catalog, loader, detectProduction: orgs.detectProduction, history, applyChanges: applyMod.apply, metadata, log: l => logs.push(l), showLog() {},
+    catalog, loader, detectProduction: orgs.detectProduction, history, applyChanges: applyMod.apply, applyMany: applyMod.applyMany, metadata, log: l => logs.push(l), showLog() {},
     favs: { items: [], objects: [] },
     favorites: () => svc.favs,
     toggleFavorite: async (kind, id) => { const list = kind === 'object' ? svc.favs.objects : svc.favs.items; const i = list.indexOf(id); if (i >= 0) list.splice(i, 1); else list.push(id); }
@@ -864,7 +866,7 @@ test('main screen: group and standard profile pages are read-only with a reason'
   const lists = posts(p, 'lists').pop().lists;
   await mp.select(lists.group[0].key);
   const g = posts(p, 'detail').pop().data.header;
-  assert.deepStrictEqual([g.editableCats, g.kind], [['assignment', 'groupComponent', 'mute'], 'Permission Set Group'], 'only assignments, members and muting can change on a group');
+  assert.deepStrictEqual([g.editableCats, g.kind], [['assignment', 'groupComponent'], 'Permission Set Group'], 'only assignments and members can change on a group (muting is read-only)');
   assert.match(g.readOnlyReason, /Permission Sets in Group/);
   await mp.select(lists.profile.find(r => r.standard).key);
   assert.match(posts(p, 'detail').pop().data.header.readOnlyReason, /Standard profiles/);
@@ -1081,7 +1083,7 @@ test('every setup-entity category lists the org’s entities with what the item 
   const r = await applyMod.apply(c, item(), [
     { key: 'flow:Lead_Intake', ref: '300000000000001AAA', before: { enabled: false }, after: { enabled: true } },
     { key: 'app:Sales', ref: '02u000000000001AAA', before: { enabled: false }, after: { enabled: true } },
-    { key: 'customMetadata:Region__mdt', ref: '01I000000000001AAA', before: { enabled: false }, after: { enabled: true } },
+    { key: 'customMetadata:Region__mdt', ref: '01I000000000001EAA', before: { enabled: false }, after: { enabled: true } },
     { key: 'connectedApp:Data Loader', ref: '0H4000000000001AAA', before: { enabled: false }, after: { enabled: true } }
   ], saveOpts());
   assert.strictEqual(r.status, 'saved');
@@ -1121,7 +1123,7 @@ test('assignments: list, search users, add with expiry, change expiry, remove; g
 
 test('what can be changed where', () => {
   const ed = applyMod.editableCategories;
-  assert.deepStrictEqual(ed({ kind: 'group' }), ['assignment', 'groupComponent', 'mute']);
+  assert.deepStrictEqual(ed({ kind: 'group' }), ['assignment', 'groupComponent'], 'muting is read-only');
   assert.deepStrictEqual(ed({ kind: 'permissionSet', managed: true }), ['assignment']);
   assert.deepStrictEqual(ed({ kind: 'profile', standard: true }), []);
   const ps = ed({ kind: 'permissionSet' });
@@ -1230,7 +1232,7 @@ test('who has access: both halves of field access, from any mix of sources, down
 });
 
 // ---------- 1.0.3: panel tools ----------
-test('field access wizard: a plan per item, skipping what can’t or needn’t change, then saved item by item', async () => {
+test('field access wizard: a plan per item, skipping what can’t or needn’t change, then every item saved in one request', async () => {
   resetOrg();
   const vscode = require('vscode');
   const svc = panelServices();
@@ -1249,13 +1251,23 @@ test('field access wizard: a plan per item, skipping what can’t or needn’t c
   assert.deepStrictEqual(so.changes.map(c => c.key), ['object:Lead', 'field:Lead.Industry', 'field:Lead.Rating', 'field:Lead.Score__c']);
   assert.deepStrictEqual(so.changes.find(c => c.key === 'field:Lead.Score__c').after, { read: true, edit: false }, 'read-only field gets Read only');
   assert.deepStrictEqual([so.changes[0].after.read, so.changes[0].after.edit], [true, true], 'object Read and Edit granted where missing');
-  await mp.wizardApply({ plan: plan.plan });
+  // Both items' changes go in one request, so a group isn't recalculated between one permission set and the next
+  const conn = await mp._conn();
+  const write = conn.compositeWrite.bind(conn);
+  let requests = 0;
+  conn.compositeWrite = async w => { requests++; return write(w); };
+  await mp.wizardApply({ plan: plan.plan, ticket: ' US-1042 ' });
+  conn.compositeWrite = write;
   const res = posts(p, 'wizardResult').pop();
-  assert.deepStrictEqual(res.results.map(r => [r.label, r.status]), [['Sales Ops', 'saved'], ['Custom: Sales', 'saved']]);
+  assert.deepStrictEqual(res.results.map(r => [r.label, r.status, r.oneRequest]), [['Sales Ops', 'saved', true], ['Custom: Sales', 'saved', true]]);
+  assert.strictEqual(requests, 1, 'one request for every item');
   assert.ok(F.T.FieldPermissions.some(f => f.ParentId === '0PS0000000000PRAAA' && f.Field === 'Lead.Industry' && f.PermissionsEdit));
-  // One "starting this item" message per item, then the save's own steps (so a big save shows progress).
-  assert.strictEqual(posts(p, 'wizardProgress').filter(x => !x.step).length, 2);
-  assert.ok(posts(p, 'wizardProgress').some(x => x.step && typeof x.stepTotal === 'number'), 'the save’s steps are reported');
+  // Progress counts changes, for the progress bar; the ticket is kept with each item's save in History
+  const prog = posts(p, 'wizardProgress');
+  const last = prog[prog.length - 1];
+  assert.ok(prog.length >= 3 && last.done === last.total && last.changesTotal === plan.plan.reduce((n, x) => n + x.changes.length, 0) && last.changesSaved === last.changesTotal, JSON.stringify(last));
+  const log = await history.readLog(svc.projectDir, {});
+  assert.ok(log.slice(-2).every(e => e.ticket === 'US-1042' && e.result === 'saved'), 'each item’s save is in History, with the ticket');
 });
 
 test('rename and clone permission sets; clones carry every kind of access', async () => {
@@ -1621,7 +1633,7 @@ test('groups: add and remove member permission sets as records; only groups can'
   assert.strictEqual(F.T.PermissionSetGroup[0].Status, 'Updating', 'Salesforce starts recalculating');
   await assert.rejects(applyMod.apply(c, item(), [{ key: 'groupComponent:x', ref: '0PS000000000002AAA', before: null, after: { included: true } }], saveOpts()), /Only permission set groups/);
   await assert.rejects(applyMod.apply(c, Object.assign(GROUP(), { managed: true }), [{ key: 'groupComponent:x', ref: '0PS000000000002AAA', before: null, after: { included: true } }], saveOpts()), /managed package/);
-  assert.deepStrictEqual(applyMod.editableCategories(GROUP()), ['assignment', 'groupComponent', 'mute']);
+  assert.deepStrictEqual(applyMod.editableCategories(GROUP()), ['assignment', 'groupComponent'], 'muting is read-only');
 });
 
 test('groups on screen: members listed, a change saved, the recalculation watched until it settles', async () => {
@@ -1962,38 +1974,6 @@ test('who has a system or custom permission, through which permission sets, prof
   assert.ok(posts(p, 'lookupResult').pop().result.sources.find(x => x.label === 'Sales Ops').key, 'sources link to their item');
 });
 
-test('copy a profile to a new permission set: its access, its licence, tab settings and record types; the profile untouched', async () => {
-  resetOrg();
-  fs.writeFileSync(tokenFile, S.token);
-  F.T.PermissionSetTabSetting.push({ Id: '01P000000000009AAA', ParentId: '0PS0000000000PRAAA', Name: 'standard-Account', Visibility: 'DefaultOff' });
-  const before = JSON.stringify([F.T.ObjectPermissions, F.T.FieldPermissions].map(t => t.filter(x => x.ParentId === '0PS0000000000PRAAA')));
-  await withEnv({ FAKE_SF_TOKEN: tokenFile, FAKE_SF_INSTANCE: INSTANCE }, async () => {
-    const vscode = require('vscode');
-    const c = metaConn();
-    const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, panelServices({ openConnection: async () => c }));
-    const p = mp.show();
-    await mp.load();
-    const key = posts(p, 'lists').pop().lists.profile.find(r => r.label === 'Custom: Sales').key;
-    await mp.select(key);
-    assert.strictEqual(posts(p, 'detail').pop().data.header.canCopyToPs, true);
-    await mp.copyProfile({ key, label: 'Sales Access', name: 'Sales_Access', description: 'From the Custom: Sales profile' });
-    const done = posts(p, 'psSaved').pop();
-    assert.ok(!done.error, done.error);
-    assert.strictEqual(done.mode, 'copyProfile');
-    const id = done.key.split(':')[1];
-    const made = F.T.PermissionSet.find(x => x.Id === id);
-    assert.deepStrictEqual([made.Name, made.LicenseId, made.IsOwnedByProfile], ['Sales_Access', '100000000000001AAA', false], 'with the profile\u2019s user licence');
-    const objs = t => F.T[t].filter(x => x.ParentId === '0PS0000000000PRAAA').length;
-    assert.strictEqual(F.T.ObjectPermissions.filter(x => x.ParentId === id).length, objs('ObjectPermissions'));
-    assert.strictEqual(F.T.FieldPermissions.filter(x => x.ParentId === id).length, objs('FieldPermissions'));
-    assert.deepStrictEqual(F.T.PermissionSetTabSetting.filter(t => t.ParentId === id).map(t => [t.Name, t.Visibility]), [['standard-Account', 'DefaultOff']], 'tab settings copied as records');
-    assert.ok(done.counts && done.counts.tabs === 1 && typeof done.counts.recordTypes === 'number');
-    assert.strictEqual(JSON.stringify([F.T.ObjectPermissions, F.T.FieldPermissions].map(t => t.filter(x => x.ParentId === '0PS0000000000PRAAA'))), before, 'nothing removed from the profile');
-    await mp.copyProfile({ key: posts(p, 'lists').pop().lists.permissionSet[0].key, label: 'X', name: 'X' });
-    assert.match(posts(p, 'psSaved').pop().error, /Only profiles can be copied/);
-  });
-});
-
 test('licences are checked before assigning: user licence and permission set licence', async () => {
   resetOrg();
   const c = conn();
@@ -2080,11 +2060,11 @@ test('tickets: kept with the save in the change log and in the copied summary', 
   await mp.load();
   const key = 'permissionSet:' + PS1;
   await mp.select(key);
-  await mp.save({ key, ticket: '  ADO US 11581701 ', changes: [{ key: 'field:Lead.Industry', label: 'Industry', before: null, after: { read: true, edit: false } }] });
+  await mp.save({ key, ticket: '  US-1042 ', changes: [{ key: 'field:Lead.Industry', label: 'Industry', before: null, after: { read: true, edit: false } }] });
   const log = await history.readLog(svc.projectDir, {});
-  assert.strictEqual(log[log.length - 1].ticket, 'ADO US 11581701', 'trimmed and stored');
+  assert.strictEqual(log[log.length - 1].ticket, 'US-1042', 'trimmed and stored');
   await mp.copySummary({ snapshotIds: [log[log.length - 1].snapshot], format: 'markdown' });
-  assert.match(clip.split('\n')[0], / · ADO US 11581701$/);
+  assert.match(clip.split('\n')[0], / · US-1042$/);
   const two = summaryMod.toMarkdown([{ at: '2026-11-01T10:00:00Z', target: 'A', ticket: 'T-1', changes: [{ key: 'user:ApiEnabled', from: { enabled: false }, to: { enabled: true } }] },
     { at: '2026-11-01T11:00:00Z', target: 'B', ticket: 'T-2', changes: [{ key: 'user:ApiEnabled', from: { enabled: false }, to: { enabled: true } }] }], {});
   assert.ok(two.includes('| Ticket |') && two.includes('| T-2 |'), 'several tickets: a Ticket column');
@@ -2330,6 +2310,8 @@ test('QA Q8: a very large save (5,100 field changes) still goes through', async 
   const c = conn();
   const changes = [];
   for (let i = 0; i < 5100; i++) changes.push({ key: 'field:Lead.Q' + i + '__c', before: null, after: { read: true, edit: false } });
+  // the fields exist in the org (the save checks each field against the object's describe)
+  for (let i = 0; i < 5100; i++) F.DESCRIBE.Lead.fields.push({ name: 'Q' + i + '__c', label: 'Q' + i, type: 'string', permissionable: true, updateable: true, createable: true });
   const r = await applyMod.apply(c, item(), changes, saveOpts());
   assert.strictEqual(r.status, 'saved', JSON.stringify(r).slice(0, 300));
   assert.strictEqual(F.T.FieldPermissions.filter(x => x.ParentId === PS1 && /^Lead\.Q\d+__c$/.test(x.Field)).length, 5100);
@@ -2557,37 +2539,43 @@ test('newer access kinds: what the org has, what the item enables, saved with a 
   });
 });
 
-test('muting: what the members grant and what is muted; muting more keeps what was muted; field muting; a group without muting gets one', async () => {
+test('muting is read-only: every section of the muting permission set is shown; a mute is refused, nothing deployed; creating one is gone', async () => {
   resetOrg();
   await withEnv({ FAKE_SF_TOKEN: tokenFile, FAKE_SF_INSTANCE: INSTANCE }, async () => {
     const { mp, p } = await metaPanel();
     const key = groupKey();
+    // A muting permission set has the same sections as a permission set: every one is shown, read-only
+    F.S.files.MutingPermissionSet.Sales_Bundle_Muting = '<?xml version="1.0" encoding="UTF-8"?>\n<MutingPermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">\n' +
+      '    <applicationVisibilities><application>Sales_Console</application><visible>true</visible></applicationVisibilities>\n' +
+      '    <classAccesses><apexClass>LeadService</apexClass><enabled>true</enabled></classAccesses>\n' +
+      '    <customPermissions><enabled>true</enabled><name>Approve_Discounts</name></customPermissions>\n' +
+      '    <fieldPermissions><editable>true</editable><field>Account.Rating</field><readable>false</readable></fieldPermissions>\n' +
+      '    <objectPermissions><allowCreate>false</allowCreate><allowDelete>true</allowDelete><allowEdit>false</allowEdit><allowRead>false</allowRead><modifyAllRecords>false</modifyAllRecords><object>Account</object><viewAllFields>true</viewAllFields><viewAllRecords>true</viewAllRecords></objectPermissions>\n' +
+      '    <objectPermissions><allowCreate>false</allowCreate><allowDelete>false</allowDelete><allowEdit>false</allowEdit><allowRead>false</allowRead><modifyAllRecords>false</modifyAllRecords><object>Lead</object><viewAllRecords>false</viewAllRecords></objectPermissions>\n' +
+      '    <pageAccesses><apexPage>LeadWizard</apexPage><enabled>true</enabled></pageAccesses>\n' +
+      '    <recordTypeVisibilities><recordType>Lead.Partner</recordType><visible>true</visible></recordTypeVisibilities>\n' +
+      '    <tabSettings><tab>standard-Lead</tab><visibility>Hidden</visibility></tabSettings>\n' +
+      '    <userPermissions><enabled>true</enabled><name>ExportReport</name></userPermissions>\n' +
+      '    <label>Sales Bundle Muting</label>\n</MutingPermissionSet>\n';
     await mp.select(key);
     await mp.openMuting(key);
     const d = posts(p, 'mutingDetail').pop().data;
     assert.strictEqual(d.muting.name, 'Sales_Bundle_Muting');
-    assert.ok(d.objects.some(o => o.name === 'Account' && o.props.read), 'what the member permission sets grant');
-    assert.deepStrictEqual(new Map(d.muted).get('mute:object:Account'), { read: false, create: false, edit: false, delete: true, viewAll: false, modifyAll: false });
-    await mp.save({ key, changes: [{ key: 'mute:object:Account', label: 'Account', before: { read: false, create: false, edit: false, delete: true, viewAll: false, modifyAll: false }, after: { read: false, create: false, edit: true, delete: true, viewAll: false, modifyAll: false } },
-      { key: 'mute:user:ApiEnabled', label: 'API Enabled', before: {}, after: { enabled: true } }] });
+    const byTitle = new Map(d.sections.map(s => [s.title, s]));
+    assert.deepStrictEqual([...byTitle.keys()], ['Object permissions', 'Field permissions', 'System permissions', 'Assigned apps', 'Apex class access', 'Visualforce page access', 'Custom permissions', 'Record types', 'Tab settings']);
+    const acc = byTitle.get('Object permissions');
+    assert.deepStrictEqual([acc.columns, acc.rows.map(r => [r.name, r.values])], [['Read', 'Create', 'Edit', 'Delete', 'View All', 'Modify All', 'View All Fields'], [['Account', [false, false, false, true, true, false, true]]]], 'Lead mutes nothing, so it isn’t listed');
+    assert.deepStrictEqual(byTitle.get('Field permissions').rows, [{ name: 'Account.Rating', values: [false, true] }]);
+    assert.deepStrictEqual(byTitle.get('Tab settings').rows, [{ name: 'standard-Lead', values: ['Hidden'] }]);
+    assert.deepStrictEqual(byTitle.get('System permissions').rows.map(r => r.name), ['ExportReport']);
+    const deploys = F.S.deploys.length;
+    await mp.save({ key, changes: [{ key: 'mute:object:Account', label: 'Account', before: { delete: true }, after: { delete: true, viewAll: true } }] });
     const r = posts(p, 'saveResult').pop();
-    assert.strictEqual(r.status, 'saved', JSON.stringify(r));
-    const xml = S.files.MutingPermissionSet.Sales_Bundle_Muting;
-    assert.ok(/<allowEdit>true<\/allowEdit>/.test(xml) && /<allowDelete>true<\/allowDelete>/.test(xml) && /<name>ApiEnabled<\/name>/.test(xml) && /<label>Sales Bundle Muting<\/label>/.test(xml), xml);
-    assert.ok(!S.deploys.some(x => x.type === 'PermissionSet'), 'muting is its own file; the group’s permission sets are untouched');
-    await mp.mutingFields({ key, object: 'Lead' });
-    assert.ok(Array.isArray(posts(p, 'mutingFields').pop().fields));
-    await mp.createMuting({ key, label: 'Again', name: 'Again' });
-    assert.match(posts(p, 'mutingCreated').pop().error, /already has a muting permission set/);
-    F.T.PermissionSetGroupComponent = F.T.PermissionSetGroupComponent.filter(c => !/^0QM/.test(c.PermissionSetId));
-    mp.cache.delete('muting:' + key);
-    await mp.openMuting(key, { force: true });
-    assert.strictEqual(posts(p, 'mutingDetail').pop().data.muting, null, 'no muting yet');
-    await mp.createMuting({ key, label: 'Bundle Muting', name: 'Bundle_Muting' });
-    assert.ok(!posts(p, 'mutingCreated').pop().error, JSON.stringify(posts(p, 'mutingCreated').pop()));
-    const made = F.T.MutingPermissionSet.find(m => m.DeveloperName === 'Bundle_Muting');
-    assert.ok(made && F.T.PermissionSetGroupComponent.some(c => c.PermissionSetGroupId === '0PG000000000001AAA' && c.PermissionSetId === made.Id), 'created and added to the group');
-    assert.strictEqual(posts(p, 'mutingDetail').pop().data.muting.name, 'Bundle_Muting');
+    assert.ok(r.status === 'error' && /read-only in Permission Studio/.test(r.message), JSON.stringify(r));
+    assert.strictEqual(F.S.deploys.length, deploys, 'nothing deployed');
+    assert.strictEqual(typeof mp.createMuting, 'undefined', 'creating a muting permission set is removed');
+    const js = fs.readFileSync(path.join(ROOT, 'media', 'app.js'), 'utf8');
+    assert.ok(!/createMuting|mutingCreated|Create muting permission set/.test(js) && /Read-only\. Change muting in Setup/.test(js), 'the screen says so and offers no creation');
   });
 });
 
@@ -2913,15 +2901,12 @@ test('reported: muting reads in orgs whose MutingPermissionSet has no NamespaceP
     const c = conn();
     await assert.rejects(c.query('SELECT Id, DeveloperName, MasterLabel, NamespacePrefix FROM MutingPermissionSet'), e => /No such column 'NamespacePrefix' on entity 'MutingPermissionSet'/.test(e.message), 'the test org fails the old query as the org did');
     const { mp, p } = await metaPanel();
-    const key = [...mp.items.keys()].find(k => k.startsWith('group:') && !mp.items.get(k).managed);
-    // A group without muting gets one, and the Muted Permissions screen then reads it (this is where it failed)
-    const g = mp.items.get(key);
-    F.T.PermissionSetGroupComponent = F.T.PermissionSetGroupComponent.filter(x => !(x.PermissionSetGroupId === g.recordId && /^0QM/.test(x.PermissionSetId)));
+    // The Muted Permissions screen reads the group's muting permission set (this is where it failed)
+    const key = groupKey();
     await mp.select(key);
-    await mp.createMuting({ key, name: 'Team_Muting', label: 'Team Muting' });
-    assert.ok(!posts(p, 'mutingCreated').pop().error, JSON.stringify(posts(p, 'mutingCreated').pop()));
+    await mp.openMuting(key);
     const last = posts(p, 'mutingDetail').pop();
-    assert.ok(last && last.data && last.data.muting && last.data.muting.name === 'Team_Muting', JSON.stringify(posts(p, 'mutingError').pop() || last));
+    assert.ok(last && last.data && last.data.muting && last.data.muting.name === 'Sales_Bundle_Muting' && Array.isArray(last.data.sections), JSON.stringify(posts(p, 'mutingError').pop() || last));
   });
 });
 
@@ -3054,6 +3039,203 @@ test('Excel limits: long cells are capped, links past Excel’s limit stay text;
   assert.ok(cell.endsWith('…'));
 });
 
+// ---------- 2.6.2: one request for many items; User access field search ----------
+test('saving many items: when the org refuses the one request, every item is still saved, step by step', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  const svc = panelServices();
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, svc);
+  const p = mp.show();
+  await mp.load();
+  const lists = posts(p, 'lists').pop().lists;
+  const keyOf = (kind, label) => lists[kind].find(r => r.label === label).key;
+  await mp.wizardFields('Lead');
+  const fields = posts(p, 'wizardFields').pop().fields.filter(f => ['Industry', 'Rating'].includes(f.apiName));
+  await mp.wizardPlan({ object: 'Lead', fields, level: 'edit', grantObject: true, targets: [keyOf('permissionSet', 'Sales Ops'), keyOf('profile', 'Custom: Sales')] });
+  const plan = posts(p, 'wizardPlan').pop();
+  const conn = await mp._conn();
+  const write = conn.compositeWrite;
+  let tried = 0;
+  conn.compositeWrite = async () => { tried++; throw Object.assign(new Error('COMPOSITE_UNAVAILABLE: refused for the test'), { code: 'COMPOSITE_UNAVAILABLE' }); };
+  await mp.wizardApply({ plan: plan.plan });
+  conn.compositeWrite = write;
+  const res = posts(p, 'wizardResult').pop();
+  assert.strictEqual(tried, 1, 'the one request was tried once');
+  assert.deepStrictEqual(res.results.map(r => [r.label, r.status, r.oneRequest]), [['Sales Ops', 'saved', false], ['Custom: Sales', 'saved', false]]);
+  assert.ok(res.results.every(r => !r.mismatches.length), 'everything landed, step by step');
+});
+
+test('saving many items: as few requests as Composite allows (25 subrequests of up to 200 records), no item split', () => {
+  const { batchesOf, subrequestsOf } = applyMod;
+  const rec = n => Array.from({ length: n }, () => ({}));
+  const item = (c, u, d) => ({ writes: { creates: rec(c), updates: rec(u || 0), deletes: rec(d || 0) } });
+  assert.strictEqual(subrequestsOf({ creates: rec(201), updates: rec(1), deletes: [] }), 3, 'one per 200 records of each kind of write');
+  // 30 items of 150 creates each: 4,500 records in 23 subrequests: one request
+  assert.deepStrictEqual(batchesOf(Array.from({ length: 30 }, () => item(150))).map(b => b.length), [30]);
+  // 4,900 creates plus 50 updates needs 26 subrequests: two requests, the second item whole
+  assert.deepStrictEqual(batchesOf([item(4900), item(0, 50)]).map(b => b.length), [1, 1]);
+  // Items with nothing to write aren't sent
+  assert.deepStrictEqual(batchesOf([item(0), item(10), item(0)]).map(b => b.length), [1]);
+});
+
+test('User access: field access across every object at once, for the field search', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  const svc = panelServices();
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, svc);
+  const p = mp.show();
+  await mp.load();
+  const ids = F.T.PermissionSet.map(x => x.Id);
+  F.T.FieldPermissions.push({ Id: '01k000000000FX1AAA', ParentId: ids[0], SobjectType: 'Account', Field: 'Account.Industry', PermissionsRead: true, PermissionsEdit: false });
+  await mp.userFields({ userId: '005A', ids, object: null });
+  const r = posts(p, 'userFields').pop();
+  assert.strictEqual(r.object, null);
+  const objects = new Set(r.fields.map(f => f.field.split('.')[0]));
+  assert.ok(objects.has('Lead') && objects.has('Account') && r.fields.every(f => Array.isArray(f.read) && Array.isArray(f.edit)), [...objects].join(', '));
+});
+
+// ---------- 2.6.5: expiry dates read in the right time zone; differences said in words ----------
+test('assignment expiry: midnight UTC is a plain date; any other time is the date on this machine’s clock', () => {
+  const tz = process.env.TZ;
+  process.env.TZ = 'Asia/Kolkata';
+  try {
+    assert.strictEqual(loader.expiryDate('2026-11-30T00:00:00.000Z'), '2026-11-30', 'a plain date');
+    assert.strictEqual(loader.expiryDate('2026-11-29T18:30:00.000Z'), '2026-11-30', 'midnight in India, stored as 18:30 UTC the day before (the reported org)');
+    assert.strictEqual(loader.expiryDate('2026-11-30'), '2026-11-30', 'a date field');
+    assert.strictEqual(loader.expiryDate(null), null);
+  } finally { if (tz === undefined) delete process.env.TZ; else process.env.TZ = tz; }
+});
+
+test('a save that ends differently says what differs, in words (for the message, History and the log)', () => {
+  const { differenceText } = require('../src/views/mainPanel');
+  assert.strictEqual(differenceText({ key: 'assignment:005A', wanted: { assigned: true, expires: '2026-11-30' }, now: { assigned: true, expires: '2026-11-29' }, raw: '2026-11-29T00:00:00.000Z' }),
+    'expiry: asked 2026-11-30, the org has 2026-11-29 (stored as 2026-11-29T00:00:00.000Z)');
+  assert.strictEqual(differenceText({ key: 'assignment:005A', wanted: { assigned: true, expires: null }, now: { assigned: false, expires: null } }), 'asked to assign; the org doesn’t have the assignment');
+  assert.strictEqual(differenceText({ key: 'object:Lead', wanted: { read: true, edit: true }, now: { read: true, edit: false } }), 'edit: asked on, the org has off');
+});
+
+// ---------- 2.6.6: 15- and 18-character Ids ----------
+test('reported: a custom metadata type already granted shows as granted, and saving it makes no duplicate (DUPLICATE_VALUE)', async () => {
+  resetOrg();
+  const c = conn();
+  const ps = F.T.PermissionSet.find(x => x.Label === 'Sales Ops');
+  // As in the reported org: access is stored under the 18-character Id; the list has the 15-character DurableId
+  F.T.SetupEntityAccess.push({ Id: '0J0000000000CMDAAA', ParentId: ps.Id, SetupEntityId: '01I000000000001EAA', SetupEntityType: 'CustomEntityDefinition' });
+  const item = { kind: 'permissionSet', permissionSetId: ps.Id, apiName: ps.Name, label: ps.Label };
+  const tab = await loader.loadEntityAccess(c, item, 'customMetadata');
+  const region = tab.items.find(x => x.name === 'Region__mdt');
+  assert.ok(region && region.entityId === '01I000000000001' && region.enabled === true, 'shown as granted: ' + JSON.stringify(region));
+  const r = await applyMod.apply(c, item, [{ key: 'customMetadata:Region__mdt', ref: region.entityId, label: 'Region', before: { enabled: false }, after: { enabled: true } }], { force: true });
+  assert.strictEqual(r.status, 'saved');
+  assert.strictEqual(F.T.SetupEntityAccess.filter(x => x.ParentId === ps.Id && x.SetupEntityId.slice(0, 15) === '01I000000000001').length, 1, 'still one row: nothing duplicated');
+  // Compare names it too (it looked custom metadata types up by the same Id)
+  const snap = await require('../src/data/insight').accessSnapshot(c, ps.Id, require('../src/data/insight').entityNames(c));
+  assert.ok(snap.has('customMetadata:Region__mdt'), [...snap.keys()].filter(k => !/^(object|field|user):/.test(k)).join(', '));
+});
+
+// ---------- 2.6.7: profiles (system permissions on the Profile; Modify All Data) ----------
+const CUSTOM_PROFILE = () => ({ kind: 'profile', permissionSetId: '0PS0000000000PRAAA', recordId: '00e000000000002AAA', apiName: 'Custom: Sales', label: 'Custom: Sales' });
+test('reported: a profile’s system permissions are saved on the Profile record (its own permission set refuses them)', async () => {
+  resetOrg();
+  const c = conn();
+  const owned = F.T.PermissionSet.find(x => x.Id === '0PS0000000000PRAAA');
+  const name = Object.keys(owned).find(k => /^Permissions/.test(k) && owned[k] === false && !/ModifyAllData|ViewAllData|ViewSetup/.test(k)).slice('Permissions'.length);
+  const r = await applyMod.apply(c, CUSTOM_PROFILE(), [{ key: 'user:' + name, label: name, before: { enabled: false }, after: { enabled: true } }], {});
+  assert.ok(r.status === 'saved' && !r.mismatches.length, JSON.stringify(r).slice(0, 300));
+  assert.strictEqual(owned['Permissions' + name], true, 'the profile has it (Salesforce keeps the profile’s permission set in step)');
+});
+
+test('reported: a profile with Modify All Data takes no object permissions: stopped before anything is written, and why', async () => {
+  resetOrg();
+  const c = conn();
+  F.T.PermissionSet.find(x => x.Id === '0PS0000000000PRAAA').PermissionsModifyAllData = true;
+  const before = F.T.ObjectPermissions.length;
+  await assert.rejects(applyMod.apply(c, CUSTOM_PROFILE(), [{ key: 'object:Contact', label: 'Contact', before: null, after: { read: true } }], {}),
+    e => /has Modify All Data, so its object permissions can’t be changed\. Remove: Contact\./.test(e.message), 'says why, and which');
+  assert.strictEqual(F.T.ObjectPermissions.length, before, 'nothing written');
+});
+
+// ---------- 2.6.8: after a partial failure, which changes were saved ----------
+test('reported: when a save fails partway, the reply says which changes were saved and which weren’t (and History keeps it)', async () => {
+  resetOrg();
+  const vscode = require('vscode');
+  const svc = panelServices();
+  const mp = new MainPanel({ extensionUri: vscode.Uri.file(ROOT) }, svc);
+  const p = mp.show();
+  await mp.load();
+  const key = posts(p, 'lists').pop().lists.permissionSet.find(r => r.label === 'Sales Ops').key;
+  await mp.select(key);
+  const ps = F.T.PermissionSet.find(x => x.Label === 'Sales Ops');
+  const perm = Object.keys(ps).find(k => /^Permissions/.test(k) && ps[k] === false).slice('Permissions'.length);
+  const conn = await mp._conn();
+  const [cw, ur] = [conn.compositeWrite, conn.updateRecords];
+  // The new object access lands; Salesforce then refuses the system permission (the reported dependency error)
+  conn.compositeWrite = async () => { throw new Error('COMPOSITE_UNAVAILABLE: for the test'); };
+  conn.updateRecords = async () => { throw new Error('FIELD_INTEGRITY_EXCEPTION: Permission Activate Contracts depends on permission(s): Edit Contract, Read Contract'); };
+  await mp.save({ key, changes: [
+    { key: 'object:Contact', label: 'Contact', before: null, after: { read: true, create: false, edit: false, delete: false, viewAll: false, modifyAll: false } },
+    { key: 'user:' + perm, label: perm, before: { enabled: false }, after: { enabled: true } }] });
+  [conn.compositeWrite, conn.updateRecords] = [cw, ur];
+  const r = posts(p, 'saveResult').pop();
+  assert.ok(r.status === 'error' && r.partial && /depends on permission/.test(r.message), JSON.stringify(r).slice(0, 300));
+  assert.deepStrictEqual(r.outcome, [{ key: 'object:Contact', saved: true }, { key: 'user:' + perm, saved: false }]);
+  const log = await history.readLog(svc.projectDir, {});
+  assert.deepStrictEqual(log[log.length - 1].saved, ['object:Contact'], 'History keeps what was saved');
+});
+
+// ---------- 2.6.11: placeholder field permissions (View All Fields) ----------
+test('reported: a field whose Read comes from View All Fields gets a new record for Edit (its placeholder row can’t be updated)', async () => {
+  resetOrg();
+  const c = conn();
+  const ps = F.T.PermissionSet.find(x => x.Label === 'Sales Ops');
+  const field = 'Lead.Rating';
+  F.T.FieldPermissions = F.T.FieldPermissions.filter(x => !(x.ParentId === ps.Id && x.Field === field));
+  // What Salesforce returns with View All Fields on: a row that isn't a record (the reported Ids)
+  F.T.FieldPermissions.push({ Id: '00000007FZp7Wmu', ParentId: ps.Id, SobjectType: 'Lead', Field: field, PermissionsRead: true, PermissionsEdit: false });
+  const item = { kind: 'permissionSet', permissionSetId: ps.Id, apiName: ps.Name, label: ps.Label };
+  const r = await applyMod.apply(c, item, [{ key: 'field:' + field, label: 'Rating', before: { read: true, edit: false }, after: { read: true, edit: true } }], {});
+  assert.ok(r.status === 'saved' && !r.mismatches.length, JSON.stringify(r).slice(0, 300));
+  const rows = F.T.FieldPermissions.filter(x => x.ParentId === ps.Id && x.Field === field);
+  assert.ok(rows.length === 1 && /^01k/.test(rows[0].Id) && rows[0].PermissionsEdit === true, JSON.stringify(rows));
+  // Removing Read that comes from View All Fields is stopped before anything is written, and says why
+  F.T.FieldPermissions = F.T.FieldPermissions.filter(x => !(x.ParentId === ps.Id && x.Field === field));
+  F.T.FieldPermissions.push({ Id: '0000000S53dC4uj', ParentId: ps.Id, SobjectType: 'Lead', Field: field, PermissionsRead: true, PermissionsEdit: false });
+  await assert.rejects(applyMod.apply(c, item, [{ key: 'field:' + field, label: 'Rating', before: { read: true, edit: false }, after: { read: false, edit: false } }], {}),
+    e => /Rating: Read comes from View All Fields on Lead, so it can’t be removed here\./.test(e.message));
+});
+
+// ---------- 2.6.12: object access a system permission needs (PermissionDependency) ----------
+test('reported: a system permission that needs object access (Activate Contracts: Read and Edit on Contract) is checked before saving', async () => {
+  resetOrg();
+  const ps = F.T.PermissionSet.find(x => x.Label === 'Sales Ops');
+  ps.PermissionsModifyAllData = false; // Modify All Data gives every object, which would satisfy the check
+  const perm = Object.keys(ps).find(k => /^Permissions/.test(k) && ps[k] === false && !/ModifyAllData|ViewAllData|ViewSetup/.test(k)).slice('Permissions'.length);
+  F.T.ObjectPermissions = F.T.ObjectPermissions.filter(x => !(x.ParentId === ps.Id && x.SobjectType === 'Opportunity'));
+  F.T.PermissionDependency.push({ Permission: perm, PermissionType: 'User Permission', RequiredPermission: 'Opportunity<Read>', RequiredPermissionType: 'Object Permission' },
+    { Permission: perm, PermissionType: 'User Permission', RequiredPermission: 'Opportunity<Edit>', RequiredPermissionType: 'Object Permission' });
+  const item = { kind: 'permissionSet', permissionSetId: ps.Id, apiName: ps.Name, label: ps.Label };
+  const on = { key: 'user:' + perm, label: 'Activate Things', before: { enabled: false }, after: { enabled: true } };
+  await assert.rejects(applyMod.apply(conn(), item, [on], {}), e => /Activate Things needs Read and Edit on Opportunity\. Add them in Object Settings, or remove it\./.test(e.message), 'stopped before saving, and says what to add');
+  assert.strictEqual(ps['Permissions' + perm], false, 'nothing written');
+  const r = await applyMod.apply(conn(), item, [on, { key: 'object:Opportunity', label: 'Opportunity', before: null, after: { read: true, create: false, edit: true, delete: false, viewAll: false, modifyAll: false } }], {});
+  assert.strictEqual(r.status, 'saved', 'with the object access in the same save, it goes through');
+});
+
+// ---------- 2.6.13: never send a field permission Salesforce defines as invalid ----------
+test('field permissions: a formula field takes Read only; a missing or non-permissionable field gets no request', async () => {
+  resetOrg();
+  F.DESCRIBE.Lead.fields.push({ name: 'Score__c', label: 'Score', type: 'double', calculated: true, permissionable: true, updateable: false, createable: false },
+    { name: 'Always__c', label: 'Always', type: 'string', permissionable: false, updateable: true, createable: true });
+  const before = F.T.FieldPermissions.length;
+  const go = ch => applyMod.apply(conn(), item(), [ch], saveOpts());
+  await assert.rejects(go({ key: 'field:Lead.Score__c', label: 'Score', before: null, after: { read: true, edit: true } }), e => /Score: this field is read-only, so only Read can be given\./.test(e.message));
+  await assert.rejects(go({ key: 'field:Lead.Gone__c', label: 'Gone', before: null, after: { read: true, edit: false } }), e => /Gone: this field no longer exists on Lead\./.test(e.message));
+  await assert.rejects(go({ key: 'field:Lead.Always__c', label: 'Always', before: null, after: { read: true, edit: false } }), e => /Always: Salesforce doesn’t take field permissions on this field\./.test(e.message));
+  assert.strictEqual(F.T.FieldPermissions.length, before, 'nothing sent');
+  const ok = await go({ key: 'field:Lead.Score__c', label: 'Score', before: null, after: { read: true, edit: false } });
+  assert.strictEqual(ok.status, 'saved', 'Read alone on the formula field is fine');
+});
+
 // ---------- extension wiring ----------
 test('activation: commands and settings match package.json; status bar; version and author', async () => {
   const vscode = require('vscode');
@@ -3064,7 +3246,7 @@ test('activation: commands and settings match package.json; status bar; version 
   assert.deepStrictEqual([...code.matchAll(/c\.get\('([\w.]+)'/g)].map(m => 'permStudio.' + m[1]).sort(), Object.keys(pkg.contributes.configuration.properties).sort());
   assert.ok(vscode.__statusItems[0].shown && vscode.__statusItems[0].command === 'permStudio.open');
   for (const f of ['media/app.js', 'media/app.css', 'media/tab-light.svg', 'media/tab-dark.svg', 'src/model/dependencies.js', pkg.icon]) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
-  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.6.1', 'nikeshvarma', 'Nikesh Varma']);
+  assert.deepStrictEqual([pkg.version, pkg.publisher, pkg.author.name], ['2.6.14', 'nikeshvarma', 'Nikesh Varma']);
   const png = fs.readFileSync(path.join(ROOT, pkg.icon));
   assert.deepStrictEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [256, 256], 'Marketplace icon is 256 px');
   for (const t of ['light', 'dark']) assert.match(fs.readFileSync(path.join(ROOT, 'media', 'tab-' + t + '.svg'), 'utf8'), /fill="#[0-9A-F]{6}"/i, 'tab icon has an explicit colour');
@@ -3081,7 +3263,8 @@ test('webview and panel agree on every message type', () => {
   for (const t of ['loading', 'error']) posted.delete(t);
   for (const t of ['detailLoading', 'objectLoading', 'accessLoading', 'rtLoading', 'tabsLoading', 'assignLoading', 'layoutsLoading', 'loginLoading', 'componentsLoading']) posted.add(t);
   // 'export' is back in 2.5.0 (Excel workbooks, asked for); the other removed features stay removed.
-  assert.ok(!sent.includes('createPs') && !sent.includes('licenses'), 'removed features stay removed');
+  assert.ok(!sent.includes('createPs') && !sent.includes('licenses') && !sent.includes('copyProfile'), 'removed features stay removed');
+  assert.ok(!/copyProfile|canCopyToPs|Copy to permission set/.test(js + fs.readFileSync(path.join(ROOT, 'src', 'views', 'mainPanel.js'), 'utf8')), 'copying a profile to a permission set stays removed');
   assert.ok(!/'tsv'|toTsv|toCsv|Export CSV|Copy for Excel/.test(js), 'CSV and tab-separated exports stay removed');
   const webHandles = new Set([...js.matchAll(/case '(\w+)':/g)].map(m => m[1]));
   assert.deepStrictEqual([...posted].filter(t => !webHandles.has(t)).sort(), [], 'panel posts something the webview ignores');

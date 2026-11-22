@@ -27,6 +27,7 @@ TESTS = [
     ('run16.py', 'Controls and the Health page with an org-sized dataset'),
     ('run17.py', 'Every scrolling box keeps its place when the screen redraws'),
     ('run18.py', 'Big saves and big History entries: progress, chips 300 at a time, export by save'),
+    ('run20.py', '2.6.2: field and custom permission search, health search, pill rows, narrow windows'),
 ]
 def passed(out):
     last = [l for l in out.strip().splitlines() if l.strip()][-1:] or ['']

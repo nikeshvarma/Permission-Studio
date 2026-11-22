@@ -7,6 +7,22 @@ const { editBlocker, editableCategories, currentValues } = require('../changes/a
 const { applyObject } = require('../model/dependencies');
 const { META_ACCESS } = require('../model/model');
 const { str: soqlStr } = require('../data/soql');
+const { differingFlags } = require('../model/diff');
+
+/** A difference the read-back found, in words: what was asked and what the org has. */
+function differenceText(m) {
+  const w = m.wanted || {};
+  const n = m.now || {};
+  const v = x => x === true ? 'on' : x === false || x == null ? 'off' : String(x);
+  if (m.key.startsWith('assignment:')) {
+    if (!!w.assigned !== !!n.assigned) return w.assigned ? 'asked to assign; the org doesn’t have the assignment' : 'asked to remove; the org still has the assignment';
+    return 'expiry: asked ' + (w.expires || 'no expiry') + ', the org has ' + (n.expires || 'no expiry') + (m.raw ? ' (stored as ' + m.raw + ')' : '');
+  }
+  return differingFlags(w, n).map(f => f + ': asked ' + v(w[f]) + ', the org has ' + v(n[f])).join('; ');
+}
+/** Differences for History, the log and the screen: [{ key, label, text }]. */
+const differencesOf = (mismatches, changes) => (mismatches || []).map(m => ({ key: m.key,
+  label: m.label || ((changes || []).find(c => c.key === m.key) || {}).label || m.key.slice(m.key.indexOf(':') + 1), text: differenceText(m) }));
 
 const KIND_LABEL = { permissionSet: 'Permission Set', group: 'Permission Set Group', profile: 'Profile' };
 
@@ -105,7 +121,6 @@ class MainPanel {
       case 'wizardApply': await this.wizardApply(m); break;
       case 'revokeApply': await this.revokeApply(m); break;
       case 'clonePs': await this.clonePs(m); break;
-      case 'copyProfile': await this.copyProfile(m); break;
       case 'editPs': await this.editPs(m); break;
       case 'loadComponents': await this.openComponents(m.key, { force: m.force }); break;
       case 'permDeps': await this.postDependencies(); break;
@@ -118,8 +133,6 @@ class MainPanel {
       // Only the files exported in this session (the screen can't ask to open anything else).
       case 'openFile': if (this.s.openFile && this._exported && this._exported.has(String(m.path))) await this.s.openFile(String(m.path)); break;
       case 'revealFile': if (this.s.revealFile && this._exported && this._exported.has(String(m.path))) await this.s.revealFile(String(m.path)); break;
-      case 'mutingFields': await this.mutingFields(m); break;
-      case 'createMuting': await this.createMuting(m); break;
       case 'loadProfileSettings': await this.openProfileSettings(m.key, { force: m.force }); break;
       case 'loadPolicies': await this.postPolicies(m.key, { force: m.force }); break;
       case 'listOrgs': await this.listOrgs(); break;
@@ -793,21 +806,66 @@ class MainPanel {
     const conn = await this._conn().catch(e => { this.post({ type: resultType, error: String(e.message || e) }); return null; });
     if (!conn) return;
     if (conn.isProduction && !this._confirmed(m.confirm)) return this.post({ type: resultType, error: 'Type the org’s alias or username to confirm saving to production.' });
-    const results = [];
+    const ticket = String(m.ticket || '').replace(/\s+/g, ' ').trim().slice(0, 80) || undefined;
+    const results = new Array(m.plan.length);
     this._saving = true;
     try {
-      for (let i = 0; i < (m.plan || []).length; i++) {
+      if (!this.s.applyMany) return await this._applyPlanEach(m, progressType, resultType, path, conn, ticket);
+      // Every item is checked and snapshotted, then all their record changes are saved in one request
+      // (a group isn't recalculated between one permission set and the next), then each is read back.
+      const entries = [];
+      for (let i = 0; i < m.plan.length; i++) {
         const t = m.plan[i];
         const item = this.items.get(t.key);
-        this.post({ type: progressType, done: i, total: m.plan.length, label: t.label });
-        if (!item) { results.push({ key: t.key, label: t.label, status: 'error', message: 'No longer in the list.' }); continue; }
-        const r = await this._applyAndLog(conn, item, t.changes.map(c => ({ key: c.key, ref: c.ref || null, before: c.before, after: c.after, label: c.label })), { path,
-          onProgress: (step, done, total) => this.post({ type: progressType, done: i, total: m.plan.length, label: t.label, step, stepDone: done, stepTotal: total, changes: t.changes.length }) });
-        results.push(Object.assign({ key: t.key, label: t.label }, r));
+        if (!item) { results[i] = { key: t.key, label: t.label, status: 'error', message: 'No longer in the list.' }; continue; }
+        await this._resolve(item, conn);
+        const guarded = await this._withoutCompoundParts(conn, t.changes.map(c => ({ key: c.key, ref: c.ref || null, before: c.before, after: c.after, label: c.label })));
+        if (!guarded.changes.length) { results[i] = { key: t.key, label: t.label, status: 'error', message: guarded.leftOut }; continue; }
+        entries.push({ i, t, item, changes: guarded.changes });
+      }
+      const started = Date.now();
+      const out = await this.s.applyMany(conn, entries.map(e => ({ item: e.item, changes: e.changes, options: {
+        onSnapshot: (snapshot, safety) => this.s.history.saveSnapshot(this.ctx.projectDir, { org: this.ctx.org.username, target: e.item.apiName, permissionSetId: e.item.permissionSetId, items: snapshot, safety: safety || undefined }) } })),
+        { metadata: this.s.metadata, log: l => this.s.log(l), pollMs: this.s.pollMs,
+          onProgress: (step, done, total, counts) => this.post(Object.assign({ type: progressType, done, total, label: step, items: entries.length }, counts || {})) });
+      for (let k = 0; k < entries.length; k++) {
+        const { i, t, item, changes } = entries[k];
+        const r = out[k] || { error: new Error('Not saved.') };
+        const logBase = { org: this.ctx.org.username, target: item.apiName, kind: item.kind, permissionSetId: item.permissionSetId, path: path || 'records', count: changes.length, ticket,
+          changes: changes.map(c => ({ key: c.key, label: c.label, from: c.before, to: c.after })), ms: Date.now() - started };
+        if (r.error) {
+          const e = r.error;
+          this.s.log('Save to ' + item.apiName + ' failed' + (e.failedStep ? ' at "' + e.failedStep + '"' : '') + ': ' + (e.stack || e));
+      if (e.deployedXml) this.s.log('What was sent to Salesforce (' + item.apiName + '):\n' + e.deployedXml);
+          await this.s.history.appendLog(this.ctx.projectDir, Object.assign(logBase, { result: 'failed', error: String(e.message || e), failedStep: e.failedStep || null, completedSteps: e.completedSteps || [], snapshot: e.snapshotId || null })).catch(() => {});
+          results[i] = { key: t.key, label: t.label, status: 'error', message: String(e.message || e), partial: !!(e.completedSteps && e.completedSteps.length), snapshotId: e.snapshotId || null, restorable: !!e.restorable };
+        } else if (r.status === 'conflict') {
+          results[i] = { key: t.key, label: t.label, status: 'conflict', conflicts: r.conflicts, message: 'Changed in the org since it was read; nothing written.' };
+        } else {
+          await this.s.history.appendLog(this.ctx.projectDir, Object.assign(logBase, { result: r.mismatches.length ? 'saved with differences' : 'saved', differences: differencesOf(r.mismatches, changes), snapshot: r.snapshotId })).catch(e => this.s.log('Change log write failed: ' + e.message));
+          results[i] = { key: t.key, label: t.label, status: 'saved', count: r.count, mismatches: r.mismatches, snapshotId: r.snapshotId, snapshot: r.snapshot, oneRequest: !!r.oneRequest };
+        }
         this.cache.set('saved:' + t.key, Date.now());
         this.cache.delete('detail:' + t.key);
       }
     } finally { this._saving = false; }
+    this.post({ type: resultType, results: results.filter(Boolean) });
+  }
+
+  /** Item by item (when the many-at-once save isn't available). */
+  async _applyPlanEach(m, progressType, resultType, path, conn, ticket) {
+    const results = [];
+    for (let i = 0; i < m.plan.length; i++) {
+      const t = m.plan[i];
+      const item = this.items.get(t.key);
+      this.post({ type: progressType, done: i, total: m.plan.length, label: t.label });
+      if (!item) { results.push({ key: t.key, label: t.label, status: 'error', message: 'No longer in the list.' }); continue; }
+      const r = await this._applyAndLog(conn, item, t.changes.map(c => ({ key: c.key, ref: c.ref || null, before: c.before, after: c.after, label: c.label })), { path, ticket,
+        onProgress: (step, done, total) => this.post({ type: progressType, done: i, total: m.plan.length, label: t.label, step, stepDone: done, stepTotal: total, changes: t.changes.length }) });
+      results.push(Object.assign({ key: t.key, label: t.label }, r));
+      this.cache.set('saved:' + t.key, Date.now());
+      this.cache.delete('detail:' + t.key);
+    }
     this.post({ type: resultType, results });
   }
 
@@ -939,11 +997,12 @@ class MainPanel {
         onProgress: extra && extra.onProgress, log: l => this.s.log(l), pollMs: this.s.pollMs
       });
       if (r.status === 'conflict') return { status: 'conflict', conflicts: r.conflicts, message: 'Changed in the org since it was read; nothing written.' };
-      await this.s.history.appendLog(this.ctx.projectDir, Object.assign(logBase, { result: r.mismatches.length ? 'saved with differences' : 'saved', snapshot: r.snapshotId,
+      await this.s.history.appendLog(this.ctx.projectDir, Object.assign(logBase, { result: r.mismatches.length ? 'saved with differences' : 'saved', differences: differencesOf(r.mismatches, changes), snapshot: r.snapshotId,
         changes: changes.map(c => ({ key: c.key, label: c.label, from: c.before, to: c.after })), ms: Date.now() - started })).catch(e => this.s.log('Change log write failed: ' + e.message));
       return { status: 'saved', count: r.count, mismatches: r.mismatches, snapshotId: r.snapshotId, snapshot: r.snapshot };
     } catch (e) {
       this.s.log('Save to ' + item.apiName + ' failed' + (e.failedStep ? ' at "' + e.failedStep + '"' : '') + ': ' + (e.stack || e));
+      if (e.deployedXml) this.s.log('What was sent to Salesforce (' + item.apiName + '):\n' + e.deployedXml);
       await this.s.history.appendLog(this.ctx.projectDir, Object.assign(logBase, { result: 'failed', error: String(e.message || e), failedStep: e.failedStep || null,
         completedSteps: e.completedSteps || [], snapshot: e.snapshotId || null, changes: changes.map(c => ({ key: c.key, label: c.label, from: c.before, to: c.after })), ticket: (extra && extra.ticket) || undefined })).catch(() => {});
       return { status: 'error', message: String(e.message || e), partial: !!(e.completedSteps && e.completedSteps.length), snapshotId: e.snapshotId || null, restorable: !!e.restorable };
@@ -991,21 +1050,13 @@ class MainPanel {
    */
   async clonePs(m) { return this._copyInto(m, 'clone'); }
 
-  /**
-   * Profile to permission set: copies a profile's object, field, system,
-   * class, page and other access, tab settings and record types into a new
-   * permission set (with the profile's user license), the permission-set-led
-   * model Salesforce recommends. Page layouts, login hours and IP ranges stay
-   * on the profile; nothing is removed from it.
-   */
-  async copyProfile(m) { return this._copyInto(m, 'copyProfile'); }
 
   async _copyInto(m, mode) {
     const src = this.items.get(m.key);
     const progress = label => this.post({ type: 'cloneProgress', label });
     try {
       const conn = await this._conn();
-      if (!src || src.kind !== (mode === 'clone' ? 'permissionSet' : 'profile')) throw new Error(mode === 'clone' ? 'Only permission sets can be cloned.' : 'Only profiles can be copied to a permission set.');
+      if (!src || src.kind !== 'permissionSet') throw new Error('Only permission sets can be cloned.');
       const bad = nameProblem(m.label, m.name, m.description);
       if (bad) throw new Error(bad);
       if ([...this.items.values()].some(i => i.kind === 'permissionSet' && !i.managed && i.apiName.toLowerCase() === String(m.name).toLowerCase())) throw new Error('A permission set named ' + m.name + ' already exists. Pick another API name.');
@@ -1013,14 +1064,8 @@ class MainPanel {
       await this._resolve(src, conn);
       progress('Creating the permission set');
       const rec = { Name: m.name, Label: m.label, Description: m.description || src.description || null };
-      if (mode === 'clone') {
-        const lic = await conn.query('SELECT LicenseId FROM PermissionSet WHERE Id = ' + soqlStr(src.permissionSetId));
-        if (lic.records[0] && lic.records[0].LicenseId) rec.LicenseId = lic.records[0].LicenseId;
-      } else if (m.useLicense !== false) {
-        // Some system permissions only exist with a user license; the profile's own keeps them all valid.
-        const lic = await conn.query('SELECT UserLicenseId FROM Profile WHERE Id = ' + soqlStr(src.recordId));
-        if (lic.records[0] && lic.records[0].UserLicenseId) rec.LicenseId = lic.records[0].UserLicenseId;
-      }
+      const lic = await conn.query('SELECT LicenseId FROM PermissionSet WHERE Id = ' + soqlStr(src.permissionSetId));
+      if (lic.records[0] && lic.records[0].LicenseId) rec.LicenseId = lic.records[0].LicenseId;
       const [id] = await conn.create('PermissionSet', [rec]);
       progress('Copying object, field, system and other access');
       const safety = await this.s.metadata.captureSafety(conn, src.permissionSetId);
@@ -1042,11 +1087,11 @@ class MainPanel {
         if (lost.count) await this.s.metadata.restoreSafety(conn, id, copy);
       }
       const counts = { objects: safety.objects.length, fields: safety.fields.length, system: safety.system.length, entities: safety.entities.length, tabs: tabRows.length, recordTypes: meta.length };
-      await this.s.history.appendLog(this.ctx.projectDir, { org: this.ctx.org.username, target: m.name, kind: 'permissionSet', path: mode === 'clone' ? 'clone' : 'copy from profile',
+      await this.s.history.appendLog(this.ctx.projectDir, { org: this.ctx.org.username, target: m.name, kind: 'permissionSet', path: 'clone',
         result: 'created', from: src.apiName, count: Object.values(counts).reduce((a, b) => a + b, 0) }).catch(() => {});
       await this._reloadListsAndSelect('permissionSet:' + id);
       this.post({ type: 'psSaved', mode, key: 'permissionSet:' + id, label: m.label, counts, from: src.label });
-    } catch (e) { this.s.log((mode === 'clone' ? 'Clone' : 'Copy from profile') + ' failed: ' + (e.stack || e)); this.post({ type: 'psSaved', error: String(e.message || e) }); }
+    } catch (e) { this.s.log('Clone failed: ' + (e.stack || e)); this.post({ type: 'psSaved', error: String(e.message || e) }); }
   }
 
 
@@ -1120,64 +1165,20 @@ class MainPanel {
   // ---------- muting in permission set groups ----------
 
   /** What the group's member permission sets grant (before muting) and what is muted now. */
+  /** The group's muting permission set, read only: every section it has (muting is changed in Setup). */
   async openMuting(key, options) {
     const item = this.items.get(key);
     if (!item || item.kind !== 'group') return;
-    const dirty = this.cache.get('saved:' + key);
     await this._swr('muting:' + key, async () => {
-      const conn = await this._conn();
-      const comps = await conn.query('SELECT PermissionSetId FROM PermissionSetGroupComponent WHERE PermissionSetGroupId = ' + soqlStr(item.recordId));
-      const ids = comps.records.map(r => r.PermissionSetId).filter(id => !/^0QM/.test(id));
-      const [objs, sys, muted] = await Promise.all([
-        ids.length ? conn.query('SELECT SobjectType, PermissionsRead, PermissionsCreate, PermissionsEdit, PermissionsDelete, PermissionsViewAllRecords, PermissionsModifyAllRecords FROM ObjectPermissions WHERE ParentId IN (' + ids.map(soqlStr).join(', ') + ')') : { records: [] },
-        this.s.insightSystem(conn, ids),
-        this.s.metadata.readMuting(conn, item)]);
-      const objects = new Map();
-      const F = [['read', 'PermissionsRead'], ['create', 'PermissionsCreate'], ['edit', 'PermissionsEdit'], ['delete', 'PermissionsDelete'], ['viewAll', 'PermissionsViewAllRecords'], ['modifyAll', 'PermissionsModifyAllRecords']];
-      for (const r of objs.records) { const o = objects.get(r.SobjectType) || {}; for (const [f, c] of F) if (r[c]) o[f] = true; objects.set(r.SobjectType, o); }
-      const labels = new Map((await this.s.loader.systemPermissionFields(conn)).map(f => [f.name, f.label]));
-      const system = new Set(); for (const set of sys.values()) for (const n of set) system.add(n);
-      return { muting: muted.muting, members: ids.length, objects: [...objects].map(([name, props]) => ({ name, props })).sort((a, b) => a.name.localeCompare(b.name)),
-        system: [...system].map(n => ({ name: n, label: labels.get(n) || n })).sort((a, b) => a.label.localeCompare(b.label)), muted: [...muted.entries] };
-    }, (data, savedAt, refreshing) => ({ type: 'mutingDetail', key, data, savedAt, refreshing }), () => this._selected === key, { type: 'mutingError', key },
-    Object.assign({ notBefore: dirty ? dirty.value : 0 }, options));
+      const muted = await this.s.metadata.readMuting(await this._conn(), item);
+      return { muting: muted.muting, sections: muted.sections || [] };
+    }, (data, savedAt, refreshing) => ({ type: 'mutingDetail', key, data, savedAt, refreshing }), () => this._selected === key, { type: 'mutingError', key }, options);
   }
 
-  /** Fields of one object the group's members grant, for muting field access. */
-  async mutingFields(m) {
-    const item = this.items.get(m.key);
-    if (!item) return;
-    try {
-      const conn = await this._conn();
-      const comps = await conn.query('SELECT PermissionSetId FROM PermissionSetGroupComponent WHERE PermissionSetGroupId = ' + soqlStr(item.recordId));
-      const ids = comps.records.map(r => r.PermissionSetId).filter(id => !/^0QM/.test(id));
-      const rows = ids.length ? (await conn.query('SELECT Field, PermissionsRead, PermissionsEdit FROM FieldPermissions WHERE SobjectType = ' + soqlStr(m.object) + ' AND ParentId IN (' + ids.map(soqlStr).join(', ') + ')')).records : [];
-      const fields = new Map();
-      for (const r of rows) { const f = fields.get(r.Field) || { field: r.Field, read: false, edit: false }; f.read = f.read || r.PermissionsRead; f.edit = f.edit || r.PermissionsEdit; fields.set(r.Field, f); }
-      this.post({ type: 'mutingFields', key: m.key, object: m.object, fields: [...fields.values()].sort((a, b) => a.field.localeCompare(b.field)) });
-    } catch (e) { this.post({ type: 'mutingFields', key: m.key, object: m.object, fields: [], error: String(e.message || e) }); }
-  }
 
-  /** A group without a muting permission set gets one, so its permissions can be muted. */
-  async createMuting(m) {
-    const item = this.items.get(m.key);
-    try {
-      if (!item || item.kind !== 'group' || item.managed) throw new Error('Only your own permission set groups can have muting.');
-      const bad = nameProblem(m.label, m.name);
-      if (bad) throw new Error(bad);
-      const conn = await this._conn();
-      if (conn.isProduction && !this._confirmed(m.confirm)) throw new Error('Type the org’s alias or username to confirm changing production.');
-      if (await this.s.metadata.mutingFor(conn, item)) throw new Error(item.label + ' already has a muting permission set.');
-      await this.s.metadata.createMuting(conn, m.name, m.label);
-      const r = await conn.query('SELECT Id FROM MutingPermissionSet WHERE DeveloperName = ' + soqlStr(m.name));
-      if (!r.records[0]) throw new Error('The muting permission set was created but can’t be found. Refresh and try again.');
-      await conn.createRecords([{ attributes: { type: 'PermissionSetGroupComponent' }, PermissionSetGroupId: item.recordId, PermissionSetId: r.records[0].Id }]);
-      this.cache.set('saved:' + m.key, Date.now());
-      this.post({ type: 'mutingCreated', key: m.key });
-      await this.openMuting(m.key, { force: true });
-      this.pollGroup(m.key).catch(() => {});
-    } catch (e) { this.post({ type: 'mutingCreated', key: m.key, error: String(e.message || e) }); }
-  }
+
+
+
 
   // ---------- profile settings ----------
 
@@ -1507,7 +1508,7 @@ class MainPanel {
       });
       if (result.status === 'conflict') return reply({ status: 'conflict', conflicts: result.conflicts });
       await this.s.history.appendLog(this.ctx.projectDir, Object.assign(logBase, {
-        result: result.mismatches.length ? 'saved with differences' : 'saved', snapshot: result.snapshotId,
+        result: result.mismatches.length ? 'saved with differences' : 'saved', differences: differencesOf(result.mismatches, changes), snapshot: result.snapshotId,
         changes: changes.map(c => ({ key: c.key, label: c.label, from: c.before, to: c.after })), ms: Date.now() - started, ticket
       })).catch(e => this.s.log('Change log write failed: ' + e.message));
       this.s.log('Saved ' + changes.length + ' change(s) to ' + item.apiName + ' in ' + (Date.now() - started) + ' ms (snapshot ' + result.snapshotId + ')');
@@ -1524,13 +1525,27 @@ class MainPanel {
           }
         } catch (e) { local = { error: String(e.message || e) }; }
       }
-      reply({ leftOut: guarded.leftOut, status: 'saved', count: result.count, mismatches: result.mismatches, snapshotId: result.snapshotId, undo, local });
+      const differences = differencesOf(result.mismatches, changes);
+      for (const d of differences) this.s.log('Not as requested on ' + item.apiName + ': ' + d.label + ': ' + d.text);
+      reply({ leftOut: guarded.leftOut, status: 'saved', count: result.count, mismatches: result.mismatches, differences, snapshotId: result.snapshotId, undo, local });
     } catch (e) {
       this.s.log('Save to ' + item.apiName + ' failed' + (e.failedStep ? ' at "' + e.failedStep + '"' : '') + ': ' + (e.stack || e));
+      if (e.deployedXml) this.s.log('What was sent to Salesforce (' + item.apiName + '):\n' + e.deployedXml);
+      // Some steps landed: read every change back, so the review can mark each one Saved or Not saved.
+      const partial = !!(e.completedSteps && e.completedSteps.length);
+      let outcome = null;
+      if (partial) {
+        try {
+          const now = await require('../changes/apply').currentValues(conn, item, changes.map(c => c.key), new Map(changes.filter(c => c.ref).map(c => [c.key, c.ref])), this.s.metadata);
+          outcome = changes.map(c => ({ key: c.key, saved: !differingFlags(c.after, now.props.get(c.key)).length }));
+          this.s.log('Of ' + changes.length + ' changes to ' + item.apiName + ', ' + outcome.filter(o => o.saved).length + ' were saved before the error.');
+        } catch (x) { this.s.log('Could not read back what was saved: ' + (x.message || x)); }
+      }
       await this.s.history.appendLog(this.ctx.projectDir, Object.assign(logBase, {
-        result: 'failed', error: String(e.message || e), failedStep: e.failedStep || null, completedSteps: e.completedSteps || [], snapshot: e.snapshotId || null
+        result: 'failed', error: String(e.message || e), failedStep: e.failedStep || null, completedSteps: e.completedSteps || [], snapshot: e.snapshotId || null,
+        saved: outcome ? outcome.filter(o => o.saved).map(o => o.key) : undefined
       })).catch(() => {});
-      reply({ status: 'error', message: await this._explain(conn, item, e), partial: !!(e.completedSteps && e.completedSteps.length), snapshotId: e.snapshotId || null, restorable: !!e.restorable });
+      reply({ status: 'error', message: await this._explain(conn, item, e), partial, outcome, snapshotId: e.snapshotId || null, restorable: !!e.restorable });
     } finally {
       // Every way out, the early conflict return included, lets background refresh run again.
       this._saving = false;
@@ -1625,7 +1640,7 @@ function toView(item, conn, detail) {
       managed: !!item.managed, standard: !!item.standard, description: item.description || '',
       modified: item.modified || null, editable: editableCategories(item).length > 0, readOnlyReason: blocked || '',
       editableCats: editableCategories(item), canRename: item.kind === 'permissionSet' && !item.managed, canClone: item.kind === 'permissionSet',
-      canCopyToPs: item.kind === 'profile', sessionBased: !!item.sessionBased
+      sessionBased: !!item.sessionBased
     },
     objects, system,
     // Objects where this item grants field access but no object access (Event and Task always work this way).
@@ -1653,3 +1668,6 @@ function html(webview, media, shared) {
 }
 
 module.exports = { MainPanel, toView };
+
+// For tests: the read-back's differences in words.
+module.exports.differenceText = differenceText;

@@ -15,7 +15,9 @@ MEASURE = """(screen) => {
   }
   for (const e of all('.cb .box')) { const r = e.getBoundingClientRect(); if (Math.round(r.width) !== 14 || Math.round(r.height) !== 14 || px(e, 'borderTopLeftRadius') !== 3) bad.push('checkbox ' + r.width + 'x' + r.height + ' radius ' + px(e, 'borderTopLeftRadius')); }
   for (const e of all('input[type="radio"]')) { const r = e.getBoundingClientRect(); if (Math.round(r.width) !== 14 || Math.round(r.height) !== 14 || px(e, 'borderTopLeftRadius') < 7) bad.push('radio ' + r.width + 'x' + r.height); }
-  for (const e of all('.card, .modal, .lk-bar, .hc-card, .rv-stat, .ev, .steps, .alert, .rv-call, .policy-note, .restored, .rv-license')) if (px(e, 'borderTopLeftRadius') !== 8) bad.push('container ' + e.className + ' radius ' + px(e, 'borderTopLeftRadius'));
+  // The review is a full page (square, fills the window); other dialogs are containers with 8 px corners.
+  for (const e of all('.modal.wide')) { const r = e.getBoundingClientRect(); if (Math.round(r.width) !== innerWidth || Math.round(r.height) !== innerHeight || px(e, 'borderTopLeftRadius') !== 0) bad.push('the review is not a full page: ' + Math.round(r.width) + 'x' + Math.round(r.height)); }
+  for (const e of all('.card, .modal:not(.wide), .lk-bar, .hc-card, .rv-stat, .ev, .steps, .alert, .rv-call, .policy-note, .restored, .rv-license')) if (px(e, 'borderTopLeftRadius') !== 8) bad.push('container ' + e.className + ' radius ' + px(e, 'borderTopLeftRadius'));
   const heads = all('.datatable th, .rv-table th, .mx-table thead th');
   for (const e of heads) if (px(e, 'fontSize') !== 12 || getComputedStyle(e).fontWeight !== '600' || px(e, 'paddingLeft') !== 10) bad.push('table header "' + e.textContent.trim().slice(0, 15) + '" font ' + px(e, 'fontSize') + ' weight ' + getComputedStyle(e).fontWeight + ' padding ' + px(e, 'paddingLeft'));
   for (const e of all('.datatable td, .rv-table td, .mx-table td').slice(0, 300)) if (px(e, 'paddingLeft') !== 10) { bad.push('table cell padding ' + px(e, 'paddingLeft')); break; }

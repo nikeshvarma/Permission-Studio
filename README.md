@@ -50,7 +50,7 @@ Access is where Salesforce work slows down. In Setup, every question and every c
 | Find out who can edit `Lead.Rating`, and through what | Check every profile, permission set and group, or write SOQL | **Find access**: type `Lead.Rating`; every user, the sources that grant it, and **Why?** for each user |
 | See everything one user can do | Open the user, then each profile, permission set and group they hold | **User access**: one view, with the source of every permission |
 | Compare a permission set in a sandbox with production | Two browser windows, compared by eye | **Compare**: every difference, filterable and copyable as a table |
-| Turn off one permission for a group's users | Find or create the muting permission set, edit it, save | **Muted Permissions**: tick it, review, save |
+| See what a group's muting turns off | Open its muting permission set in Setup, then each section | **Muted Permissions**: every section in one read-only view |
 | Record a change for an ADO or Jira ticket | Screenshots, or retyping | **Copy summary** as a Markdown table, or **Export** to Excel, with the ticket number |
 | Undo a mistake | Redo it by hand, from memory | **Undo** from History, or from the notice after saving |
 | Check what changed on a permission set recently | Setup Audit Trail, filtered by hand | **Changes in Setup**, on the item itself |
@@ -66,13 +66,15 @@ Every section of a permission set or profile is on one screen: object, field, re
 
 ### Review before anything is saved
 
-Save opens a review that starts with the impact: how many changes, how many users they reach, which high-impact permissions are being granted (Modify All Data, View All Data, Use Any API Client and others are spelled out in plain words), and what access is being removed. Then every change on one line, where any one can be dropped. Add a ticket number and it follows the save into History and copied summaries. On a production org you type the org's name to confirm.
+Save opens a review that starts with the impact: how many changes, how many users they reach, which high-impact permissions are being granted (Modify All Data, View All Data, Use Any API Client and others are spelled out in plain words), and what access is being removed. Then every change on one line, where any one can be dropped. Add a user story or ticket number and it follows the save into History and copied summaries. On a production org you type the org's name to confirm.
+
+The review is a full page, and a progress bar shows the changes saved as it goes. Before anything is written, Permission Studio checks what Salesforce would refuse, and says what to adjust: a system permission that needs object access (Activate Contracts needs Read and Edit on Contract), object permissions on a profile with Modify All Data, Read that comes from View All Fields, and Edit on a formula or other read-only field. If Salesforce still refuses part of a save, the review stays open with every row marked **Saved** or **Not saved**, and Salesforce's reason; adjust what wasn't saved and save the rest.
 
 ![The review: changes, users affected, high-impact permissions and removals first, then each change on one line with granted chips and a button to remove it](media/readme/review.png)
 
 ### Find out who has access, and why
 
-Type an object or a field (`Lead.Rating`), or pick a system or custom permission. Filter by profile, licence, source or user status. **Why?** shows exactly how each user gets the access, including through a group's member permission sets. From the results, remove the access from chosen sources, or grant it to more. View All Data, Modify All Data and View All Fields are counted, and recent searches are a click away.
+Type an object or a field (`Lead.Rating`), or search for a system or custom permission by name (high-impact ones are marked). Filter by profile, licence, source or user status. **Why?** shows exactly how each user gets the access, including through a group's member permission sets. From the results, remove the access from chosen sources, or grant it to more. View All Data, Modify All Data and View All Fields are counted, and recent searches are a click away.
 
 ![Find access for Lead.Rating: filters, users with the permission sets, profiles and groups that grant it, how one user gets it through a group, and the sources](media/readme/find-access.png)
 
@@ -80,13 +82,15 @@ Type an object or a field (`Lead.Rating`), or pick a system or custom permission
 
 **Grant field access** gives fields Read or Read and Edit across many permission sets and profiles at once, showing what each already has and what will change, with a running total of the users reached. **Grant object access** sets object permissions and record types in one grid, including profile defaults. Access is only ever added. Save your choices as a template for the next new field.
 
+Both open the **same review as a single save**, with the changes grouped by permission set or profile. Saving sends **every item's changes in one request**, so a permission set group isn't recalculated between one permission set and the next. Each item still gets its own conflict check, snapshot (for Undo) and History entry, and a progress bar shows the changes saved.
+
 ![Grant field access: two fields chosen, each permission set's and profile's current access next to what will change, and a running summary](media/readme/grant-field-access.png)
 
 ![Grant object access: a grid of permission sets and profiles by object permission, with what's already granted and what will be added](media/readme/grant-object-access.png)
 
 ### See everything one user can do
 
-**User access** adds up a user's profile, permission sets and groups (with expiry dates) and their permission set licences, then shows the object, field, system and custom permissions those come to. Coloured dots show which source grants each one.
+**User access** adds up a user's profile, permission sets and groups (with expiry dates) and their permission set licences, then shows the object, field, system and custom permissions those come to. Coloured dots show which source grants each one. Search objects, or **search fields** across every object (`Account.Rating`, or just `Rating`), and search system and custom permissions.
 
 ![User access: one user's sources of access, licences, and object and system permissions with where each comes from](media/readme/user-access.png)
 
@@ -98,11 +102,11 @@ Compare two permission sets, profiles or groups in this org, or the same one in 
 
 ### Permission set groups, including muting
 
-Add or remove a group's member permission sets while Salesforce recalculates the group in the background; the status shows while it runs and the group's access refreshes when it finishes. Under **Muted Permissions**, mute object, field and system permissions the group's permission sets grant, without changing the permission sets themselves. A group without a muting permission set gets one in a click.
+Add or remove a group's member permission sets while Salesforce recalculates the group in the background; the status shows while it runs and the group's access refreshes when it finishes. **Muted Permissions** shows everything the group's muting permission set turns off, read-only and searchable, section by section, as Salesforce stores it: object permissions (including View All Fields), field permissions, system permissions, apps, Apex classes, Visualforce pages, flows, custom permissions, custom metadata types, custom settings, record types and tab settings. Muting is changed in Setup.
 
 ![A permission set group's members, one being added, with the recalculation in progress](media/readme/groups.png)
 
-![Muted Permissions on a permission set group: the object and system permissions its permission sets grant, with what is muted ticked](media/readme/muting.png)
+![Muted Permissions on a permission set group: every section of its muting permission set, read-only](media/readme/muting.png)
 
 ### Profiles, assignments and the newer kinds of access
 
@@ -110,7 +114,7 @@ Add or remove a group's member permission sets while Salesforce recalculates the
 - **Newer kinds of access:** Agent Access (Agentforce employee agents), External Credential Principal Access, External Data Source Access, Service Presence Statuses Access and Email Routing Address Access, for permission sets and profiles. A kind the org doesn't have says so.
 - **Assignments:** add or remove users, with expiry dates and a warning when one expires soon. Users who can't hold a permission set's licence are flagged before you save, and a missing permission set licence can be assigned in the same save.
 - **User access policies:** a permission set or group shows the policies that assign it automatically, and the review warns before you remove an assignment a policy may give back.
-- **Rename and clone** permission sets, or **copy a profile to a new permission set**, Salesforce's recommended permission-set-led model.
+- **Rename and clone** permission sets.
 
 ### Access health check
 
@@ -123,7 +127,7 @@ The **Health** button in the top bar reads the whole org (every permission set, 
 - **Unused permission sets, permission set groups and profiles:** no active users (and, for permission sets, in no group). A Flow or a user access policy may still assign one when it runs, so check before deleting it in Setup.
 - **Permission sets that grant nothing:** no object, field, system, tab, app, Apex or other record-based access.
 
-Summary cards give the counts at a glance; click one to jump to its finding. Built for large orgs: a long finding shows 50 rows at a time (**Show more** adds 100), and **Select all** takes the whole finding, including rows not shown, so thousands of inactive users' assignments can be removed in one go. Fixes go through the same review, snapshot and undo as every other save. **Export** the findings as one Excel workbook: a summary and one sheet per finding.
+Summary cards give the counts at a glance; click one to jump to its finding. Each finding has its own search and a scrolling table. Built for large orgs: a long finding shows 50 rows at a time (**Show more** adds 100), and **Select all** takes the whole finding, including rows not shown, so thousands of inactive users' assignments can be removed in one go. Fixes go through the same review, snapshot and undo as every other save. **Export** the findings as one Excel workbook: a summary and one sheet per finding.
 
 ![The access health check: summary cards, integration users with admin access, and who holds Modify All Data and through what](media/readme/health-check.png)
 
@@ -143,7 +147,7 @@ Each sheet starts with what it is, the org, when it was exported and the filters
 
 ### History, undo and paperwork
 
-Every save is kept in History with its changes, ticket and result, alongside changes made in Setup (from Setup Audit Trail). Undo any save, copy saves as a Markdown table for a ticket, or export them to Excel for a design document or a release note. Each item also has a **Changes in Setup** section: who changed it in Setup recently, and what.
+Every save is kept in History with its changes, ticket and result, alongside changes made in Setup (from Setup Audit Trail). A save where the org ended up different from what was asked shows **Saved with differences**, with what was asked and what the org has; a failed save keeps which of its changes were saved. Undo any save, copy saves as a Markdown table for a ticket, or export them to Excel for a design document or a release note. Each item also has a **Changes in Setup** section: who changed it in Setup recently, and what.
 
 ![History grouped by day: saves with their changes and tickets, a failed save, and a change made in Setup](media/readme/history.png)
 
@@ -209,11 +213,11 @@ Permission Studio always works on the project's default org. Change it the usual
 | Assignments, with expiry dates | Yes, and groups | Read-only list of users | records |
 | Permission set licences, when an assignee lacks one | Yes | — | records (assigned in the same save) |
 | Member permission sets | — | — | records (groups only) |
-| Muted permissions: object, field and system | — | — | Metadata API deploy (groups only, the group's muting permission set) |
+| Muted permissions: every section of the group's muting permission set | — | — | Read-only (groups only); changed in Setup |
 | Changes in Setup (Setup Audit Trail) | Read-only | Read-only | — |
 | Health check fixes: remove assignments of inactive users, extend expiring assignments | Yes, and groups | — | records (reviewed, like every save) |
 
-A group's access comes from its member permission sets, so on a group you change its members, assignments and muting, and edit the permission sets themselves for anything else. Managed-package permission sets and groups are read-only apart from their assignments. Standard profiles are read-only.
+A group's access comes from its member permission sets, so on a group you change its members and assignments, and edit the permission sets themselves for anything else. Its muting is shown read-only. Managed-package permission sets and groups are read-only apart from their assignments. Standard profiles are read-only.
 
 ## How it works
 
@@ -223,11 +227,11 @@ A group's access comes from its member permission sets, so on a group you change
 
 **Saving.** Every save follows the same six steps:
 
-1. **Review:** you see every change and its impact, and confirm.
+1. **Review:** you see every change and its impact, and confirm. Requests Salesforce would refuse are caught here, with what to adjust.
 2. **Check:** every changed entry is read again, so an edit someone made in Setup since you loaded the screen is never silently overwritten.
 3. **Snapshot:** the values from just before the save are kept for undo.
-4. **Write:** only the records that change are written, in one request where possible. Settings that only exist in metadata go through the Metadata API; a deploy that changes an item's own access is preceded by a full copy of that access and checked afterwards.
-5. **Verify:** everything is read back, and anything the org did not take is reported.
+4. **Write:** only the records that change are written, in one request where possible. A bulk save (the Grant screens, Find access removals, health check fixes) sends every item's changes together, so a permission set group isn't recalculated between one permission set and the next. Settings that only exist in metadata go through the Metadata API; a deploy that changes an item's own access is preceded by a full copy of that access and checked afterwards.
+5. **Verify:** everything is read back, and anything the org did not take is named, with what the org has instead.
 6. **Record:** the save goes into History, with its ticket.
 
 ## Safety and privacy
@@ -274,12 +278,14 @@ A group's access comes from its member permission sets, so on a group you change
 
 Permission Studio deliberately leaves a few things to Setup:
 
-- **Creating and deleting** permission sets, permission set groups and profiles. You can rename and clone permission sets, copy a profile to a new permission set, and create a group's muting permission set. The health check lists unused items; delete them in Setup.
+- **Creating and deleting** permission sets, permission set groups and profiles. You can rename and clone permission sets. The health check lists unused items; delete them in Setup.
 - **The health check doesn't look for permission sets that duplicate a profile:** doing that reliably means reading every field, Apex and other access row in the org, which is slow in large orgs and easy to get wrong.
 - **Managed-package permission sets and standard profiles** can't be changed, as in Setup; their assignments can.
 - **Compare** covers records-based access (object, field, system, app, Apex, Visualforce, flow, custom permission, custom metadata, custom setting and tab). Record types, layouts and metadata-only settings aren't compared.
 - **Login flows** can be set or changed on a profile but not removed; remove one in Setup › Login Flows.
 - **One org at a time:** the project's default org. Compare is the one place that reads a second org.
+- **Muted permissions** are shown read-only; change a group's muting permission set in Setup.
+- **Permissions a user licence doesn't allow** can't be checked before saving (Salesforce doesn't list them). If one is refused, the review shows which changes were saved and Salesforce's reason.
 
 ## FAQ
 
